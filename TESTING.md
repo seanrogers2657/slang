@@ -1,0 +1,350 @@
+# Slang Testing Framework
+
+This document describes the comprehensive testing framework for the Slang compiler project.
+
+## Overview
+
+The testing framework covers all major components of the Slang compiler:
+
+- **Lexer** (frontend/lexer) - Tokenization of source code
+- **Parser** (frontend/parser) - AST construction
+- **Code Generator** (backend/as) - ARM64 assembly generation
+- **Integration Tests** - End-to-end compilation pipeline
+
+## Test Coverage
+
+Current test coverage statistics:
+
+- **Backend (Assembly Generator)**: 100% coverage
+- **Frontend (Lexer)**: 96.7% coverage
+- **Frontend (Parser)**: 93.8% coverage
+- **Overall**: 74.3% coverage (main.go not included)
+
+## Running Tests
+
+### Quick Test Commands
+
+```bash
+# Run all tests
+make test
+
+# Run all tests with verbose output
+make test-verbose
+
+# Generate coverage report
+make test-coverage
+
+# Run specific component tests
+make test-lexer
+make test-parser
+make test-codegen
+make test-integration
+```
+
+### Using Go Directly
+
+```bash
+# Run all tests
+go test ./...
+
+# Run tests with verbose output
+go test ./... -v
+
+# Run tests with coverage
+go test ./... -coverprofile=coverage.out
+go tool cover -html=coverage.out -o coverage.html
+
+# Run specific package tests
+go test ./frontend/lexer/...
+go test ./frontend/parser/...
+go test ./backend/as/...
+
+# Run tests with race detector
+go test ./... -race
+
+# Run specific test by name
+go test -run TestLexerNumbers
+go test -run TestEndToEndCompilation
+```
+
+## Test Organization
+
+### Lexer Tests (`frontend/lexer/lexer_test.go`)
+
+Tests for the tokenization stage of the compiler:
+
+- **TestLexerNumbers**: Number parsing (single/multiple digits, zero, large numbers)
+- **TestLexerArithmeticOperators**: Arithmetic operators (+, -, *, /, %)
+- **TestLexerComparisonOperators**: Comparison operators (==, !=, <, >, <=, >=)
+- **TestLexerExpressions**: Complete expressions with multiple tokens
+- **TestLexerErrors**: Error handling for invalid input
+- **TestLexerWhitespace**: Whitespace handling (spaces, tabs, mixed)
+
+### Parser Tests (`frontend/parser/parser_test.go`)
+
+Tests for the AST construction stage:
+
+- **TestParserLiterals**: Number literal parsing
+- **TestParserBinaryExpressions**: Binary expressions with arithmetic operators
+- **TestParserComparisonExpressions**: Binary expressions with comparison operators
+- **TestParserParse**: Top-level parse function
+- **TestParserErrors**: Error handling for unsupported operations
+- **TestParserIntegrationWithLexer**: Integration between lexer and parser
+
+### Code Generator Tests (`backend/as/as_test.go`)
+
+Tests for ARM64 assembly generation:
+
+- **TestGenerateExprAddition**: Addition operation code generation
+- **TestGenerateExprUnsupportedOperations**: Error handling for unsupported operations
+- **TestAsGeneratorInterface**: AsGenerator interface testing
+- **TestGenerateExprStructure**: Verification of assembly structure
+
+### Integration Tests (`integration_test.go`)
+
+End-to-end tests for the complete compilation pipeline:
+
+- **TestEndToEndCompilation**: Full pipeline from source to assembly
+- **TestCompilationPipelineStages**: Individual stage verification
+- **TestExampleFile**: Verification of example files
+- **TestRegressions**: Edge cases and bug prevention
+
+## Test Patterns
+
+The tests follow Go best practices:
+
+### Table-Driven Tests
+
+Most tests use the table-driven pattern for maintainability:
+
+```go
+tests := []struct {
+    name     string
+    input    string
+    expected []Token
+}{
+    {
+        name:  "simple addition",
+        input: "2 + 5",
+        expected: []Token{
+            {Type: TokenTypeInteger, Value: "2"},
+            {Type: TokenTypePlus, Value: "+"},
+            {Type: TokenTypeInteger, Value: "5"},
+        },
+    },
+    // More test cases...
+}
+
+for _, tt := range tests {
+    t.Run(tt.name, func(t *testing.T) {
+        // Test implementation
+    })
+}
+```
+
+### Subtests
+
+Tests use `t.Run()` for better organization and parallel execution:
+
+```go
+t.Run("specific test case", func(t *testing.T) {
+    // Test code
+})
+```
+
+### Error Testing
+
+Tests verify both success and error cases:
+
+```go
+if len(l.Errors) == 0 {
+    t.Fatal("expected error, got none")
+}
+
+if err.Error() != expectedError {
+    t.Errorf("expected error %q, got %q", expectedError, err.Error())
+}
+```
+
+## Adding New Tests
+
+### For Lexer
+
+Add tests to `frontend/lexer/lexer_test.go`:
+
+```go
+func TestLexerNewFeature(t *testing.T) {
+    tests := []struct {
+        name     string
+        input    string
+        expected []Token
+    }{
+        // Add test cases
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            l := NewLexer([]byte(tt.input))
+            l.Parse()
+            // Verify results
+        })
+    }
+}
+```
+
+### For Parser
+
+Add tests to `frontend/parser/parser_test.go`:
+
+```go
+func TestParserNewFeature(t *testing.T) {
+    tests := []struct {
+        name     string
+        tokens   []lexer.Token
+        expected *Expr
+    }{
+        // Add test cases
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            p := NewParser(tt.tokens)
+            expr := p.Parse()
+            // Verify results
+        })
+    }
+}
+```
+
+### For Code Generator
+
+Add tests to `backend/as/as_test.go`:
+
+```go
+func TestCodegenNewFeature(t *testing.T) {
+    tests := []struct {
+        name           string
+        expr           *parser.Expr
+        expectedOutput []string
+    }{
+        // Add test cases
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            output, err := GenerateExpr(tt.expr)
+            // Verify results
+        })
+    }
+}
+```
+
+### For Integration
+
+Add tests to `integration_test.go`:
+
+```go
+func TestNewIntegrationScenario(t *testing.T) {
+    source := "your slang code"
+
+    // Run through lexer
+    l := lexer.NewLexer([]byte(source))
+    l.Parse()
+
+    // Run through parser
+    p := parser.NewParser(l.Tokens)
+    expr := p.Parse()
+
+    // Run through code generator
+    generator := as.NewAsGenerator(expr)
+    output, err := generator.Generate()
+
+    // Verify results
+}
+```
+
+## Continuous Integration
+
+The testing framework is designed to be CI-friendly:
+
+```yaml
+# Example GitHub Actions workflow
+- name: Run tests
+  run: make test
+
+- name: Generate coverage
+  run: make test-coverage
+
+- name: Check coverage threshold
+  run: |
+    coverage=$(go test ./... -coverprofile=coverage.out | grep "coverage:" | awk '{print $5}' | tr -d '%')
+    if (( $(echo "$coverage < 70" | bc -l) )); then
+      echo "Coverage $coverage% is below 70%"
+      exit 1
+    fi
+```
+
+## Debugging Tests
+
+### Verbose Output
+
+```bash
+# Run tests with verbose output
+go test ./... -v
+
+# Run specific test with verbose output
+go test -v -run TestLexerNumbers
+```
+
+### Test-Specific Output
+
+```bash
+# Run only failing tests
+go test ./... -failfast
+
+# Run tests multiple times to detect flakiness
+go test ./... -count=100
+```
+
+### Coverage Analysis
+
+```bash
+# Generate HTML coverage report
+make test-coverage
+open coverage.html
+
+# View coverage in terminal
+go tool cover -func=coverage.out
+```
+
+## Known Limitations
+
+1. **Main function not tested**: The CLI entry point in `main.go` is not covered by unit tests
+2. **Assembly execution not tested**: Tests verify generated assembly structure but don't execute it
+3. **File I/O not mocked**: Integration tests could benefit from filesystem mocking
+
+## Future Improvements
+
+- [ ] Add benchmark tests for performance tracking
+- [ ] Add fuzzing tests for robustness
+- [ ] Add property-based testing
+- [ ] Mock filesystem operations in integration tests
+- [ ] Add tests for main.go CLI functionality
+- [ ] Add tests that execute generated assembly and verify results
+- [ ] Add mutation testing to verify test quality
+
+## Contributing
+
+When contributing code:
+
+1. Write tests for new features
+2. Ensure all tests pass: `make test`
+3. Maintain coverage above 70%: `make test-coverage`
+4. Follow existing test patterns
+5. Add documentation for complex test scenarios
+
+## Resources
+
+- [Go Testing Documentation](https://golang.org/pkg/testing/)
+- [Table Driven Tests](https://github.com/golang/go/wiki/TableDrivenTests)
+- [Go Test Coverage](https://blog.golang.org/cover)

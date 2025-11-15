@@ -11,6 +11,7 @@ type TokenType int
 
 const (
 	TokenTypeInteger TokenType = iota
+	TokenTypeString
 	TokenTypePlus
 	TokenTypeMinus
 	TokenTypeMultiply
@@ -64,16 +65,67 @@ func (p *lexer) ParseNumber() {
 	p.Tokens = append(p.Tokens, Token{Type: TokenTypeInteger, Value: string(number)})
 }
 
+func (p *lexer) ParseString() {
+	// Skip opening quote
+	p.Index++
+
+	str := ""
+	for p.Index < len(p.Source) {
+		currentChar := p.Source[p.Index]
+
+		// Check for closing quote
+		if currentChar == '"' {
+			p.Index++ // Skip closing quote
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeString, Value: str})
+			return
+		}
+
+		// Handle escape sequences
+		if currentChar == '\\' && p.Index+1 < len(p.Source) {
+			p.Index++
+			nextChar := p.Source[p.Index]
+			switch nextChar {
+			case 'n':
+				str += "\n"
+			case 't':
+				str += "\t"
+			case 'r':
+				str += "\r"
+			case '\\':
+				str += "\\"
+			case '"':
+				str += "\""
+			default:
+				// Unknown escape sequence, just include the backslash
+				str += "\\" + string(nextChar)
+			}
+			p.Index++
+		} else {
+			str += string(currentChar)
+			p.Index++
+		}
+	}
+
+	// If we reach here, the string wasn't closed
+	p.Errors = append(p.Errors, fmt.Errorf("unterminated string literal"))
+}
+
 func (p *lexer) Parse() {
 	for p.Index < len(p.Source) {
 		b := p.Source[p.Index]
 		// spew.Printf("parsing %v\n", string(b))
 
-		if unicode.IsSpace(rune(b)) {
+		if b == '\n' {
+			// spew.Dump("is newline")
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeNewline, Value: "\n"})
+			p.Index++
+		} else if unicode.IsSpace(rune(b)) {
 			// spew.Dump("is space")
 			p.Index++
 		} else if p.Source[p.Index] >= '0' && p.Source[p.Index] <= '9' {
 			p.ParseNumber()
+		} else if b == '"' {
+			p.ParseString()
 		} else if b == '+' {
 			// spew.Dump("is plus")
 			p.Tokens = append(p.Tokens, Token{Type: TokenTypePlus, Value: "+"})
@@ -126,10 +178,6 @@ func (p *lexer) Parse() {
 				p.Tokens = append(p.Tokens, Token{Type: TokenTypeGreaterThan, Value: ">"})
 				p.Index++
 			}
-		} else if b == '\n' {
-			// spew.Dump("is newline")
-			p.Tokens = append(p.Tokens, Token{Type: TokenTypeNewline, Value: "\n"})
-			p.Index++
 		} else {
 			spew.Dump("has parsing error")
 			p.Errors = append(p.Errors, fmt.Errorf("unexpected character: %q", b))

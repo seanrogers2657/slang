@@ -118,7 +118,7 @@ func TestEndToEndCompilation(t *testing.T) {
 
 			// Parser stage
 			p := parser.NewParser(l.Tokens)
-			expr := p.Parse()
+			program := p.Parse()
 
 			if len(p.Errors) > 0 {
 				if !tt.expectError || tt.errorStage != "parser" {
@@ -127,12 +127,12 @@ func TestEndToEndCompilation(t *testing.T) {
 				return
 			}
 
-			if expr == nil {
-				t.Fatal("parser returned nil expression")
+			if program == nil || len(program.Statements) == 0 {
+				t.Fatal("parser returned nil or empty program")
 			}
 
 			// Code generation stage
-			generator := as.NewAsGenerator(expr)
+			generator := as.NewAsGenerator(program)
 			output, err := generator.Generate()
 
 			if err != nil {
@@ -184,15 +184,17 @@ func TestCompilationPipelineStages(t *testing.T) {
 		l.Parse()
 
 		p := parser.NewParser(l.Tokens)
-		expr := p.Parse()
+		program := p.Parse()
 
 		if len(p.Errors) > 0 {
 			t.Fatalf("parser errors: %v", p.Errors)
 		}
 
-		if expr == nil {
-			t.Fatal("parser returned nil expression")
+		if program == nil || len(program.Statements) == 0 {
+			t.Fatal("parser returned nil or empty program")
 		}
+
+		expr := program.Statements[0]
 
 		if expr.Op != "+" {
 			t.Errorf("expected operator '+', got %q", expr.Op)
@@ -210,9 +212,9 @@ func TestCompilationPipelineStages(t *testing.T) {
 		l.Parse()
 
 		p := parser.NewParser(l.Tokens)
-		expr := p.Parse()
+		program := p.Parse()
 
-		generator := as.NewAsGenerator(expr)
+		generator := as.NewAsGenerator(program)
 		output, err := generator.Generate()
 
 		if err != nil {
@@ -243,13 +245,13 @@ func TestExampleFile(t *testing.T) {
 	}
 
 	p := parser.NewParser(l.Tokens)
-	expr := p.Parse()
+	program := p.Parse()
 
 	if len(p.Errors) > 0 {
 		t.Fatalf("parser errors: %v", p.Errors)
 	}
 
-	generator := as.NewAsGenerator(expr)
+	generator := as.NewAsGenerator(program)
 	output, err := generator.Generate()
 
 	if err != nil {
@@ -287,14 +289,14 @@ func TestRegressions(t *testing.T) {
 		}
 
 		p := parser.NewParser(l.Tokens)
-		expr := p.Parse()
+		program := p.Parse()
 
 		if len(p.Errors) > 0 {
 			t.Fatalf("parser errors: %v", p.Errors)
 		}
 
-		if expr == nil {
-			t.Fatal("parser returned nil expression")
+		if program == nil || len(program.Statements) == 0 {
+			t.Fatal("parser returned nil or empty program")
 		}
 	})
 
@@ -309,13 +311,13 @@ func TestRegressions(t *testing.T) {
 		}
 
 		p := parser.NewParser(l.Tokens)
-		expr := p.Parse()
+		program := p.Parse()
 
 		if len(p.Errors) > 0 {
 			t.Fatalf("parser errors: %v", p.Errors)
 		}
 
-		generator := as.NewAsGenerator(expr)
+		generator := as.NewAsGenerator(program)
 		_, err := generator.Generate()
 
 		if err != nil {
@@ -334,11 +336,17 @@ func TestRegressions(t *testing.T) {
 		}
 
 		p := parser.NewParser(l.Tokens)
-		expr := p.Parse()
+		program := p.Parse()
 
 		if len(p.Errors) > 0 {
 			t.Fatalf("parser errors: %v", p.Errors)
 		}
+
+		if program == nil || len(program.Statements) == 0 {
+			t.Fatal("parser returned nil or empty program")
+		}
+
+		expr := program.Statements[0]
 
 		if expr.Left.Value != "999999" {
 			t.Errorf("expected left value '999999', got %q", expr.Left.Value)

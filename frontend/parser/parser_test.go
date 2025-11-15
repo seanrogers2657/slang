@@ -42,6 +42,36 @@ func TestParserLiterals(t *testing.T) {
 				Value: "0",
 			},
 		},
+		{
+			name: "simple string",
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeString, Value: "hello"},
+			},
+			expected: &Literal{
+				Type:  LiteralTypeString,
+				Value: "hello",
+			},
+		},
+		{
+			name: "empty string",
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeString, Value: ""},
+			},
+			expected: &Literal{
+				Type:  LiteralTypeString,
+				Value: "",
+			},
+		},
+		{
+			name: "string with spaces",
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeString, Value: "hello world"},
+			},
+			expected: &Literal{
+				Type:  LiteralTypeString,
+				Value: "hello world",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -325,15 +355,21 @@ func TestParserParse(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := NewParser(tt.tokens)
-			expr := p.Parse()
+			program := p.Parse()
 
 			if len(p.Errors) > 0 {
 				t.Fatalf("unexpected errors: %v", p.Errors)
 			}
 
-			if expr == nil {
-				t.Fatal("expected expression, got nil")
+			if program == nil {
+				t.Fatal("expected program, got nil")
 			}
+
+			if len(program.Statements) != 1 {
+				t.Fatalf("expected 1 statement, got %d", len(program.Statements))
+			}
+
+			expr := program.Statements[0]
 
 			if expr.Op != tt.expected.Op {
 				t.Errorf("expected operator %q, got %q", tt.expected.Op, expr.Op)
@@ -385,6 +421,130 @@ func TestParserErrors(t *testing.T) {
 
 			if expr != nil {
 				t.Error("expected nil expression on error")
+			}
+		})
+	}
+}
+
+func TestParserMultipleStatements(t *testing.T) {
+	tests := []struct {
+		name      string
+		tokens    []lexer.Token
+		numStmts  int
+		stmts     []*Expr
+	}{
+		{
+			name: "two statements",
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeInteger, Value: "2"},
+				{Type: lexer.TokenTypePlus, Value: "+"},
+				{Type: lexer.TokenTypeInteger, Value: "5"},
+				{Type: lexer.TokenTypeNewline, Value: "\n"},
+				{Type: lexer.TokenTypeInteger, Value: "10"},
+				{Type: lexer.TokenTypeMinus, Value: "-"},
+				{Type: lexer.TokenTypeInteger, Value: "3"},
+			},
+			numStmts: 2,
+			stmts: []*Expr{
+				{
+					Left:  &Literal{Type: LiteralTypeNumber, Value: "2"},
+					Op:    "+",
+					Right: &Literal{Type: LiteralTypeNumber, Value: "5"},
+				},
+				{
+					Left:  &Literal{Type: LiteralTypeNumber, Value: "10"},
+					Op:    "-",
+					Right: &Literal{Type: LiteralTypeNumber, Value: "3"},
+				},
+			},
+		},
+		{
+			name: "three statements with multiple newlines",
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeInteger, Value: "1"},
+				{Type: lexer.TokenTypePlus, Value: "+"},
+				{Type: lexer.TokenTypeInteger, Value: "1"},
+				{Type: lexer.TokenTypeNewline, Value: "\n"},
+				{Type: lexer.TokenTypeNewline, Value: "\n"},
+				{Type: lexer.TokenTypeInteger, Value: "2"},
+				{Type: lexer.TokenTypeMultiply, Value: "*"},
+				{Type: lexer.TokenTypeInteger, Value: "3"},
+				{Type: lexer.TokenTypeNewline, Value: "\n"},
+				{Type: lexer.TokenTypeInteger, Value: "4"},
+				{Type: lexer.TokenTypeDivide, Value: "/"},
+				{Type: lexer.TokenTypeInteger, Value: "2"},
+			},
+			numStmts: 3,
+			stmts: []*Expr{
+				{
+					Left:  &Literal{Type: LiteralTypeNumber, Value: "1"},
+					Op:    "+",
+					Right: &Literal{Type: LiteralTypeNumber, Value: "1"},
+				},
+				{
+					Left:  &Literal{Type: LiteralTypeNumber, Value: "2"},
+					Op:    "*",
+					Right: &Literal{Type: LiteralTypeNumber, Value: "3"},
+				},
+				{
+					Left:  &Literal{Type: LiteralTypeNumber, Value: "4"},
+					Op:    "/",
+					Right: &Literal{Type: LiteralTypeNumber, Value: "2"},
+				},
+			},
+		},
+		{
+			name: "leading and trailing newlines",
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeNewline, Value: "\n"},
+				{Type: lexer.TokenTypeInteger, Value: "5"},
+				{Type: lexer.TokenTypePlus, Value: "+"},
+				{Type: lexer.TokenTypeInteger, Value: "5"},
+				{Type: lexer.TokenTypeNewline, Value: "\n"},
+				{Type: lexer.TokenTypeNewline, Value: "\n"},
+			},
+			numStmts: 1,
+			stmts: []*Expr{
+				{
+					Left:  &Literal{Type: LiteralTypeNumber, Value: "5"},
+					Op:    "+",
+					Right: &Literal{Type: LiteralTypeNumber, Value: "5"},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewParser(tt.tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("unexpected errors: %v", p.Errors)
+			}
+
+			if program == nil {
+				t.Fatal("expected program, got nil")
+			}
+
+			if len(program.Statements) != tt.numStmts {
+				t.Fatalf("expected %d statements, got %d", tt.numStmts, len(program.Statements))
+			}
+
+			for i, expectedStmt := range tt.stmts {
+				stmt := program.Statements[i]
+
+				if stmt.Op != expectedStmt.Op {
+					t.Errorf("statement %d: expected operator %q, got %q", i, expectedStmt.Op, stmt.Op)
+				}
+
+				if stmt.Left.Value != expectedStmt.Left.Value {
+					t.Errorf("statement %d: expected left value %q, got %q", i, expectedStmt.Left.Value, stmt.Left.Value)
+				}
+
+				if stmt.Right.Value != expectedStmt.Right.Value {
+					t.Errorf("statement %d: expected right value %q, got %q", i, expectedStmt.Right.Value, stmt.Right.Value)
+				}
 			}
 		})
 	}
@@ -453,15 +613,21 @@ func TestParserIntegrationWithLexer(t *testing.T) {
 			}
 
 			p := NewParser(l.Tokens)
-			expr := p.Parse()
+			program := p.Parse()
 
 			if len(p.Errors) > 0 {
 				t.Fatalf("parser errors: %v", p.Errors)
 			}
 
-			if expr == nil {
-				t.Fatal("expected expression, got nil")
+			if program == nil {
+				t.Fatal("expected program, got nil")
 			}
+
+			if len(program.Statements) != 1 {
+				t.Fatalf("expected 1 statement, got %d", len(program.Statements))
+			}
+
+			expr := program.Statements[0]
 
 			if expr.Op != tt.expected.Op {
 				t.Errorf("expected operator %q, got %q", tt.expected.Op, expr.Op)

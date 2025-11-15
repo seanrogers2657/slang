@@ -10,6 +10,7 @@ type LiteralType int
 
 const (
 	LiteralTypeNumber LiteralType = iota
+	LiteralTypeString
 )
 
 type Literal struct {
@@ -21,6 +22,10 @@ type Expr struct {
 	Left  *Literal
 	Op    string
 	Right *Literal
+}
+
+type Program struct {
+	Statements []*Expr
 }
 
 func NewParser(source []lexer.Token) *parser {
@@ -47,11 +52,45 @@ func (p *parser) CurrentToken() lexer.Token {
 	return p.Source[p.Index]
 }
 
+func (p *parser) isAtEnd() bool {
+	return p.Index >= len(p.Source)
+}
+
+func (p *parser) skipNewlines() {
+	for !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeNewline {
+		p.Index++
+	}
+}
+
 // Top level parsing
-// TODO add main function parsing
-func (p *parser) Parse() *Expr {
-	expr := p.ParseBinaryExpression()
-	return expr
+func (p *parser) Parse() *Program {
+	program := &Program{
+		Statements: []*Expr{},
+	}
+
+	// Skip leading newlines
+	p.skipNewlines()
+
+	for !p.isAtEnd() {
+		expr := p.ParseBinaryExpression()
+		if expr != nil {
+			program.Statements = append(program.Statements, expr)
+		}
+
+		// After each expression, we expect a newline or end of input
+		if !p.isAtEnd() {
+			if p.CurrentToken().Type == lexer.TokenTypeNewline {
+				p.Index++ // Consume the newline
+				p.skipNewlines() // Skip any additional newlines
+			} else {
+				// Error: expected newline or end of input
+				p.Errors = append(p.Errors, fmt.Errorf("expected newline after statement, got %s", p.CurrentToken().Value))
+				break
+			}
+		}
+	}
+
+	return program
 }
 
 func (p *parser) ParseLiteral() *Literal {
@@ -59,6 +98,15 @@ func (p *parser) ParseLiteral() *Literal {
 	if p.CurrentToken().Type == lexer.TokenTypeInteger {
 		literal := Literal{
 			Type:  LiteralTypeNumber,
+			Value: p.CurrentToken().Value,
+		}
+		p.Index++
+		return &literal
+	}
+
+	if p.CurrentToken().Type == lexer.TokenTypeString {
+		literal := Literal{
+			Type:  LiteralTypeString,
 			Value: p.CurrentToken().Value,
 		}
 		p.Index++

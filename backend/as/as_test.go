@@ -322,7 +322,11 @@ func TestAsGeneratorInterface(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			generator := NewAsGenerator(tt.expr)
+			// Wrap the expression in a Program
+			program := &parser.Program{
+				Statements: []*parser.Expr{tt.expr},
+			}
+			generator := NewAsGenerator(program)
 			output, err := generator.Generate()
 
 			if tt.expectError {
@@ -406,4 +410,241 @@ func TestGenerateExprStructure(t *testing.T) {
 			t.Error("output should contain syscall instruction")
 		}
 	})
+}
+
+func TestGenerateProgramMultipleStatements(t *testing.T) {
+	tests := []struct {
+		name     string
+		program  *parser.Program
+		expected []string
+	}{
+		{
+			name: "two statements",
+			program: &parser.Program{
+				Statements: []*parser.Expr{
+					{
+						Left:  &parser.Literal{Type: parser.LiteralTypeNumber, Value: "2"},
+						Op:    "+",
+						Right: &parser.Literal{Type: parser.LiteralTypeNumber, Value: "5"},
+					},
+					{
+						Left:  &parser.Literal{Type: parser.LiteralTypeNumber, Value: "10"},
+						Op:    "-",
+						Right: &parser.Literal{Type: parser.LiteralTypeNumber, Value: "3"},
+					},
+				},
+			},
+			expected: []string{
+				".global _start",
+				".align 4",
+				"_start:",
+				"    mov x0, #2",
+				"    mov x1, #5",
+				"    add x2, x0, x1",
+				"    mov x0, #10",
+				"    mov x1, #3",
+				"    sub x2, x0, x1",
+				"    mov x0, #1",
+				"    mov x16, #0",
+				"    svc #0",
+			},
+		},
+		{
+			name: "three statements with different operations",
+			program: &parser.Program{
+				Statements: []*parser.Expr{
+					{
+						Left:  &parser.Literal{Type: parser.LiteralTypeNumber, Value: "4"},
+						Op:    "*",
+						Right: &parser.Literal{Type: parser.LiteralTypeNumber, Value: "3"},
+					},
+					{
+						Left:  &parser.Literal{Type: parser.LiteralTypeNumber, Value: "10"},
+						Op:    "/",
+						Right: &parser.Literal{Type: parser.LiteralTypeNumber, Value: "2"},
+					},
+					{
+						Left:  &parser.Literal{Type: parser.LiteralTypeNumber, Value: "5"},
+						Op:    "==",
+						Right: &parser.Literal{Type: parser.LiteralTypeNumber, Value: "5"},
+					},
+				},
+			},
+			expected: []string{
+				".global _start",
+				".align 4",
+				"_start:",
+				"    mov x0, #4",
+				"    mov x1, #3",
+				"    mul x2, x0, x1",
+				"    mov x0, #10",
+				"    mov x1, #2",
+				"    sdiv x2, x0, x1",
+				"    mov x0, #5",
+				"    mov x1, #5",
+				"    cmp x0, x1",
+				"    cset x2, eq",
+				"    mov x0, #1",
+				"    mov x16, #0",
+				"    svc #0",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output, err := GenerateProgram(tt.program)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			lines := strings.Split(strings.TrimSpace(output), "\n")
+			if len(lines) != len(tt.expected) {
+				t.Fatalf("expected %d lines, got %d\nExpected:\n%v\nGot:\n%v",
+					len(tt.expected), len(lines), tt.expected, lines)
+			}
+
+			for i, line := range lines {
+				if line != tt.expected[i] {
+					t.Errorf("line %d: expected %q, got %q", i, tt.expected[i], line)
+				}
+			}
+		})
+	}
+}
+
+func TestGenerateExprWithStrings(t *testing.T) {
+	tests := []struct {
+		name     string
+		expr     *parser.Expr
+		expected []string
+	}{
+		{
+			name: "string on left side",
+			expr: &parser.Expr{
+				Left:  &parser.Literal{Type: parser.LiteralTypeString, Value: "hello"},
+				Op:    "+",
+				Right: &parser.Literal{Type: parser.LiteralTypeNumber, Value: "5"},
+			},
+			expected: []string{
+				".data",
+				".align 3",
+				"str_left:",
+				`    .asciz "hello"`,
+				".text",
+				".global _start",
+				".align 4",
+				"_start:",
+				"    adr x0, str_left",
+				"    mov x1, #5",
+				"    add x2, x0, x1",
+			},
+		},
+		{
+			name: "string on right side",
+			expr: &parser.Expr{
+				Left:  &parser.Literal{Type: parser.LiteralTypeNumber, Value: "10"},
+				Op:    "-",
+				Right: &parser.Literal{Type: parser.LiteralTypeString, Value: "world"},
+			},
+			expected: []string{
+				".data",
+				".align 3",
+				"str_right:",
+				`    .asciz "world"`,
+				".text",
+				".global _start",
+				".align 4",
+				"_start:",
+				"    mov x0, #10",
+				"    adr x1, str_right",
+				"    sub x2, x0, x1",
+			},
+		},
+		{
+			name: "strings on both sides",
+			expr: &parser.Expr{
+				Left:  &parser.Literal{Type: parser.LiteralTypeString, Value: "hello"},
+				Op:    "==",
+				Right: &parser.Literal{Type: parser.LiteralTypeString, Value: "world"},
+			},
+			expected: []string{
+				".data",
+				".align 3",
+				"str_left:",
+				`    .asciz "hello"`,
+				"str_right:",
+				`    .asciz "world"`,
+				".text",
+				".global _start",
+				".align 4",
+				"_start:",
+				"    adr x0, str_left",
+				"    adr x1, str_right",
+				"    cmp x0, x1",
+				"    cset x2, eq",
+			},
+		},
+		{
+			name: "empty string",
+			expr: &parser.Expr{
+				Left:  &parser.Literal{Type: parser.LiteralTypeString, Value: ""},
+				Op:    "!=",
+				Right: &parser.Literal{Type: parser.LiteralTypeString, Value: "test"},
+			},
+			expected: []string{
+				".data",
+				".align 3",
+				"str_left:",
+				`    .asciz ""`,
+				"str_right:",
+				`    .asciz "test"`,
+				".text",
+				".global _start",
+				".align 4",
+				"_start:",
+				"    adr x0, str_left",
+				"    adr x1, str_right",
+				"    cmp x0, x1",
+				"    cset x2, ne",
+			},
+		},
+		{
+			name: "string with escape sequences",
+			expr: &parser.Expr{
+				Left:  &parser.Literal{Type: parser.LiteralTypeString, Value: "hello\nworld"},
+				Op:    "+",
+				Right: &parser.Literal{Type: parser.LiteralTypeNumber, Value: "1"},
+			},
+			expected: []string{
+				".data",
+				".align 3",
+				"str_left:",
+				`    .asciz "hello\nworld"`,
+				".text",
+				".global _start",
+				".align 4",
+				"_start:",
+				"    adr x0, str_left",
+				"    mov x1, #1",
+				"    add x2, x0, x1",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output, err := GenerateExpr(tt.expr)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Verify all expected lines are present in order
+			for _, expectedLine := range tt.expected {
+				if !strings.Contains(output, expectedLine) {
+					t.Errorf("expected output to contain %q, but it didn't.\nFull output:\n%s", expectedLine, output)
+				}
+			}
+		})
+	}
 }

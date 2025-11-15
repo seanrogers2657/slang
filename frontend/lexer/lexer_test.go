@@ -304,6 +304,7 @@ func TestLexerExpressions(t *testing.T) {
 				{Type: TokenTypeInteger, Value: "2"},
 				{Type: TokenTypePlus, Value: "+"},
 				{Type: TokenTypeInteger, Value: "5"},
+				{Type: TokenTypeNewline, Value: "\n"},
 			},
 		},
 	}
@@ -432,6 +433,130 @@ func TestLexerWhitespace(t *testing.T) {
 				if token.Value != tt.expected[i].Value {
 					t.Errorf("token %d: expected value %q, got %q", i, tt.expected[i].Value, token.Value)
 				}
+			}
+		})
+	}
+}
+
+func TestLexerStringLiterals(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []Token
+	}{
+		{
+			name:  "simple string",
+			input: `"hello"`,
+			expected: []Token{
+				{Type: TokenTypeString, Value: "hello"},
+			},
+		},
+		{
+			name:  "empty string",
+			input: `""`,
+			expected: []Token{
+				{Type: TokenTypeString, Value: ""},
+			},
+		},
+		{
+			name:  "string with spaces",
+			input: `"hello world"`,
+			expected: []Token{
+				{Type: TokenTypeString, Value: "hello world"},
+			},
+		},
+		{
+			name:  "string with escape sequences",
+			input: `"hello\nworld"`,
+			expected: []Token{
+				{Type: TokenTypeString, Value: "hello\nworld"},
+			},
+		},
+		{
+			name:  "string with tab escape",
+			input: `"hello\tworld"`,
+			expected: []Token{
+				{Type: TokenTypeString, Value: "hello\tworld"},
+			},
+		},
+		{
+			name:  "string with escaped quote",
+			input: `"hello \"world\""`,
+			expected: []Token{
+				{Type: TokenTypeString, Value: `hello "world"`},
+			},
+		},
+		{
+			name:  "string with escaped backslash",
+			input: `"hello\\world"`,
+			expected: []Token{
+				{Type: TokenTypeString, Value: `hello\world`},
+			},
+		},
+		{
+			name:  "multiple strings",
+			input: `"hello" "world"`,
+			expected: []Token{
+				{Type: TokenTypeString, Value: "hello"},
+				{Type: TokenTypeString, Value: "world"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("unexpected errors: %v", l.Errors)
+			}
+
+			if len(l.Tokens) != len(tt.expected) {
+				t.Fatalf("expected %d tokens, got %d", len(tt.expected), len(l.Tokens))
+			}
+
+			for i, token := range l.Tokens {
+				if token.Type != tt.expected[i].Type {
+					t.Errorf("token %d: expected type %d, got %d", i, tt.expected[i].Type, token.Type)
+				}
+				if token.Value != tt.expected[i].Value {
+					t.Errorf("token %d: expected value %q, got %q", i, tt.expected[i].Value, token.Value)
+				}
+			}
+		})
+	}
+}
+
+func TestLexerStringErrors(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		expectedError string
+	}{
+		{
+			name:          "unterminated string",
+			input:         `"hello`,
+			expectedError: "unterminated string literal",
+		},
+		{
+			name:          "unterminated string with newline",
+			input:         "\"hello\n",
+			expectedError: "unterminated string literal",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			l.Parse()
+
+			if len(l.Errors) == 0 {
+				t.Fatalf("expected error, got none")
+			}
+
+			if l.Errors[0].Error() != tt.expectedError {
+				t.Errorf("expected error %q, got %q", tt.expectedError, l.Errors[0].Error())
 			}
 		})
 	}

@@ -16,38 +16,62 @@ The compiler currently supports binary expressions with integers and the followi
 
 ## Development Commands
 
+The project uses a custom Go-based build tool called `slm` (slang make) located at `cmd/slm/main.go` instead of a traditional Makefile. This provides a cross-platform, type-safe build system using the `urfave/cli/v2` framework.
+
+### Running the Build Tool
+
+You can run the build tool in several ways:
+
+```bash
+# Directly with go run (recommended for development)
+go run cmd/slm/main.go <command>
+
+# Build a binary first
+go build -o slm cmd/slm/main.go
+./slm <command>
+
+# Install globally
+go install ./cmd/slm
+slm <command>  # If $GOPATH/bin is in your PATH
+```
+
 ### Building and Running
 
 ```bash
 # Build the compiler binary
-make build
+go run cmd/slm/main.go build
 
 # Run compiler on the example file
-make run
+go run cmd/slm/main.go run
 
 # Compile, assemble, link, and execute
-make run-and-test
+go run cmd/slm/main.go run-and-test
 ```
 
 ### Testing
 
 ```bash
 # Run all tests
-make test
+go run cmd/slm/main.go test
 
 # Run tests with verbose output
-make test-verbose
+go run cmd/slm/main.go test-verbose
 
 # Generate HTML coverage report
-make test-coverage
+go run cmd/slm/main.go test-coverage
 
 # Run specific component tests
-make test-lexer        # Frontend lexer only
-make test-parser       # Frontend parser only
-make test-codegen      # Backend assembly generator only
-make test-integration  # End-to-end integration tests
+go run cmd/slm/main.go test-lexer        # Frontend lexer only
+go run cmd/slm/main.go test-parser       # Frontend parser only
+go run cmd/slm/main.go test-codegen      # Backend assembly generator only
+go run cmd/slm/main.go test-integration  # End-to-end integration tests
 
-# Run single test by name
+# Additional test commands
+go run cmd/slm/main.go test-report       # Detailed pass/fail report
+go run cmd/slm/main.go test-race         # Run with race detector
+go run cmd/slm/main.go bench             # Run benchmarks
+
+# Run single test by name (use go test directly)
 go test -run TestLexerNumbers
 go test -run TestEndToEndCompilation
 ```
@@ -56,23 +80,26 @@ go test -run TestEndToEndCompilation
 
 ```bash
 # Format code
-make fmt
+go run cmd/slm/main.go fmt
 
 # Run linter (go vet)
-make lint
+go run cmd/slm/main.go lint
 
 # Run all quality checks (fmt + lint + test)
-make check
+go run cmd/slm/main.go check
 
 # Clean build artifacts
-make clean
+go run cmd/slm/main.go clean
+
+# Install/update dependencies
+go run cmd/slm/main.go deps
 ```
 
 ## Architecture
 
 ### Compilation Pipeline
 
-The pipeline is orchestrated in `main.go`:
+The pipeline is orchestrated in `cmd/sl/main.go`:
 
 ```
 Source Code (.sl file)
@@ -138,7 +165,7 @@ _start:
 ### Platform Requirements
 
 - **Target**: ARM64 macOS only
-- **SDK Path**: Hardcoded in `main.go:59` to macOS 15.5 SDK
+- **SDK Path**: Hardcoded in `cmd/sl/main.go:59` to macOS 15.5 SDK
 - **Assembler**: Uses macOS `as` command
 - **Linker**: Uses macOS `ld` with `-lSystem` for system calls
 

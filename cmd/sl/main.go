@@ -16,10 +16,10 @@ import (
 
 func main() {
 	app := &cli.App{
-		Name:  "compile",
+		Name:  "sl",
 		Usage: "Compile a Slang program",
 		Action: func(c *cli.Context) error {
-			file := c.Args().Get(1)
+			file := c.Args().First()
 			dat, err := os.ReadFile(file)
 			if err != nil {
 				log.Fatal(err)

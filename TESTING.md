@@ -26,19 +26,16 @@ Current test coverage statistics:
 
 ```bash
 # Run all tests
-make test
+go run cmd/slm/main.go test
 
 # Run all tests with verbose output
-make test-verbose
+go run cmd/slm/main.go test-verbose
 
 # Generate coverage report
-make test-coverage
+go run cmd/slm/main.go test-coverage
 
 # Run specific component tests
-make test-lexer
-make test-parser
-make test-codegen
-make test-integration
+go run cmd/slm/main.go test-integration
 ```
 
 ### Using Go Directly
@@ -270,10 +267,10 @@ The testing framework is designed to be CI-friendly:
 ```yaml
 # Example GitHub Actions workflow
 - name: Run tests
-  run: make test
+  run: go run cmd/slm/main.go test
 
 - name: Generate coverage
-  run: make test-coverage
+  run: go run cmd/slm/main.go test-coverage
 
 - name: Check coverage threshold
   run: |
@@ -310,7 +307,7 @@ go test ./... -count=100
 
 ```bash
 # Generate HTML coverage report
-make test-coverage
+go run cmd/slm/main.go test-coverage
 open coverage.html
 
 # View coverage in terminal
@@ -338,8 +335,8 @@ go tool cover -func=coverage.out
 When contributing code:
 
 1. Write tests for new features
-2. Ensure all tests pass: `make test`
-3. Maintain coverage above 70%: `make test-coverage`
+2. Ensure all tests pass: `go run cmd/slm/main.go test`
+3. Maintain coverage above 70%: `go run cmd/slm/main.go test-coverage`
 4. Follow existing test patterns
 5. Add documentation for complex test scenarios
 

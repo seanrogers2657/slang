@@ -55,6 +55,7 @@ go tool cover -html=coverage.out -o coverage.html
 go test ./frontend/lexer/...
 go test ./frontend/parser/...
 go test ./backend/as/...
+go test ./cmd/sl/...
 
 # Run tests with race detector
 go test ./... -race
@@ -62,6 +63,7 @@ go test ./... -race
 # Run specific test by name
 go test -run TestLexerNumbers
 go test -run TestEndToEndCompilation
+go test -run TestSLRunCommand
 ```
 
 ## Test Organization
@@ -105,6 +107,19 @@ End-to-end tests for the complete compilation pipeline:
 - **TestCompilationPipelineStages**: Individual stage verification
 - **TestExampleFile**: Verification of example files
 - **TestRegressions**: Edge cases and bug prevention
+
+### CLI Tests (`cmd/sl/main_test.go`)
+
+Tests for the `sl` compiler CLI commands:
+
+- **TestSLRunCommand**: Tests the `run` command with various source programs
+  - Simple addition
+  - Subtraction
+  - Multiplication
+  - Verifies assembly file generation
+- **TestSLRunCommandMissingFile**: Error handling for missing source files
+- **TestSLRunCommandNoArguments**: Error handling for missing arguments
+- **TestSLBuildCommand**: Currently skipped due to hardcoded paths in build command
 
 ## Test Patterns
 
@@ -316,18 +331,19 @@ go tool cover -func=coverage.out
 
 ## Known Limitations
 
-1. **Main function not tested**: The CLI entry point in `main.go` is not covered by unit tests
-2. **Assembly execution not tested**: Tests verify generated assembly structure but don't execute it
+1. **Build command not tested**: The `sl build` command has hardcoded paths making it difficult to test in isolation
+2. **Assembly execution not tested**: Tests verify generated assembly structure but don't execute it (except in CLI run command tests)
 3. **File I/O not mocked**: Integration tests could benefit from filesystem mocking
 
 ## Future Improvements
 
+- [x] Add tests for `sl run` command
+- [ ] Fix `sl build` command hardcoded paths and add tests
 - [ ] Add benchmark tests for performance tracking
 - [ ] Add fuzzing tests for robustness
 - [ ] Add property-based testing
 - [ ] Mock filesystem operations in integration tests
-- [ ] Add tests for main.go CLI functionality
-- [ ] Add tests that execute generated assembly and verify results
+- [ ] Add tests that verify exit codes from executed programs
 - [ ] Add mutation testing to verify test quality
 
 ## Contributing

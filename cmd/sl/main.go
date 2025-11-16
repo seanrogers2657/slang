@@ -91,6 +91,79 @@ func main() {
 					return nil
 				},
 			},
+			{
+				Name:      "run",
+				Usage:     "Compile and execute a Slang source file",
+				ArgsUsage: "<source-file>",
+				Action: func(c *cli.Context) error {
+					file := c.Args().First()
+					if file == "" {
+						return fmt.Errorf("source file required")
+					}
+
+					// Read and compile the source file
+					dat, err := os.ReadFile(file)
+					if err != nil {
+						log.Fatal(err)
+					}
+
+					lexer := lexer.NewLexer(dat)
+					lexer.Parse()
+
+					parser := parser.NewParser(lexer.Tokens)
+					ast := parser.Parse()
+
+					codeGenerator := as.NewAsGenerator(ast)
+					assemblyOutput, err := codeGenerator.Generate()
+					if err != nil {
+						return fmt.Errorf("code generation failed: %w", err)
+					}
+
+					// Write assembly output
+					err = os.WriteFile("build/output.s", []byte(assemblyOutput), fs.ModePerm)
+					if err != nil {
+						return fmt.Errorf("failed to write assembly: %w", err)
+					}
+
+					// Assemble
+					cmd := exec.Command("as", "-arch", "arm64", "build/output.s", "-o", "build/output.o")
+					if err := cmd.Run(); err != nil {
+						return fmt.Errorf("assembly failed: %w", err)
+					}
+
+					// Link
+					sdkPath := "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk"
+					cmd = exec.Command(
+						"ld",
+						"-o",
+						"build/output",
+						"build/output.o",
+						"-lSystem",
+						"-syslibroot",
+						sdkPath,
+						"-e",
+						"_start",
+						"-arch",
+						"arm64",
+					)
+					if err := cmd.Run(); err != nil {
+						return fmt.Errorf("linking failed: %w", err)
+					}
+
+					// Execute the compiled binary
+					cmd = exec.Command("build/output")
+					cmd.Stdout = os.Stdout
+					cmd.Stderr = os.Stderr
+					if err := cmd.Run(); err != nil {
+						if exitErr, ok := err.(*exec.ExitError); ok {
+							return fmt.Errorf("program exited with code %d", exitErr.ExitCode())
+						}
+						return fmt.Errorf("execution failed: %w", err)
+					}
+
+					return nil
+				},
+			},
 		},
 		Action: func(c *cli.Context) error {
 			return cli.ShowAppHelp(c)

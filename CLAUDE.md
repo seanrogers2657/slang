@@ -37,6 +37,30 @@ slm <command>  # If $GOPATH/bin is in your PATH
 
 ### Building and Running
 
+The `sl` compiler has two main commands:
+
+**`build`** - Compiles a Slang source file to an executable:
+```bash
+# Build the sl compiler
+go build -o sl cmd/sl/main.go
+
+# Compile a .sl source file
+./sl build <source-file>
+go run cmd/sl/main.go build <source-file>
+```
+
+**`run`** - Compiles and executes a Slang source file in one step:
+```bash
+# Compile and run a .sl source file
+./sl run <source-file>
+go run cmd/sl/main.go run <source-file>
+
+# Examples
+./sl run _examples/slang/add.sl
+./sl run _examples/slang/subtract.sl
+```
+
+The build tool (`slm`) also provides convenience commands:
 ```bash
 # Build the compiler binary
 go run cmd/slm/main.go build
@@ -99,7 +123,9 @@ go run cmd/slm/main.go deps
 
 ### Compilation Pipeline
 
-The pipeline is orchestrated in `cmd/sl/main.go`:
+The pipeline is orchestrated in `cmd/sl/main.go`. The compiler provides two commands:
+- **`build`** - Compiles source to executable (assembly, object, and binary files)
+- **`run`** - Compiles and executes in one step
 
 ```
 Source Code (.sl file)
@@ -111,6 +137,12 @@ Parser (AST construction)
 Code Generator (ARM64 assembly)
     ↓
 Assembly Output (.s file)
+    ↓
+Assembler (as) → Object file (.o)
+    ↓
+Linker (ld) → Executable binary
+    ↓
+[Optional: Execute] (run command only)
 ```
 
 ### Key Data Structures
@@ -165,9 +197,13 @@ _start:
 ### Platform Requirements
 
 - **Target**: ARM64 macOS only
-- **SDK Path**: Hardcoded in `cmd/sl/main.go:59` to macOS 15.5 SDK
+- **SDK Path**: Hardcoded in `cmd/sl/main.go` (build and run commands) to macOS 15.5 SDK
 - **Assembler**: Uses macOS `as` command
 - **Linker**: Uses macOS `ld` with `-lSystem` for system calls
+- **Output Files**:
+  - `build/output.s` - Generated assembly code
+  - `build/output.o` - Assembled object file
+  - `build/output` - Linked executable (run command)
 
 ## Testing Strategy
 

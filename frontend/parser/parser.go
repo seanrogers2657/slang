@@ -24,8 +24,27 @@ type Expr struct {
 	Right *Literal
 }
 
+// Statement represents any statement in the program
+type Statement interface {
+	statementNode()
+}
+
+// ExprStmt is a statement that consists of a single expression
+type ExprStmt struct {
+	Expr *Expr
+}
+
+func (e *ExprStmt) statementNode() {}
+
+// PrintStmt is a print statement
+type PrintStmt struct {
+	Expr *Expr
+}
+
+func (p *PrintStmt) statementNode() {}
+
 type Program struct {
-	Statements []*Expr
+	Statements []Statement
 }
 
 func NewParser(source []lexer.Token) *parser {
@@ -65,19 +84,19 @@ func (p *parser) skipNewlines() {
 // Top level parsing
 func (p *parser) Parse() *Program {
 	program := &Program{
-		Statements: []*Expr{},
+		Statements: []Statement{},
 	}
 
 	// Skip leading newlines
 	p.skipNewlines()
 
 	for !p.isAtEnd() {
-		expr := p.ParseBinaryExpression()
-		if expr != nil {
-			program.Statements = append(program.Statements, expr)
+		stmt := p.ParseStatement()
+		if stmt != nil {
+			program.Statements = append(program.Statements, stmt)
 		}
 
-		// After each expression, we expect a newline or end of input
+		// After each statement, we expect a newline or end of input
 		if !p.isAtEnd() {
 			if p.CurrentToken().Type == lexer.TokenTypeNewline {
 				p.Index++ // Consume the newline
@@ -91,6 +110,84 @@ func (p *parser) Parse() *Program {
 	}
 
 	return program
+}
+
+func (p *parser) ParseStatement() Statement {
+	// Check if it's a print statement
+	if p.CurrentToken().Type == lexer.TokenTypePrint {
+		return p.ParsePrintStatement()
+	}
+
+	// Otherwise, it's an expression statement
+	expr := p.ParseBinaryExpression()
+	if expr != nil {
+		return &ExprStmt{Expr: expr}
+	}
+
+	return nil
+}
+
+func (p *parser) ParsePrintStatement() Statement {
+	// Consume 'print' token
+	p.Index++
+
+	// Parse the expression to print
+	// First try to parse a literal
+	left := p.ParseLiteral()
+	if left == nil {
+		p.Errors = append(p.Errors, fmt.Errorf("expected expression after 'print'"))
+		return nil
+	}
+
+	// Check if there's an operator (binary expression)
+	if !p.isAtEnd() && p.CurrentToken().Type != lexer.TokenTypeNewline {
+		// This is a binary expression
+		tokenType := p.CurrentToken().Type
+		var op string
+
+		switch tokenType {
+		case lexer.TokenTypePlus:
+			op = "+"
+		case lexer.TokenTypeMinus:
+			op = "-"
+		case lexer.TokenTypeMultiply:
+			op = "*"
+		case lexer.TokenTypeDivide:
+			op = "/"
+		case lexer.TokenTypeModulo:
+			op = "%"
+		case lexer.TokenTypeEqual:
+			op = "=="
+		case lexer.TokenTypeNotEqual:
+			op = "!="
+		case lexer.TokenTypeLessThan:
+			op = "<"
+		case lexer.TokenTypeGreaterThan:
+			op = ">"
+		case lexer.TokenTypeLessThanOrEqual:
+			op = "<="
+		case lexer.TokenTypeGreaterThanOrEqual:
+			op = ">="
+		default:
+			// Not a binary operator, just a single literal
+			return &PrintStmt{Expr: &Expr{Left: left, Op: "", Right: nil}}
+		}
+
+		// Consume operator
+		p.Index++
+
+		// Parse right operand
+		right := p.ParseLiteral()
+		if right == nil {
+			p.Errors = append(p.Errors, fmt.Errorf("expected right operand"))
+			return nil
+		}
+
+		return &PrintStmt{Expr: &Expr{Left: left, Op: op, Right: right}}
+	}
+
+	// Just a single literal
+	return &PrintStmt{Expr: &Expr{Left: left, Op: "", Right: nil}}
 }
 
 func (p *parser) ParseLiteral() *Literal {

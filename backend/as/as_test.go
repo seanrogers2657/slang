@@ -280,6 +280,9 @@ func TestAsGeneratorInterface(t *testing.T) {
 				".global _start",
 				".align 4",
 				"_start:",
+				"    b main",
+				"",
+				"main:",
 				"    mov x0, #2",
 				"    mov x1, #5",
 				"    add x2, x0, x1",
@@ -300,6 +303,9 @@ func TestAsGeneratorInterface(t *testing.T) {
 				".global _start",
 				".align 4",
 				"_start:",
+				"    b main",
+				"",
+				"main:",
 				"    mov x0, #10",
 				"    mov x1, #3",
 				"    sub x2, x0, x1",
@@ -324,7 +330,7 @@ func TestAsGeneratorInterface(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Wrap the expression in a Program
 			program := &parser.Program{
-				Statements: []*parser.Expr{tt.expr},
+				Statements: []parser.Statement{&parser.ExprStmt{Expr: tt.expr}},
 			}
 			generator := NewAsGenerator(program)
 			output, err := generator.Generate()
@@ -421,23 +427,26 @@ func TestGenerateProgramMultipleStatements(t *testing.T) {
 		{
 			name: "two statements",
 			program: &parser.Program{
-				Statements: []*parser.Expr{
-					{
+				Statements: []parser.Statement{
+					&parser.ExprStmt{Expr: &parser.Expr{
 						Left:  &parser.Literal{Type: parser.LiteralTypeNumber, Value: "2"},
 						Op:    "+",
 						Right: &parser.Literal{Type: parser.LiteralTypeNumber, Value: "5"},
-					},
-					{
+					}},
+					&parser.ExprStmt{Expr: &parser.Expr{
 						Left:  &parser.Literal{Type: parser.LiteralTypeNumber, Value: "10"},
 						Op:    "-",
 						Right: &parser.Literal{Type: parser.LiteralTypeNumber, Value: "3"},
-					},
+					}},
 				},
 			},
 			expected: []string{
 				".global _start",
 				".align 4",
 				"_start:",
+				"    b main",
+				"",
+				"main:",
 				"    mov x0, #2",
 				"    mov x1, #5",
 				"    add x2, x0, x1",
@@ -452,28 +461,31 @@ func TestGenerateProgramMultipleStatements(t *testing.T) {
 		{
 			name: "three statements with different operations",
 			program: &parser.Program{
-				Statements: []*parser.Expr{
-					{
+				Statements: []parser.Statement{
+					&parser.ExprStmt{Expr: &parser.Expr{
 						Left:  &parser.Literal{Type: parser.LiteralTypeNumber, Value: "4"},
 						Op:    "*",
 						Right: &parser.Literal{Type: parser.LiteralTypeNumber, Value: "3"},
-					},
-					{
+					}},
+					&parser.ExprStmt{Expr: &parser.Expr{
 						Left:  &parser.Literal{Type: parser.LiteralTypeNumber, Value: "10"},
 						Op:    "/",
 						Right: &parser.Literal{Type: parser.LiteralTypeNumber, Value: "2"},
-					},
-					{
+					}},
+					&parser.ExprStmt{Expr: &parser.Expr{
 						Left:  &parser.Literal{Type: parser.LiteralTypeNumber, Value: "5"},
 						Op:    "==",
 						Right: &parser.Literal{Type: parser.LiteralTypeNumber, Value: "5"},
-					},
+					}},
 				},
 			},
 			expected: []string{
 				".global _start",
 				".align 4",
 				"_start:",
+				"    b main",
+				"",
+				"main:",
 				"    mov x0, #4",
 				"    mov x1, #3",
 				"    mul x2, x0, x1",

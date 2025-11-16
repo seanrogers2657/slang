@@ -24,6 +24,7 @@ const (
 	TokenTypeLessThanOrEqual
 	TokenTypeGreaterThanOrEqual
 	TokenTypeNewline
+	TokenTypePrint
 )
 
 type Token struct {
@@ -110,6 +111,29 @@ func (p *lexer) ParseString() {
 	p.Errors = append(p.Errors, fmt.Errorf("unterminated string literal"))
 }
 
+func (p *lexer) ParseKeyword() {
+	keyword := ""
+	for p.Index < len(p.Source) {
+		currentChar := p.Source[p.Index]
+
+		// Keywords are alphabetic characters
+		if !unicode.IsLetter(rune(currentChar)) {
+			break
+		}
+
+		keyword += string(currentChar)
+		p.Index++
+	}
+
+	// Check if it's a recognized keyword
+	switch keyword {
+	case "print":
+		p.Tokens = append(p.Tokens, Token{Type: TokenTypePrint, Value: keyword})
+	default:
+		p.Errors = append(p.Errors, fmt.Errorf("unknown keyword: %q", keyword))
+	}
+}
+
 func (p *lexer) Parse() {
 	for p.Index < len(p.Source) {
 		b := p.Source[p.Index]
@@ -122,6 +146,8 @@ func (p *lexer) Parse() {
 		} else if unicode.IsSpace(rune(b)) {
 			// spew.Dump("is space")
 			p.Index++
+		} else if unicode.IsLetter(rune(b)) {
+			p.ParseKeyword()
 		} else if p.Source[p.Index] >= '0' && p.Source[p.Index] <= '9' {
 			p.ParseNumber()
 		} else if b == '"' {

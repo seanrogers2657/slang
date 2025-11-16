@@ -358,7 +358,7 @@ func TestLexerErrors(t *testing.T) {
 		{
 			name:          "letter character",
 			input:         "abc",
-			expectedError: "unexpected character: 'a'",
+			expectedError: "unknown keyword: \"abc\"",
 		},
 	}
 

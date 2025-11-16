@@ -330,30 +330,40 @@ func runPipelineStageTests(verbose bool) []testResult {
 			message: "parser returned nil or empty program",
 		})
 	} else {
-		expr := program.Statements[0]
-		if expr.Op != "+" {
+		stmt := program.Statements[0]
+		exprStmt, ok := stmt.(*parser.ExprStmt)
+		if !ok {
 			results = append(results, testResult{
 				name:    "pipeline/parser",
 				passed:  false,
-				message: fmt.Sprintf("expected operator '+', got %q", expr.Op),
-			})
-		} else if expr.Left.Value != "2" {
-			results = append(results, testResult{
-				name:    "pipeline/parser",
-				passed:  false,
-				message: fmt.Sprintf("expected left value '2', got %q", expr.Left.Value),
-			})
-		} else if expr.Right.Value != "5" {
-			results = append(results, testResult{
-				name:    "pipeline/parser",
-				passed:  false,
-				message: fmt.Sprintf("expected right value '5', got %q", expr.Right.Value),
+				message: "expected ExprStmt, got different statement type",
 			})
 		} else {
-			results = append(results, testResult{
-				name:   "pipeline/parser",
-				passed: true,
-			})
+			expr := exprStmt.Expr
+			if expr.Op != "+" {
+				results = append(results, testResult{
+					name:    "pipeline/parser",
+					passed:  false,
+					message: fmt.Sprintf("expected operator '+', got %q", expr.Op),
+				})
+			} else if expr.Left.Value != "2" {
+				results = append(results, testResult{
+					name:    "pipeline/parser",
+					passed:  false,
+					message: fmt.Sprintf("expected left value '2', got %q", expr.Left.Value),
+				})
+			} else if expr.Right.Value != "5" {
+				results = append(results, testResult{
+					name:    "pipeline/parser",
+					passed:  false,
+					message: fmt.Sprintf("expected right value '5', got %q", expr.Right.Value),
+				})
+			} else {
+				results = append(results, testResult{
+					name:   "pipeline/parser",
+					passed: true,
+				})
+			}
 		}
 	}
 
@@ -575,24 +585,34 @@ func runRegressionTests(verbose bool) []testResult {
 				message: "parser returned nil or empty program",
 			})
 		} else {
-			expr := program3.Statements[0]
-			if expr.Left.Value != "999999" {
+			stmt := program3.Statements[0]
+			exprStmt, ok := stmt.(*parser.ExprStmt)
+			if !ok {
 				results = append(results, testResult{
 					name:    "regression/large-numbers",
 					passed:  false,
-					message: fmt.Sprintf("expected left value '999999', got %q", expr.Left.Value),
-				})
-			} else if expr.Right.Value != "888888" {
-				results = append(results, testResult{
-					name:    "regression/large-numbers",
-					passed:  false,
-					message: fmt.Sprintf("expected right value '888888', got %q", expr.Right.Value),
+					message: "expected ExprStmt, got different statement type",
 				})
 			} else {
-				results = append(results, testResult{
-					name:   "regression/large-numbers",
-					passed: true,
-				})
+				expr := exprStmt.Expr
+				if expr.Left.Value != "999999" {
+					results = append(results, testResult{
+						name:    "regression/large-numbers",
+						passed:  false,
+						message: fmt.Sprintf("expected left value '999999', got %q", expr.Left.Value),
+					})
+				} else if expr.Right.Value != "888888" {
+					results = append(results, testResult{
+						name:    "regression/large-numbers",
+						passed:  false,
+						message: fmt.Sprintf("expected right value '888888', got %q", expr.Right.Value),
+					})
+				} else {
+					results = append(results, testResult{
+						name:   "regression/large-numbers",
+						passed: true,
+					})
+				}
 			}
 		}
 	}

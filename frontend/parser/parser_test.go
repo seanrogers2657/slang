@@ -369,7 +369,12 @@ func TestParserParse(t *testing.T) {
 				t.Fatalf("expected 1 statement, got %d", len(program.Statements))
 			}
 
-			expr := program.Statements[0]
+			stmt := program.Statements[0]
+			exprStmt, ok := stmt.(*ExprStmt)
+			if !ok {
+				t.Fatal("expected ExprStmt, got different statement type")
+			}
+			expr := exprStmt.Expr
 
 			if expr.Op != tt.expected.Op {
 				t.Errorf("expected operator %q, got %q", tt.expected.Op, expr.Op)
@@ -533,17 +538,22 @@ func TestParserMultipleStatements(t *testing.T) {
 
 			for i, expectedStmt := range tt.stmts {
 				stmt := program.Statements[i]
+				exprStmt, ok := stmt.(*ExprStmt)
+				if !ok {
+					t.Fatalf("statement %d: expected ExprStmt, got different statement type", i)
+				}
+				expr := exprStmt.Expr
 
-				if stmt.Op != expectedStmt.Op {
-					t.Errorf("statement %d: expected operator %q, got %q", i, expectedStmt.Op, stmt.Op)
+				if expr.Op != expectedStmt.Op {
+					t.Errorf("statement %d: expected operator %q, got %q", i, expectedStmt.Op, expr.Op)
 				}
 
-				if stmt.Left.Value != expectedStmt.Left.Value {
-					t.Errorf("statement %d: expected left value %q, got %q", i, expectedStmt.Left.Value, stmt.Left.Value)
+				if expr.Left.Value != expectedStmt.Left.Value {
+					t.Errorf("statement %d: expected left value %q, got %q", i, expectedStmt.Left.Value, expr.Left.Value)
 				}
 
-				if stmt.Right.Value != expectedStmt.Right.Value {
-					t.Errorf("statement %d: expected right value %q, got %q", i, expectedStmt.Right.Value, stmt.Right.Value)
+				if expr.Right.Value != expectedStmt.Right.Value {
+					t.Errorf("statement %d: expected right value %q, got %q", i, expectedStmt.Right.Value, expr.Right.Value)
 				}
 			}
 		})
@@ -627,7 +637,12 @@ func TestParserIntegrationWithLexer(t *testing.T) {
 				t.Fatalf("expected 1 statement, got %d", len(program.Statements))
 			}
 
-			expr := program.Statements[0]
+			stmt := program.Statements[0]
+			exprStmt, ok := stmt.(*ExprStmt)
+			if !ok {
+				t.Fatal("expected ExprStmt, got different statement type")
+			}
+			expr := exprStmt.Expr
 
 			if expr.Op != tt.expected.Op {
 				t.Errorf("expected operator %q, got %q", tt.expected.Op, expr.Op)

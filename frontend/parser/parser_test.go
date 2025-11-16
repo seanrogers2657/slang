@@ -3,6 +3,7 @@ package parser
 import (
 	"testing"
 
+	"github.com/seanrogers2657/slang/frontend/ast"
 	"github.com/seanrogers2657/slang/frontend/lexer"
 )
 
@@ -10,65 +11,65 @@ func TestParserLiterals(t *testing.T) {
 	tests := []struct {
 		name     string
 		tokens   []lexer.Token
-		expected *Literal
+		expected *ast.LiteralExpr
 	}{
 		{
 			name: "single digit",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "5"},
+				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
 			},
-			expected: &Literal{
-				Type:  LiteralTypeNumber,
+			expected: &ast.LiteralExpr{
+				Kind:  ast.LiteralTypeNumber,
 				Value: "5",
 			},
 		},
 		{
 			name: "multiple digits",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "123"},
+				{Type: lexer.TokenTypeInteger, Value: "123", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
 			},
-			expected: &Literal{
-				Type:  LiteralTypeNumber,
+			expected: &ast.LiteralExpr{
+				Kind:  ast.LiteralTypeNumber,
 				Value: "123",
 			},
 		},
 		{
 			name: "zero",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "0"},
+				{Type: lexer.TokenTypeInteger, Value: "0", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
 			},
-			expected: &Literal{
-				Type:  LiteralTypeNumber,
+			expected: &ast.LiteralExpr{
+				Kind:  ast.LiteralTypeNumber,
 				Value: "0",
 			},
 		},
 		{
 			name: "simple string",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeString, Value: "hello"},
+				{Type: lexer.TokenTypeString, Value: "hello", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
 			},
-			expected: &Literal{
-				Type:  LiteralTypeString,
+			expected: &ast.LiteralExpr{
+				Kind:  ast.LiteralTypeString,
 				Value: "hello",
 			},
 		},
 		{
 			name: "empty string",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeString, Value: ""},
+				{Type: lexer.TokenTypeString, Value: "", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
 			},
-			expected: &Literal{
-				Type:  LiteralTypeString,
+			expected: &ast.LiteralExpr{
+				Kind:  ast.LiteralTypeString,
 				Value: "",
 			},
 		},
 		{
 			name: "string with spaces",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeString, Value: "hello world"},
+				{Type: lexer.TokenTypeString, Value: "hello world", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
 			},
-			expected: &Literal{
-				Type:  LiteralTypeString,
+			expected: &ast.LiteralExpr{
+				Kind:  ast.LiteralTypeString,
 				Value: "hello world",
 			},
 		},
@@ -83,12 +84,17 @@ func TestParserLiterals(t *testing.T) {
 				t.Fatal("expected literal, got nil")
 			}
 
-			if literal.Type != tt.expected.Type {
-				t.Errorf("expected type %d, got %d", tt.expected.Type, literal.Type)
+			litExpr, ok := literal.(*ast.LiteralExpr)
+			if !ok {
+				t.Fatal("expected LiteralExpr")
 			}
 
-			if literal.Value != tt.expected.Value {
-				t.Errorf("expected value %q, got %q", tt.expected.Value, literal.Value)
+			if litExpr.Kind != tt.expected.Kind {
+				t.Errorf("expected type %d, got %d", tt.expected.Kind, litExpr.Kind)
+			}
+
+			if litExpr.Value != tt.expected.Value {
+				t.Errorf("expected value %q, got %q", tt.expected.Value, litExpr.Value)
 			}
 		})
 	}
@@ -98,71 +104,61 @@ func TestParserBinaryExpressions(t *testing.T) {
 	tests := []struct {
 		name     string
 		tokens   []lexer.Token
-		expected *Expr
+		expected *ast.BinaryExpr
 	}{
 		{
 			name: "addition",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "2"},
-				{Type: lexer.TokenTypePlus, Value: "+"},
-				{Type: lexer.TokenTypeInteger, Value: "5"},
+				{Type: lexer.TokenTypeInteger, Value: "2", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypePlus, Value: "+", Pos: ast.Position{Line: 1, Column: 3, Offset: 2}},
+				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 1, Column: 5, Offset: 4}},
 			},
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "2"},
-				Op:    "+",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "5"},
+			expected: &ast.BinaryExpr{
+				Op: "+",
 			},
 		},
 		{
 			name: "subtraction",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "10"},
-				{Type: lexer.TokenTypeMinus, Value: "-"},
-				{Type: lexer.TokenTypeInteger, Value: "3"},
+				{Type: lexer.TokenTypeInteger, Value: "10", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeMinus, Value: "-", Pos: ast.Position{Line: 1, Column: 4, Offset: 3}},
+				{Type: lexer.TokenTypeInteger, Value: "3", Pos: ast.Position{Line: 1, Column: 6, Offset: 5}},
 			},
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "10"},
-				Op:    "-",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "3"},
+			expected: &ast.BinaryExpr{
+				Op: "-",
 			},
 		},
 		{
 			name: "multiplication",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "4"},
-				{Type: lexer.TokenTypeMultiply, Value: "*"},
-				{Type: lexer.TokenTypeInteger, Value: "7"},
+				{Type: lexer.TokenTypeInteger, Value: "4", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeMultiply, Value: "*", Pos: ast.Position{Line: 1, Column: 3, Offset: 2}},
+				{Type: lexer.TokenTypeInteger, Value: "7", Pos: ast.Position{Line: 1, Column: 5, Offset: 4}},
 			},
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "4"},
-				Op:    "*",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "7"},
+			expected: &ast.BinaryExpr{
+				Op: "*",
 			},
 		},
 		{
 			name: "division",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "20"},
-				{Type: lexer.TokenTypeDivide, Value: "/"},
-				{Type: lexer.TokenTypeInteger, Value: "4"},
+				{Type: lexer.TokenTypeInteger, Value: "20", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeDivide, Value: "/", Pos: ast.Position{Line: 1, Column: 4, Offset: 3}},
+				{Type: lexer.TokenTypeInteger, Value: "4", Pos: ast.Position{Line: 1, Column: 6, Offset: 5}},
 			},
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "20"},
-				Op:    "/",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "4"},
+			expected: &ast.BinaryExpr{
+				Op: "/",
 			},
 		},
 		{
 			name: "modulo",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "10"},
-				{Type: lexer.TokenTypeModulo, Value: "%"},
-				{Type: lexer.TokenTypeInteger, Value: "3"},
+				{Type: lexer.TokenTypeInteger, Value: "10", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeModulo, Value: "%", Pos: ast.Position{Line: 1, Column: 4, Offset: 3}},
+				{Type: lexer.TokenTypeInteger, Value: "3", Pos: ast.Position{Line: 1, Column: 6, Offset: 5}},
 			},
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "10"},
-				Op:    "%",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "3"},
+			expected: &ast.BinaryExpr{
+				Op: "%",
 			},
 		},
 	}
@@ -180,20 +176,17 @@ func TestParserBinaryExpressions(t *testing.T) {
 				t.Fatal("expected expression, got nil")
 			}
 
-			if expr.Op != tt.expected.Op {
-				t.Errorf("expected operator %q, got %q", tt.expected.Op, expr.Op)
+			binExpr, ok := expr.(*ast.BinaryExpr)
+			if !ok {
+				t.Fatal("expected BinaryExpr")
 			}
 
-			if expr.Left == nil || expr.Right == nil {
+			if binExpr.Op != tt.expected.Op {
+				t.Errorf("expected operator %q, got %q", tt.expected.Op, binExpr.Op)
+			}
+
+			if binExpr.Left == nil || binExpr.Right == nil {
 				t.Fatal("expected left and right operands, got nil")
-			}
-
-			if expr.Left.Value != tt.expected.Left.Value {
-				t.Errorf("expected left value %q, got %q", tt.expected.Left.Value, expr.Left.Value)
-			}
-
-			if expr.Right.Value != tt.expected.Right.Value {
-				t.Errorf("expected right value %q, got %q", tt.expected.Right.Value, expr.Right.Value)
 			}
 		})
 	}
@@ -203,85 +196,61 @@ func TestParserComparisonExpressions(t *testing.T) {
 	tests := []struct {
 		name     string
 		tokens   []lexer.Token
-		expected *Expr
+		expected string
 	}{
 		{
 			name: "equality",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "5"},
-				{Type: lexer.TokenTypeEqual, Value: "=="},
-				{Type: lexer.TokenTypeInteger, Value: "5"},
+				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeEqual, Value: "==", Pos: ast.Position{Line: 1, Column: 3, Offset: 2}},
+				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 1, Column: 6, Offset: 5}},
 			},
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "5"},
-				Op:    "==",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "5"},
-			},
+			expected: "==",
 		},
 		{
 			name: "inequality",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "3"},
-				{Type: lexer.TokenTypeNotEqual, Value: "!="},
-				{Type: lexer.TokenTypeInteger, Value: "4"},
+				{Type: lexer.TokenTypeInteger, Value: "3", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeNotEqual, Value: "!=", Pos: ast.Position{Line: 1, Column: 3, Offset: 2}},
+				{Type: lexer.TokenTypeInteger, Value: "4", Pos: ast.Position{Line: 1, Column: 6, Offset: 5}},
 			},
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "3"},
-				Op:    "!=",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "4"},
-			},
+			expected: "!=",
 		},
 		{
 			name: "less than",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "2"},
-				{Type: lexer.TokenTypeLessThan, Value: "<"},
-				{Type: lexer.TokenTypeInteger, Value: "8"},
+				{Type: lexer.TokenTypeInteger, Value: "2", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeLessThan, Value: "<", Pos: ast.Position{Line: 1, Column: 3, Offset: 2}},
+				{Type: lexer.TokenTypeInteger, Value: "8", Pos: ast.Position{Line: 1, Column: 5, Offset: 4}},
 			},
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "2"},
-				Op:    "<",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "8"},
-			},
+			expected: "<",
 		},
 		{
 			name: "greater than",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "9"},
-				{Type: lexer.TokenTypeGreaterThan, Value: ">"},
-				{Type: lexer.TokenTypeInteger, Value: "1"},
+				{Type: lexer.TokenTypeInteger, Value: "9", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeGreaterThan, Value: ">", Pos: ast.Position{Line: 1, Column: 3, Offset: 2}},
+				{Type: lexer.TokenTypeInteger, Value: "1", Pos: ast.Position{Line: 1, Column: 5, Offset: 4}},
 			},
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "9"},
-				Op:    ">",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "1"},
-			},
+			expected: ">",
 		},
 		{
 			name: "less than or equal",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "5"},
-				{Type: lexer.TokenTypeLessThanOrEqual, Value: "<="},
-				{Type: lexer.TokenTypeInteger, Value: "5"},
+				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeLessThanOrEqual, Value: "<=", Pos: ast.Position{Line: 1, Column: 3, Offset: 2}},
+				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 1, Column: 6, Offset: 5}},
 			},
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "5"},
-				Op:    "<=",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "5"},
-			},
+			expected: "<=",
 		},
 		{
 			name: "greater than or equal",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "7"},
-				{Type: lexer.TokenTypeGreaterThanOrEqual, Value: ">="},
-				{Type: lexer.TokenTypeInteger, Value: "7"},
+				{Type: lexer.TokenTypeInteger, Value: "7", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeGreaterThanOrEqual, Value: ">=", Pos: ast.Position{Line: 1, Column: 3, Offset: 2}},
+				{Type: lexer.TokenTypeInteger, Value: "7", Pos: ast.Position{Line: 1, Column: 6, Offset: 5}},
 			},
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "7"},
-				Op:    ">=",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "7"},
-			},
+			expected: ">=",
 		},
 	}
 
@@ -298,20 +267,17 @@ func TestParserComparisonExpressions(t *testing.T) {
 				t.Fatal("expected expression, got nil")
 			}
 
-			if expr.Op != tt.expected.Op {
-				t.Errorf("expected operator %q, got %q", tt.expected.Op, expr.Op)
+			binExpr, ok := expr.(*ast.BinaryExpr)
+			if !ok {
+				t.Fatal("expected BinaryExpr")
 			}
 
-			if expr.Left == nil || expr.Right == nil {
+			if binExpr.Op != tt.expected {
+				t.Errorf("expected operator %q, got %q", tt.expected, binExpr.Op)
+			}
+
+			if binExpr.Left == nil || binExpr.Right == nil {
 				t.Fatal("expected left and right operands, got nil")
-			}
-
-			if expr.Left.Value != tt.expected.Left.Value {
-				t.Errorf("expected left value %q, got %q", tt.expected.Left.Value, expr.Left.Value)
-			}
-
-			if expr.Right.Value != tt.expected.Right.Value {
-				t.Errorf("expected right value %q, got %q", tt.expected.Right.Value, expr.Right.Value)
 			}
 		})
 	}
@@ -321,34 +287,26 @@ func TestParserParse(t *testing.T) {
 	tests := []struct {
 		name     string
 		tokens   []lexer.Token
-		expected *Expr
+		expected string // expected operator
 	}{
 		{
 			name: "simple addition expression",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "2"},
-				{Type: lexer.TokenTypePlus, Value: "+"},
-				{Type: lexer.TokenTypeInteger, Value: "5"},
+				{Type: lexer.TokenTypeInteger, Value: "2", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypePlus, Value: "+", Pos: ast.Position{Line: 1, Column: 3, Offset: 2}},
+				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 1, Column: 5, Offset: 4}},
 			},
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "2"},
-				Op:    "+",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "5"},
-			},
+			expected: "+",
 		},
 		{
 			name: "with newline",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "2"},
-				{Type: lexer.TokenTypePlus, Value: "+"},
-				{Type: lexer.TokenTypeInteger, Value: "5"},
-				{Type: lexer.TokenTypeNewline, Value: "\n"},
+				{Type: lexer.TokenTypeInteger, Value: "2", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypePlus, Value: "+", Pos: ast.Position{Line: 1, Column: 3, Offset: 2}},
+				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 1, Column: 5, Offset: 4}},
+				{Type: lexer.TokenTypeNewline, Value: "\n", Pos: ast.Position{Line: 1, Column: 6, Offset: 5}},
 			},
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "2"},
-				Op:    "+",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "5"},
-			},
+			expected: "+",
 		},
 	}
 
@@ -370,26 +328,22 @@ func TestParserParse(t *testing.T) {
 			}
 
 			stmt := program.Statements[0]
-			exprStmt, ok := stmt.(*ExprStmt)
+			exprStmt, ok := stmt.(*ast.ExprStmt)
 			if !ok {
 				t.Fatal("expected ExprStmt, got different statement type")
 			}
-			expr := exprStmt.Expr
 
-			if expr.Op != tt.expected.Op {
-				t.Errorf("expected operator %q, got %q", tt.expected.Op, expr.Op)
+			binExpr, ok := exprStmt.Expr.(*ast.BinaryExpr)
+			if !ok {
+				t.Fatal("expected BinaryExpr")
 			}
 
-			if expr.Left == nil || expr.Right == nil {
+			if binExpr.Op != tt.expected {
+				t.Errorf("expected operator %q, got %q", tt.expected, binExpr.Op)
+			}
+
+			if binExpr.Left == nil || binExpr.Right == nil {
 				t.Fatal("expected left and right operands, got nil")
-			}
-
-			if expr.Left.Value != tt.expected.Left.Value {
-				t.Errorf("expected left value %q, got %q", tt.expected.Left.Value, expr.Left.Value)
-			}
-
-			if expr.Right.Value != tt.expected.Right.Value {
-				t.Errorf("expected right value %q, got %q", tt.expected.Right.Value, expr.Right.Value)
 			}
 		})
 	}
@@ -404,8 +358,8 @@ func TestParserErrors(t *testing.T) {
 		{
 			name: "unsupported operation - newline",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "5"},
-				{Type: lexer.TokenTypeNewline, Value: "\n"},
+				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeNewline, Value: "\n", Pos: ast.Position{Line: 1, Column: 2, Offset: 1}},
 			},
 			expectedError: "unsupported operation: \n",
 		},
@@ -433,89 +387,56 @@ func TestParserErrors(t *testing.T) {
 
 func TestParserMultipleStatements(t *testing.T) {
 	tests := []struct {
-		name      string
-		tokens    []lexer.Token
-		numStmts  int
-		stmts     []*Expr
+		name     string
+		tokens   []lexer.Token
+		numStmts int
+		ops      []string // expected operators
 	}{
 		{
 			name: "two statements",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "2"},
-				{Type: lexer.TokenTypePlus, Value: "+"},
-				{Type: lexer.TokenTypeInteger, Value: "5"},
-				{Type: lexer.TokenTypeNewline, Value: "\n"},
-				{Type: lexer.TokenTypeInteger, Value: "10"},
-				{Type: lexer.TokenTypeMinus, Value: "-"},
-				{Type: lexer.TokenTypeInteger, Value: "3"},
+				{Type: lexer.TokenTypeInteger, Value: "2", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypePlus, Value: "+", Pos: ast.Position{Line: 1, Column: 3, Offset: 2}},
+				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 1, Column: 5, Offset: 4}},
+				{Type: lexer.TokenTypeNewline, Value: "\n", Pos: ast.Position{Line: 1, Column: 6, Offset: 5}},
+				{Type: lexer.TokenTypeInteger, Value: "10", Pos: ast.Position{Line: 2, Column: 1, Offset: 6}},
+				{Type: lexer.TokenTypeMinus, Value: "-", Pos: ast.Position{Line: 2, Column: 4, Offset: 9}},
+				{Type: lexer.TokenTypeInteger, Value: "3", Pos: ast.Position{Line: 2, Column: 6, Offset: 11}},
 			},
 			numStmts: 2,
-			stmts: []*Expr{
-				{
-					Left:  &Literal{Type: LiteralTypeNumber, Value: "2"},
-					Op:    "+",
-					Right: &Literal{Type: LiteralTypeNumber, Value: "5"},
-				},
-				{
-					Left:  &Literal{Type: LiteralTypeNumber, Value: "10"},
-					Op:    "-",
-					Right: &Literal{Type: LiteralTypeNumber, Value: "3"},
-				},
-			},
+			ops:      []string{"+", "-"},
 		},
 		{
 			name: "three statements with multiple newlines",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeInteger, Value: "1"},
-				{Type: lexer.TokenTypePlus, Value: "+"},
-				{Type: lexer.TokenTypeInteger, Value: "1"},
-				{Type: lexer.TokenTypeNewline, Value: "\n"},
-				{Type: lexer.TokenTypeNewline, Value: "\n"},
-				{Type: lexer.TokenTypeInteger, Value: "2"},
-				{Type: lexer.TokenTypeMultiply, Value: "*"},
-				{Type: lexer.TokenTypeInteger, Value: "3"},
-				{Type: lexer.TokenTypeNewline, Value: "\n"},
-				{Type: lexer.TokenTypeInteger, Value: "4"},
-				{Type: lexer.TokenTypeDivide, Value: "/"},
-				{Type: lexer.TokenTypeInteger, Value: "2"},
+				{Type: lexer.TokenTypeInteger, Value: "1", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypePlus, Value: "+", Pos: ast.Position{Line: 1, Column: 3, Offset: 2}},
+				{Type: lexer.TokenTypeInteger, Value: "1", Pos: ast.Position{Line: 1, Column: 5, Offset: 4}},
+				{Type: lexer.TokenTypeNewline, Value: "\n", Pos: ast.Position{Line: 1, Column: 6, Offset: 5}},
+				{Type: lexer.TokenTypeNewline, Value: "\n", Pos: ast.Position{Line: 2, Column: 1, Offset: 6}},
+				{Type: lexer.TokenTypeInteger, Value: "2", Pos: ast.Position{Line: 3, Column: 1, Offset: 7}},
+				{Type: lexer.TokenTypeMultiply, Value: "*", Pos: ast.Position{Line: 3, Column: 3, Offset: 9}},
+				{Type: lexer.TokenTypeInteger, Value: "3", Pos: ast.Position{Line: 3, Column: 5, Offset: 11}},
+				{Type: lexer.TokenTypeNewline, Value: "\n", Pos: ast.Position{Line: 3, Column: 6, Offset: 12}},
+				{Type: lexer.TokenTypeInteger, Value: "4", Pos: ast.Position{Line: 4, Column: 1, Offset: 13}},
+				{Type: lexer.TokenTypeDivide, Value: "/", Pos: ast.Position{Line: 4, Column: 3, Offset: 15}},
+				{Type: lexer.TokenTypeInteger, Value: "2", Pos: ast.Position{Line: 4, Column: 5, Offset: 17}},
 			},
 			numStmts: 3,
-			stmts: []*Expr{
-				{
-					Left:  &Literal{Type: LiteralTypeNumber, Value: "1"},
-					Op:    "+",
-					Right: &Literal{Type: LiteralTypeNumber, Value: "1"},
-				},
-				{
-					Left:  &Literal{Type: LiteralTypeNumber, Value: "2"},
-					Op:    "*",
-					Right: &Literal{Type: LiteralTypeNumber, Value: "3"},
-				},
-				{
-					Left:  &Literal{Type: LiteralTypeNumber, Value: "4"},
-					Op:    "/",
-					Right: &Literal{Type: LiteralTypeNumber, Value: "2"},
-				},
-			},
+			ops:      []string{"+", "*", "/"},
 		},
 		{
 			name: "leading and trailing newlines",
 			tokens: []lexer.Token{
-				{Type: lexer.TokenTypeNewline, Value: "\n"},
-				{Type: lexer.TokenTypeInteger, Value: "5"},
-				{Type: lexer.TokenTypePlus, Value: "+"},
-				{Type: lexer.TokenTypeInteger, Value: "5"},
-				{Type: lexer.TokenTypeNewline, Value: "\n"},
-				{Type: lexer.TokenTypeNewline, Value: "\n"},
+				{Type: lexer.TokenTypeNewline, Value: "\n", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 2, Column: 1, Offset: 1}},
+				{Type: lexer.TokenTypePlus, Value: "+", Pos: ast.Position{Line: 2, Column: 3, Offset: 3}},
+				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 2, Column: 5, Offset: 5}},
+				{Type: lexer.TokenTypeNewline, Value: "\n", Pos: ast.Position{Line: 2, Column: 6, Offset: 6}},
+				{Type: lexer.TokenTypeNewline, Value: "\n", Pos: ast.Position{Line: 3, Column: 1, Offset: 7}},
 			},
 			numStmts: 1,
-			stmts: []*Expr{
-				{
-					Left:  &Literal{Type: LiteralTypeNumber, Value: "5"},
-					Op:    "+",
-					Right: &Literal{Type: LiteralTypeNumber, Value: "5"},
-				},
-			},
+			ops:      []string{"+"},
 		},
 	}
 
@@ -536,24 +457,20 @@ func TestParserMultipleStatements(t *testing.T) {
 				t.Fatalf("expected %d statements, got %d", tt.numStmts, len(program.Statements))
 			}
 
-			for i, expectedStmt := range tt.stmts {
+			for i, expectedOp := range tt.ops {
 				stmt := program.Statements[i]
-				exprStmt, ok := stmt.(*ExprStmt)
+				exprStmt, ok := stmt.(*ast.ExprStmt)
 				if !ok {
 					t.Fatalf("statement %d: expected ExprStmt, got different statement type", i)
 				}
-				expr := exprStmt.Expr
 
-				if expr.Op != expectedStmt.Op {
-					t.Errorf("statement %d: expected operator %q, got %q", i, expectedStmt.Op, expr.Op)
+				binExpr, ok := exprStmt.Expr.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("statement %d: expected BinaryExpr", i)
 				}
 
-				if expr.Left.Value != expectedStmt.Left.Value {
-					t.Errorf("statement %d: expected left value %q, got %q", i, expectedStmt.Left.Value, expr.Left.Value)
-				}
-
-				if expr.Right.Value != expectedStmt.Right.Value {
-					t.Errorf("statement %d: expected right value %q, got %q", i, expectedStmt.Right.Value, expr.Right.Value)
+				if binExpr.Op != expectedOp {
+					t.Errorf("statement %d: expected operator %q, got %q", i, expectedOp, binExpr.Op)
 				}
 			}
 		})
@@ -564,52 +481,32 @@ func TestParserIntegrationWithLexer(t *testing.T) {
 	tests := []struct {
 		name     string
 		source   string
-		expected *Expr
+		expected string // expected operator
 	}{
 		{
-			name:   "simple addition",
-			source: "2 + 5",
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "2"},
-				Op:    "+",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "5"},
-			},
+			name:     "simple addition",
+			source:   "2 + 5",
+			expected: "+",
 		},
 		{
-			name:   "subtraction",
-			source: "10 - 3",
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "10"},
-				Op:    "-",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "3"},
-			},
+			name:     "subtraction",
+			source:   "10 - 3",
+			expected: "-",
 		},
 		{
-			name:   "multiplication",
-			source: "4 * 7",
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "4"},
-				Op:    "*",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "7"},
-			},
+			name:     "multiplication",
+			source:   "4 * 7",
+			expected: "*",
 		},
 		{
-			name:   "division",
-			source: "20 / 4",
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "20"},
-				Op:    "/",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "4"},
-			},
+			name:     "division",
+			source:   "20 / 4",
+			expected: "/",
 		},
 		{
-			name:   "comparison",
-			source: "5 == 5",
-			expected: &Expr{
-				Left:  &Literal{Type: LiteralTypeNumber, Value: "5"},
-				Op:    "==",
-				Right: &Literal{Type: LiteralTypeNumber, Value: "5"},
-			},
+			name:     "comparison",
+			source:   "5 == 5",
+			expected: "==",
 		},
 	}
 
@@ -638,26 +535,22 @@ func TestParserIntegrationWithLexer(t *testing.T) {
 			}
 
 			stmt := program.Statements[0]
-			exprStmt, ok := stmt.(*ExprStmt)
+			exprStmt, ok := stmt.(*ast.ExprStmt)
 			if !ok {
 				t.Fatal("expected ExprStmt, got different statement type")
 			}
-			expr := exprStmt.Expr
 
-			if expr.Op != tt.expected.Op {
-				t.Errorf("expected operator %q, got %q", tt.expected.Op, expr.Op)
+			binExpr, ok := exprStmt.Expr.(*ast.BinaryExpr)
+			if !ok {
+				t.Fatal("expected BinaryExpr")
 			}
 
-			if expr.Left == nil || expr.Right == nil {
+			if binExpr.Op != tt.expected {
+				t.Errorf("expected operator %q, got %q", tt.expected, binExpr.Op)
+			}
+
+			if binExpr.Left == nil || binExpr.Right == nil {
 				t.Fatal("expected left and right operands, got nil")
-			}
-
-			if expr.Left.Value != tt.expected.Left.Value {
-				t.Errorf("expected left value %q, got %q", tt.expected.Left.Value, expr.Left.Value)
-			}
-
-			if expr.Right.Value != tt.expected.Right.Value {
-				t.Errorf("expected right value %q, got %q", tt.expected.Right.Value, expr.Right.Value)
 			}
 		})
 	}

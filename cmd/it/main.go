@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/seanrogers2657/slang/backend/as"
+	"github.com/seanrogers2657/slang/frontend/ast"
 	"github.com/seanrogers2657/slang/frontend/lexer"
 	"github.com/seanrogers2657/slang/frontend/parser"
 	"github.com/urfave/cli/v2"
@@ -84,6 +85,9 @@ func runEndToEndTests(verbose bool) []testResult {
 				".global _start",
 				".align 4",
 				"_start:",
+				"    b main",
+				"",
+				"main:",
 				"    mov x0, #2",
 				"    mov x1, #5",
 				"    add x2, x0, x1",
@@ -100,6 +104,9 @@ func runEndToEndTests(verbose bool) []testResult {
 				".global _start",
 				".align 4",
 				"_start:",
+				"    b main",
+				"",
+				"main:",
 				"    mov x0, #100",
 				"    mov x1, #200",
 				"    add x2, x0, x1",
@@ -116,6 +123,9 @@ func runEndToEndTests(verbose bool) []testResult {
 				".global _start",
 				".align 4",
 				"_start:",
+				"    b main",
+				"",
+				"main:",
 				"    mov x0, #2",
 				"    mov x1, #5",
 				"    add x2, x0, x1",
@@ -132,6 +142,9 @@ func runEndToEndTests(verbose bool) []testResult {
 				".global _start",
 				".align 4",
 				"_start:",
+				"    b main",
+				"",
+				"main:",
 				"    mov x0, #10",
 				"    mov x1, #3",
 				"    sub x2, x0, x1",
@@ -331,7 +344,7 @@ func runPipelineStageTests(verbose bool) []testResult {
 		})
 	} else {
 		stmt := program.Statements[0]
-		exprStmt, ok := stmt.(*parser.ExprStmt)
+		exprStmt, ok := stmt.(*ast.ExprStmt)
 		if !ok {
 			results = append(results, testResult{
 				name:    "pipeline/parser",
@@ -339,33 +352,43 @@ func runPipelineStageTests(verbose bool) []testResult {
 				message: "expected ExprStmt, got different statement type",
 			})
 		} else {
-			expr := exprStmt.Expr
-			if expr.Op != "+" {
+			binExpr, ok := exprStmt.Expr.(*ast.BinaryExpr)
+			if !ok {
 				results = append(results, testResult{
 					name:    "pipeline/parser",
 					passed:  false,
-					message: fmt.Sprintf("expected operator '+', got %q", expr.Op),
+					message: "expected BinaryExpr",
 				})
-			} else if expr.Left.Value != "2" {
+			} else if binExpr.Op != "+" {
 				results = append(results, testResult{
 					name:    "pipeline/parser",
 					passed:  false,
-					message: fmt.Sprintf("expected left value '2', got %q", expr.Left.Value),
-				})
-			} else if expr.Right.Value != "5" {
-				results = append(results, testResult{
-					name:    "pipeline/parser",
-					passed:  false,
-					message: fmt.Sprintf("expected right value '5', got %q", expr.Right.Value),
+					message: fmt.Sprintf("expected operator '+', got %q", binExpr.Op),
 				})
 			} else {
-				results = append(results, testResult{
-					name:   "pipeline/parser",
-					passed: true,
-				})
+				leftLit, _ := binExpr.Left.(*ast.LiteralExpr)
+				rightLit, _ := binExpr.Right.(*ast.LiteralExpr)
+				if leftLit == nil || leftLit.Value != "2" {
+					results = append(results, testResult{
+						name:    "pipeline/parser",
+						passed:  false,
+						message: fmt.Sprintf("expected left value '2', got %v", leftLit),
+					})
+				} else if rightLit == nil || rightLit.Value != "5" {
+					results = append(results, testResult{
+						name:    "pipeline/parser",
+						passed:  false,
+						message: fmt.Sprintf("expected right value '5', got %v", rightLit),
+					})
+					} else {
+						results = append(results, testResult{
+							name:   "pipeline/parser",
+							passed: true,
+						})
+					}
+				}
 			}
 		}
-	}
 
 	// Test code generator stage
 	l3 := lexer.NewLexer([]byte(source))
@@ -586,7 +609,7 @@ func runRegressionTests(verbose bool) []testResult {
 			})
 		} else {
 			stmt := program3.Statements[0]
-			exprStmt, ok := stmt.(*parser.ExprStmt)
+			exprStmt, ok := stmt.(*ast.ExprStmt)
 			if !ok {
 				results = append(results, testResult{
 					name:    "regression/large-numbers",
@@ -594,24 +617,34 @@ func runRegressionTests(verbose bool) []testResult {
 					message: "expected ExprStmt, got different statement type",
 				})
 			} else {
-				expr := exprStmt.Expr
-				if expr.Left.Value != "999999" {
+				binExpr, ok := exprStmt.Expr.(*ast.BinaryExpr)
+				if !ok {
 					results = append(results, testResult{
 						name:    "regression/large-numbers",
 						passed:  false,
-						message: fmt.Sprintf("expected left value '999999', got %q", expr.Left.Value),
-					})
-				} else if expr.Right.Value != "888888" {
-					results = append(results, testResult{
-						name:    "regression/large-numbers",
-						passed:  false,
-						message: fmt.Sprintf("expected right value '888888', got %q", expr.Right.Value),
+						message: "expected BinaryExpr",
 					})
 				} else {
-					results = append(results, testResult{
-						name:   "regression/large-numbers",
-						passed: true,
-					})
+					leftLit, _ := binExpr.Left.(*ast.LiteralExpr)
+					rightLit, _ := binExpr.Right.(*ast.LiteralExpr)
+					if leftLit == nil || leftLit.Value != "999999" {
+						results = append(results, testResult{
+							name:    "regression/large-numbers",
+							passed:  false,
+							message: fmt.Sprintf("expected left value '999999', got %v", leftLit),
+						})
+					} else if rightLit == nil || rightLit.Value != "888888" {
+						results = append(results, testResult{
+							name:    "regression/large-numbers",
+							passed:  false,
+							message: fmt.Sprintf("expected right value '888888', got %v", rightLit),
+						})
+					} else {
+						results = append(results, testResult{
+							name:   "regression/large-numbers",
+							passed: true,
+						})
+					}
 				}
 			}
 		}

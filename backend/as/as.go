@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/seanrogers2657/slang/frontend/parser"
+	"github.com/seanrogers2657/slang/frontend/ast"
 )
 
 type AsGenerator interface {
@@ -12,7 +12,7 @@ type AsGenerator interface {
 }
 
 func NewAsGenerator(
-	program *parser.Program,
+	program *ast.Program,
 ) AsGenerator {
 	return &asGenerator{
 		program: program,
@@ -20,44 +20,52 @@ func NewAsGenerator(
 }
 
 type asGenerator struct {
-	program *parser.Program
+	program *ast.Program
 }
 
 func (c *asGenerator) Generate() (string, error) {
 	return GenerateProgram(c.program)
 }
 
-func GenerateProgram(program *parser.Program) (string, error) {
+func GenerateProgram(program *ast.Program) (string, error) {
 	builder := strings.Builder{}
 
 	// Check if we need a .data section for strings or print statements
 	hasStrings := false
 	hasPrint := false
 	stringIndex := 0
-	stringMap := make(map[*parser.Literal]string) // Map literals to their label names
+	stringMap := make(map[*ast.LiteralExpr]string) // Map literals to their label names
+
+	// Helper function to collect string literals from an expression
+	var collectStrings func(ast.Expression)
+	collectStrings = func(expr ast.Expression) {
+		switch e := expr.(type) {
+		case *ast.BinaryExpr:
+			collectStrings(e.Left)
+			collectStrings(e.Right)
+		case *ast.LiteralExpr:
+			if e.Kind == ast.LiteralTypeString {
+				hasStrings = true
+				if _, exists := stringMap[e]; !exists {
+					stringMap[e] = fmt.Sprintf("str_%d", stringIndex)
+					stringIndex++
+				}
+			}
+		}
+	}
 
 	for _, stmt := range program.Statements {
 		// Check for print statements
-		if _, ok := stmt.(*parser.PrintStmt); ok {
+		if _, ok := stmt.(*ast.PrintStmt); ok {
 			hasPrint = true
 		}
 
-		// Check for string literals in expression statements
-		if exprStmt, ok := stmt.(*parser.ExprStmt); ok {
-			if exprStmt.Expr.Left.Type == parser.LiteralTypeString {
-				hasStrings = true
-				if _, exists := stringMap[exprStmt.Expr.Left]; !exists {
-					stringMap[exprStmt.Expr.Left] = fmt.Sprintf("str_%d", stringIndex)
-					stringIndex++
-				}
-			}
-			if exprStmt.Expr.Right.Type == parser.LiteralTypeString {
-				hasStrings = true
-				if _, exists := stringMap[exprStmt.Expr.Right]; !exists {
-					stringMap[exprStmt.Expr.Right] = fmt.Sprintf("str_%d", stringIndex)
-					stringIndex++
-				}
-			}
+		// Check for string literals in statements
+		switch s := stmt.(type) {
+		case *ast.ExprStmt:
+			collectStrings(s.Expr)
+		case *ast.PrintStmt:
+			collectStrings(s.Expr)
 		}
 	}
 
@@ -101,10 +109,10 @@ func GenerateProgram(program *parser.Program) (string, error) {
 		var err error
 
 		switch s := stmt.(type) {
-		case *parser.ExprStmt:
+		case *ast.ExprStmt:
 			code, err = GenerateExprInline(s.Expr, stringMap)
-		case *parser.PrintStmt:
-			code, err = GeneratePrintStmt(s)
+		case *ast.PrintStmt:
+			code, err = GeneratePrintStmt(s, stringMap)
 		default:
 			return "", fmt.Errorf("unknown statement type")
 		}
@@ -123,98 +131,126 @@ func GenerateProgram(program *parser.Program) (string, error) {
 	return builder.String(), nil
 }
 
-func GenerateExprInline(expr *parser.Expr, stringMap map[*parser.Literal]string) (string, error) {
+func GenerateExprInline(expr ast.Expression, stringMap map[*ast.LiteralExpr]string) (string, error) {
 	builder := strings.Builder{}
 
-	// Handle single literal (no operator)
-	if expr.Op == "" {
-		// Just load the value into x2
-		if expr.Left.Type == parser.LiteralTypeString {
-			label := stringMap[expr.Left]
+	switch e := expr.(type) {
+	case *ast.LiteralExpr:
+		// Single literal - just load into x2
+		if e.Kind == ast.LiteralTypeString {
+			label := stringMap[e]
 			builder.WriteString(fmt.Sprintf("    adrp x2, %s@PAGE\n", label))
 			builder.WriteString(fmt.Sprintf("    add x2, x2, %s@PAGEOFF\n", label))
 		} else {
-			builder.WriteString(fmt.Sprintf("    mov x2, #%s\n", expr.Left.Value))
+			builder.WriteString(fmt.Sprintf("    mov x2, #%s\n", e.Value))
 		}
 		return builder.String(), nil
-	}
 
-	// Load left operand
-	if expr.Left.Type == parser.LiteralTypeString {
-		label := stringMap[expr.Left]
-		builder.WriteString(fmt.Sprintf("    adrp x0, %s@PAGE\n", label))
-		builder.WriteString(fmt.Sprintf("    add x0, x0, %s@PAGEOFF\n", label))
-	} else {
-		builder.WriteString(fmt.Sprintf("    mov x0, #%s\n", expr.Left.Value))
-	}
+	case *ast.BinaryExpr:
+		// Load left operand into x0
+		if leftLit, ok := e.Left.(*ast.LiteralExpr); ok {
+			if leftLit.Kind == ast.LiteralTypeString {
+				label := stringMap[leftLit]
+				builder.WriteString(fmt.Sprintf("    adrp x0, %s@PAGE\n", label))
+				builder.WriteString(fmt.Sprintf("    add x0, x0, %s@PAGEOFF\n", label))
+			} else {
+				builder.WriteString(fmt.Sprintf("    mov x0, #%s\n", leftLit.Value))
+			}
+		} else {
+			return "", fmt.Errorf("unsupported left operand type in binary expression")
+		}
 
-	// Load right operand
-	if expr.Right.Type == parser.LiteralTypeString {
-		label := stringMap[expr.Right]
-		builder.WriteString(fmt.Sprintf("    adrp x1, %s@PAGE\n", label))
-		builder.WriteString(fmt.Sprintf("    add x1, x1, %s@PAGEOFF\n", label))
-	} else {
-		builder.WriteString(fmt.Sprintf("    mov x1, #%s\n", expr.Right.Value))
-	}
+		// Load right operand into x1
+		if rightLit, ok := e.Right.(*ast.LiteralExpr); ok {
+			if rightLit.Kind == ast.LiteralTypeString {
+				label := stringMap[rightLit]
+				builder.WriteString(fmt.Sprintf("    adrp x1, %s@PAGE\n", label))
+				builder.WriteString(fmt.Sprintf("    add x1, x1, %s@PAGEOFF\n", label))
+			} else {
+				builder.WriteString(fmt.Sprintf("    mov x1, #%s\n", rightLit.Value))
+			}
+		} else {
+			return "", fmt.Errorf("unsupported right operand type in binary expression")
+		}
 
-	switch expr.Op {
-	case "+":
-		builder.WriteString("    add x2, x0, x1\n")
-	case "-":
-		builder.WriteString("    sub x2, x0, x1\n")
-	case "*":
-		builder.WriteString("    mul x2, x0, x1\n")
-	case "/":
-		builder.WriteString("    sdiv x2, x0, x1\n")
-	case "%":
-		// Modulo: x2 = x0 - (x0 / x1) * x1
-		builder.WriteString("    sdiv x3, x0, x1\n")
-		builder.WriteString("    msub x2, x3, x1, x0\n")
-	case "==":
-		builder.WriteString("    cmp x0, x1\n")
-		builder.WriteString("    cset x2, eq\n")
-	case "!=":
-		builder.WriteString("    cmp x0, x1\n")
-		builder.WriteString("    cset x2, ne\n")
-	case "<":
-		builder.WriteString("    cmp x0, x1\n")
-		builder.WriteString("    cset x2, lt\n")
-	case ">":
-		builder.WriteString("    cmp x0, x1\n")
-		builder.WriteString("    cset x2, gt\n")
-	case "<=":
-		builder.WriteString("    cmp x0, x1\n")
-		builder.WriteString("    cset x2, le\n")
-	case ">=":
-		builder.WriteString("    cmp x0, x1\n")
-		builder.WriteString("    cset x2, ge\n")
+		// Generate operation
+		switch e.Op {
+		case "+":
+			builder.WriteString("    add x2, x0, x1\n")
+		case "-":
+			builder.WriteString("    sub x2, x0, x1\n")
+		case "*":
+			builder.WriteString("    mul x2, x0, x1\n")
+		case "/":
+			builder.WriteString("    sdiv x2, x0, x1\n")
+		case "%":
+			// Modulo: x2 = x0 - (x0 / x1) * x1
+			builder.WriteString("    sdiv x3, x0, x1\n")
+			builder.WriteString("    msub x2, x3, x1, x0\n")
+		case "==":
+			builder.WriteString("    cmp x0, x1\n")
+			builder.WriteString("    cset x2, eq\n")
+		case "!=":
+			builder.WriteString("    cmp x0, x1\n")
+			builder.WriteString("    cset x2, ne\n")
+		case "<":
+			builder.WriteString("    cmp x0, x1\n")
+			builder.WriteString("    cset x2, lt\n")
+		case ">":
+			builder.WriteString("    cmp x0, x1\n")
+			builder.WriteString("    cset x2, gt\n")
+		case "<=":
+			builder.WriteString("    cmp x0, x1\n")
+			builder.WriteString("    cset x2, le\n")
+		case ">=":
+			builder.WriteString("    cmp x0, x1\n")
+			builder.WriteString("    cset x2, ge\n")
+		default:
+			return "", fmt.Errorf("unsupported operation %s when generating code", e.Op)
+		}
+
+		return builder.String(), nil
+
 	default:
-		return "", fmt.Errorf("unsupported operation %s when generating code", expr.Op)
+		return "", fmt.Errorf("unsupported expression type")
 	}
-
-	return builder.String(), nil
 }
 
-func GenerateExpr(expr *parser.Expr) (string, error) {
+func GenerateExpr(expr *ast.BinaryExpr) (string, error) {
 	builder := strings.Builder{}
 
 	// Check if we need a .data section for strings
-	hasStrings := expr.Left.Type == parser.LiteralTypeString || expr.Right.Type == parser.LiteralTypeString
+	hasStrings := false
+	var leftLit, rightLit *ast.LiteralExpr
+
+	if left, ok := expr.Left.(*ast.LiteralExpr); ok {
+		leftLit = left
+		if left.Kind == ast.LiteralTypeString {
+			hasStrings = true
+		}
+	}
+
+	if right, ok := expr.Right.(*ast.LiteralExpr); ok {
+		rightLit = right
+		if right.Kind == ast.LiteralTypeString {
+			hasStrings = true
+		}
+	}
 
 	if hasStrings {
 		builder.WriteString(".data\n")
 		builder.WriteString(".align 3\n")
 
 		// Define string literals in .data section
-		if expr.Left.Type == parser.LiteralTypeString {
+		if leftLit != nil && leftLit.Kind == ast.LiteralTypeString {
 			builder.WriteString("str_left:\n")
 			// Escape the string for assembly
-			builder.WriteString(fmt.Sprintf("    .asciz %q\n", expr.Left.Value))
+			builder.WriteString(fmt.Sprintf("    .asciz %q\n", leftLit.Value))
 		}
 
-		if expr.Right.Type == parser.LiteralTypeString {
+		if rightLit != nil && rightLit.Kind == ast.LiteralTypeString {
 			builder.WriteString("str_right:\n")
-			builder.WriteString(fmt.Sprintf("    .asciz %q\n", expr.Right.Value))
+			builder.WriteString(fmt.Sprintf("    .asciz %q\n", rightLit.Value))
 		}
 
 		builder.WriteString("\n.text\n")
@@ -226,17 +262,21 @@ func GenerateExpr(expr *parser.Expr) (string, error) {
 	builder.WriteString("_start:\n")
 
 	// Load left operand
-	if expr.Left.Type == parser.LiteralTypeString {
-		builder.WriteString("    adr x0, str_left\n")
-	} else {
-		builder.WriteString(fmt.Sprintf("    mov x0, #%s\n", expr.Left.Value))
+	if leftLit != nil {
+		if leftLit.Kind == ast.LiteralTypeString {
+			builder.WriteString("    adr x0, str_left\n")
+		} else {
+			builder.WriteString(fmt.Sprintf("    mov x0, #%s\n", leftLit.Value))
+		}
 	}
 
 	// Load right operand
-	if expr.Right.Type == parser.LiteralTypeString {
-		builder.WriteString("    adr x1, str_right\n")
-	} else {
-		builder.WriteString(fmt.Sprintf("    mov x1, #%s\n", expr.Right.Value))
+	if rightLit != nil {
+		if rightLit.Kind == ast.LiteralTypeString {
+			builder.WriteString("    adr x1, str_right\n")
+		} else {
+			builder.WriteString(fmt.Sprintf("    mov x1, #%s\n", rightLit.Value))
+		}
 	}
 
 	switch expr.Op {
@@ -282,11 +322,11 @@ func GenerateExpr(expr *parser.Expr) (string, error) {
 }
 
 // GeneratePrintStmt generates code for a print statement
-func GeneratePrintStmt(stmt *parser.PrintStmt) (string, error) {
+func GeneratePrintStmt(stmt *ast.PrintStmt, stringMap map[*ast.LiteralExpr]string) (string, error) {
 	builder := strings.Builder{}
 
 	// Evaluate the expression to print
-	code, err := GenerateExprInline(stmt.Expr, make(map[*parser.Literal]string))
+	code, err := GenerateExprInline(stmt.Expr, stringMap)
 	if err != nil {
 		return "", err
 	}

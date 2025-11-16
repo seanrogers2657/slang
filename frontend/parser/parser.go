@@ -3,49 +3,9 @@ package parser
 import (
 	"fmt"
 
+	"github.com/seanrogers2657/slang/frontend/ast"
 	"github.com/seanrogers2657/slang/frontend/lexer"
 )
-
-type LiteralType int
-
-const (
-	LiteralTypeNumber LiteralType = iota
-	LiteralTypeString
-)
-
-type Literal struct {
-	Type  LiteralType
-	Value string
-}
-
-type Expr struct {
-	Left  *Literal
-	Op    string
-	Right *Literal
-}
-
-// Statement represents any statement in the program
-type Statement interface {
-	statementNode()
-}
-
-// ExprStmt is a statement that consists of a single expression
-type ExprStmt struct {
-	Expr *Expr
-}
-
-func (e *ExprStmt) statementNode() {}
-
-// PrintStmt is a print statement
-type PrintStmt struct {
-	Expr *Expr
-}
-
-func (p *PrintStmt) statementNode() {}
-
-type Program struct {
-	Statements []Statement
-}
 
 func NewParser(source []lexer.Token) *parser {
 	parser := &parser{
@@ -82,9 +42,15 @@ func (p *parser) skipNewlines() {
 }
 
 // Top level parsing
-func (p *parser) Parse() *Program {
-	program := &Program{
-		Statements: []Statement{},
+func (p *parser) Parse() *ast.Program {
+	startPos := ast.Position{Line: 1, Column: 1, Offset: 0}
+	if !p.isAtEnd() {
+		startPos = p.CurrentToken().Pos
+	}
+
+	program := &ast.Program{
+		Statements: []ast.Statement{},
+		StartPos:   startPos,
 	}
 
 	// Skip leading newlines
@@ -109,10 +75,17 @@ func (p *parser) Parse() *Program {
 		}
 	}
 
+	// Set end position
+	if len(program.Statements) > 0 {
+		program.EndPos = program.Statements[len(program.Statements)-1].End()
+	} else {
+		program.EndPos = startPos
+	}
+
 	return program
 }
 
-func (p *parser) ParseStatement() Statement {
+func (p *parser) ParseStatement() ast.Statement {
 	// Check if it's a print statement
 	if p.CurrentToken().Type == lexer.TokenTypePrint {
 		return p.ParsePrintStatement()
@@ -121,13 +94,16 @@ func (p *parser) ParseStatement() Statement {
 	// Otherwise, it's an expression statement
 	expr := p.ParseBinaryExpression()
 	if expr != nil {
-		return &ExprStmt{Expr: expr}
+		return &ast.ExprStmt{Expr: expr}
 	}
 
 	return nil
 }
 
-func (p *parser) ParsePrintStatement() Statement {
+func (p *parser) ParsePrintStatement() ast.Statement {
+	// Get position of 'print' keyword
+	keywordPos := p.CurrentToken().Pos
+
 	// Consume 'print' token
 	p.Index++
 
@@ -170,8 +146,14 @@ func (p *parser) ParsePrintStatement() Statement {
 			op = ">="
 		default:
 			// Not a binary operator, just a single literal
-			return &PrintStmt{Expr: &Expr{Left: left, Op: "", Right: nil}}
+			return &ast.PrintStmt{
+				Keyword: keywordPos,
+				Expr:    left,
+			}
 		}
+
+		// Get operator position
+		opPos := p.CurrentToken().Pos
 
 		// Consume operator
 		p.Index++
@@ -183,37 +165,59 @@ func (p *parser) ParsePrintStatement() Statement {
 			return nil
 		}
 
-		return &PrintStmt{Expr: &Expr{Left: left, Op: op, Right: right}}
+		binaryExpr := &ast.BinaryExpr{
+			Left:     left,
+			Op:       op,
+			Right:    right,
+			LeftPos:  left.Pos(),
+			OpPos:    opPos,
+			RightPos: right.Pos(),
+		}
+
+		return &ast.PrintStmt{
+			Keyword: keywordPos,
+			Expr:    binaryExpr,
+		}
 	}
 
 	// Just a single literal
-	return &PrintStmt{Expr: &Expr{Left: left, Op: "", Right: nil}}
+	return &ast.PrintStmt{
+		Keyword: keywordPos,
+		Expr:    left,
+	}
 }
 
-func (p *parser) ParseLiteral() *Literal {
+func (p *parser) ParseLiteral() ast.Expression {
 	//spew.Dump("parsing literal")
 	if p.CurrentToken().Type == lexer.TokenTypeInteger {
-		literal := Literal{
-			Type:  LiteralTypeNumber,
-			Value: p.CurrentToken().Value,
+		token := p.CurrentToken()
+		literal := &ast.LiteralExpr{
+			Kind:     ast.LiteralTypeNumber,
+			Value:    token.Value,
+			StartPos: token.Pos,
+			EndPos:   ast.Position{Line: token.Pos.Line, Column: token.Pos.Column + len(token.Value), Offset: token.Pos.Offset + len(token.Value)},
 		}
 		p.Index++
-		return &literal
+		return literal
 	}
 
 	if p.CurrentToken().Type == lexer.TokenTypeString {
-		literal := Literal{
-			Type:  LiteralTypeString,
-			Value: p.CurrentToken().Value,
+		token := p.CurrentToken()
+		// String length includes the quotes, so add 2 for quote characters
+		literal := &ast.LiteralExpr{
+			Kind:     ast.LiteralTypeString,
+			Value:    token.Value,
+			StartPos: token.Pos,
+			EndPos:   ast.Position{Line: token.Pos.Line, Column: token.Pos.Column + len(token.Value) + 2, Offset: token.Pos.Offset + len(token.Value) + 2},
 		}
 		p.Index++
-		return &literal
+		return literal
 	}
 
 	return nil
 }
 
-func (p *parser) ParseBinaryExpression() *Expr {
+func (p *parser) ParseBinaryExpression() ast.Expression {
 	left := p.ParseLiteral()
 
 	tokenType := p.CurrentToken().Type
@@ -248,13 +252,19 @@ func (p *parser) ParseBinaryExpression() *Expr {
 		return nil
 	}
 
+	// Get operator position
+	opPos := p.CurrentToken().Pos
+
 	// consume operator
 	p.Index++
 
 	right := p.ParseLiteral()
-	return &Expr{
-		Left:  left,
-		Op:    op,
-		Right: right,
+	return &ast.BinaryExpr{
+		Left:     left,
+		Op:       op,
+		Right:    right,
+		LeftPos:  left.Pos(),
+		OpPos:    opPos,
+		RightPos: right.Pos(),
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"unicode"
 
-	"github.com/davecgh/go-spew/spew"
+	"github.com/seanrogers2657/slang/frontend/ast"
 )
 
 type TokenType int
@@ -30,11 +30,16 @@ const (
 type Token struct {
 	Type  TokenType
 	Value string
+	Pos   ast.Position // position where token starts
 }
 
 type lexer struct {
 	Source []byte
 	Index  int
+
+	// Position tracking
+	Line   int // current line (1-indexed)
+	Column int // current column (1-indexed)
 
 	Errors []error
 	Tokens []Token
@@ -44,12 +49,37 @@ func NewLexer(source []byte) *lexer {
 	lexer := &lexer{
 		Source: source,
 		Index:  0,
+		Line:   1,
+		Column: 1,
 	}
 
 	return lexer
 }
 
+// currentPos returns the current position in the source
+func (p *lexer) currentPos() ast.Position {
+	return ast.Position{
+		Line:   p.Line,
+		Column: p.Column,
+		Offset: p.Index,
+	}
+}
+
+// advance moves to the next character and updates position tracking
+func (p *lexer) advance() {
+	if p.Index < len(p.Source) {
+		if p.Source[p.Index] == '\n' {
+			p.Line++
+			p.Column = 1
+		} else {
+			p.Column++
+		}
+		p.Index++
+	}
+}
+
 func (p *lexer) ParseNumber() {
+	startPos := p.currentPos()
 	number := ""
 	for p.Index < len(p.Source) {
 		currentChar := p.Source[p.Index]
@@ -60,15 +90,20 @@ func (p *lexer) ParseNumber() {
 		}
 
 		number += string(currentChar)
-		p.Index++
+		p.advance()
 	}
 
-	p.Tokens = append(p.Tokens, Token{Type: TokenTypeInteger, Value: string(number)})
+	p.Tokens = append(p.Tokens, Token{
+		Type:  TokenTypeInteger,
+		Value: string(number),
+		Pos:   startPos,
+	})
 }
 
 func (p *lexer) ParseString() {
+	startPos := p.currentPos()
 	// Skip opening quote
-	p.Index++
+	p.advance()
 
 	str := ""
 	for p.Index < len(p.Source) {
@@ -76,14 +111,18 @@ func (p *lexer) ParseString() {
 
 		// Check for closing quote
 		if currentChar == '"' {
-			p.Index++ // Skip closing quote
-			p.Tokens = append(p.Tokens, Token{Type: TokenTypeString, Value: str})
+			p.advance() // Skip closing quote
+			p.Tokens = append(p.Tokens, Token{
+				Type:  TokenTypeString,
+				Value: str,
+				Pos:   startPos,
+			})
 			return
 		}
 
 		// Handle escape sequences
 		if currentChar == '\\' && p.Index+1 < len(p.Source) {
-			p.Index++
+			p.advance()
 			nextChar := p.Source[p.Index]
 			switch nextChar {
 			case 'n':
@@ -100,10 +139,10 @@ func (p *lexer) ParseString() {
 				// Unknown escape sequence, just include the backslash
 				str += "\\" + string(nextChar)
 			}
-			p.Index++
+			p.advance()
 		} else {
 			str += string(currentChar)
-			p.Index++
+			p.advance()
 		}
 	}
 
@@ -112,6 +151,7 @@ func (p *lexer) ParseString() {
 }
 
 func (p *lexer) ParseKeyword() {
+	startPos := p.currentPos()
 	keyword := ""
 	for p.Index < len(p.Source) {
 		currentChar := p.Source[p.Index]
@@ -122,13 +162,17 @@ func (p *lexer) ParseKeyword() {
 		}
 
 		keyword += string(currentChar)
-		p.Index++
+		p.advance()
 	}
 
 	// Check if it's a recognized keyword
 	switch keyword {
 	case "print":
-		p.Tokens = append(p.Tokens, Token{Type: TokenTypePrint, Value: keyword})
+		p.Tokens = append(p.Tokens, Token{
+			Type:  TokenTypePrint,
+			Value: keyword,
+			Pos:   startPos,
+		})
 	default:
 		p.Errors = append(p.Errors, fmt.Errorf("unknown keyword: %q", keyword))
 	}
@@ -141,11 +185,12 @@ func (p *lexer) Parse() {
 
 		if b == '\n' {
 			// spew.Dump("is newline")
-			p.Tokens = append(p.Tokens, Token{Type: TokenTypeNewline, Value: "\n"})
-			p.Index++
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeNewline, Value: "\n", Pos: pos})
+			p.advance()
 		} else if unicode.IsSpace(rune(b)) {
 			// spew.Dump("is space")
-			p.Index++
+			p.advance()
 		} else if unicode.IsLetter(rune(b)) {
 			p.ParseKeyword()
 		} else if p.Source[p.Index] >= '0' && p.Source[p.Index] <= '9' {
@@ -154,58 +199,71 @@ func (p *lexer) Parse() {
 			p.ParseString()
 		} else if b == '+' {
 			// spew.Dump("is plus")
-			p.Tokens = append(p.Tokens, Token{Type: TokenTypePlus, Value: "+"})
-			p.Index++
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypePlus, Value: "+", Pos: pos})
+			p.advance()
 		} else if b == '-' {
-			p.Tokens = append(p.Tokens, Token{Type: TokenTypeMinus, Value: "-"})
-			p.Index++
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeMinus, Value: "-", Pos: pos})
+			p.advance()
 		} else if b == '*' {
-			p.Tokens = append(p.Tokens, Token{Type: TokenTypeMultiply, Value: "*"})
-			p.Index++
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeMultiply, Value: "*", Pos: pos})
+			p.advance()
 		} else if b == '/' {
-			p.Tokens = append(p.Tokens, Token{Type: TokenTypeDivide, Value: "/"})
-			p.Index++
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeDivide, Value: "/", Pos: pos})
+			p.advance()
 		} else if b == '%' {
-			p.Tokens = append(p.Tokens, Token{Type: TokenTypeModulo, Value: "%"})
-			p.Index++
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeModulo, Value: "%", Pos: pos})
+			p.advance()
 		} else if b == '=' {
 			// Check for ==
+			pos := p.currentPos()
 			if p.Index+1 < len(p.Source) && p.Source[p.Index+1] == '=' {
-				p.Tokens = append(p.Tokens, Token{Type: TokenTypeEqual, Value: "=="})
-				p.Index += 2
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeEqual, Value: "==", Pos: pos})
+				p.advance()
+				p.advance()
 			} else {
 				p.Errors = append(p.Errors, fmt.Errorf("unexpected character: %q (did you mean '=='?)", b))
 				return
 			}
 		} else if b == '!' {
 			// Check for !=
+			pos := p.currentPos()
 			if p.Index+1 < len(p.Source) && p.Source[p.Index+1] == '=' {
-				p.Tokens = append(p.Tokens, Token{Type: TokenTypeNotEqual, Value: "!="})
-				p.Index += 2
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeNotEqual, Value: "!=", Pos: pos})
+				p.advance()
+				p.advance()
 			} else {
 				p.Errors = append(p.Errors, fmt.Errorf("unexpected character: %q", b))
 				return
 			}
 		} else if b == '<' {
 			// Check for <=
+			pos := p.currentPos()
 			if p.Index+1 < len(p.Source) && p.Source[p.Index+1] == '=' {
-				p.Tokens = append(p.Tokens, Token{Type: TokenTypeLessThanOrEqual, Value: "<="})
-				p.Index += 2
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeLessThanOrEqual, Value: "<=", Pos: pos})
+				p.advance()
+				p.advance()
 			} else {
-				p.Tokens = append(p.Tokens, Token{Type: TokenTypeLessThan, Value: "<"})
-				p.Index++
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeLessThan, Value: "<", Pos: pos})
+				p.advance()
 			}
 		} else if b == '>' {
 			// Check for >=
+			pos := p.currentPos()
 			if p.Index+1 < len(p.Source) && p.Source[p.Index+1] == '=' {
-				p.Tokens = append(p.Tokens, Token{Type: TokenTypeGreaterThanOrEqual, Value: ">="})
-				p.Index += 2
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeGreaterThanOrEqual, Value: ">=", Pos: pos})
+				p.advance()
+				p.advance()
 			} else {
-				p.Tokens = append(p.Tokens, Token{Type: TokenTypeGreaterThan, Value: ">"})
-				p.Index++
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeGreaterThan, Value: ">", Pos: pos})
+				p.advance()
 			}
 		} else {
-			spew.Dump("has parsing error")
+			// spew.Dump("has parsing error")
 			p.Errors = append(p.Errors, fmt.Errorf("unexpected character: %q", b))
 			return
 		}

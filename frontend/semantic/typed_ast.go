@@ -1,0 +1,96 @@
+package semantic
+
+import "github.com/seanrogers2657/slang/frontend/ast"
+
+// TypedNode represents a node in the typed AST
+type TypedNode interface {
+	Pos() ast.Position
+	End() ast.Position
+	GetType() Type
+}
+
+// ============================================================================
+// Typed Expressions
+// ============================================================================
+
+// TypedExpression represents a typed expression
+type TypedExpression interface {
+	TypedNode
+	typedExprNode()
+}
+
+// TypedBinaryExpr represents a typed binary expression
+type TypedBinaryExpr struct {
+	Type     Type
+	Left     TypedExpression
+	Op       string
+	Right    TypedExpression
+	LeftPos  ast.Position
+	OpPos    ast.Position
+	RightPos ast.Position
+}
+
+func (e *TypedBinaryExpr) Pos() ast.Position { return e.LeftPos }
+func (e *TypedBinaryExpr) End() ast.Position { return e.RightPos }
+func (e *TypedBinaryExpr) GetType() Type     { return e.Type }
+func (e *TypedBinaryExpr) typedExprNode()    {}
+
+// TypedLiteralExpr represents a typed literal expression
+type TypedLiteralExpr struct {
+	Type     Type
+	LitType  ast.LiteralType
+	Value    string
+	StartPos ast.Position
+	EndPos   ast.Position
+}
+
+func (e *TypedLiteralExpr) Pos() ast.Position { return e.StartPos }
+func (e *TypedLiteralExpr) End() ast.Position { return e.EndPos }
+func (e *TypedLiteralExpr) GetType() Type     { return e.Type }
+func (e *TypedLiteralExpr) typedExprNode()    {}
+
+// ============================================================================
+// Typed Statements
+// ============================================================================
+
+// TypedStatement represents a typed statement
+type TypedStatement interface {
+	TypedNode
+	typedStmtNode()
+}
+
+// TypedExprStmt represents a typed expression statement
+type TypedExprStmt struct {
+	Expr TypedExpression
+}
+
+func (s *TypedExprStmt) Pos() ast.Position { return s.Expr.Pos() }
+func (s *TypedExprStmt) End() ast.Position { return s.Expr.End() }
+func (s *TypedExprStmt) GetType() Type     { return TypeVoid }
+func (s *TypedExprStmt) typedStmtNode()    {}
+
+// TypedPrintStmt represents a typed print statement
+type TypedPrintStmt struct {
+	Keyword ast.Position
+	Expr    TypedExpression
+}
+
+func (s *TypedPrintStmt) Pos() ast.Position { return s.Keyword }
+func (s *TypedPrintStmt) End() ast.Position { return s.Expr.End() }
+func (s *TypedPrintStmt) GetType() Type     { return TypeVoid }
+func (s *TypedPrintStmt) typedStmtNode()    {}
+
+// ============================================================================
+// Typed Program
+// ============================================================================
+
+// TypedProgram represents a typed program
+type TypedProgram struct {
+	Statements []TypedStatement
+	StartPos   ast.Position
+	EndPos     ast.Position
+}
+
+func (p *TypedProgram) Pos() ast.Position { return p.StartPos }
+func (p *TypedProgram) End() ast.Position { return p.EndPos }
+func (p *TypedProgram) GetType() Type     { return TypeVoid }

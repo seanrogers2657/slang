@@ -4,11 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Slang** is a compiler for a simple programming language written in Go. It targets ARM64 assembly for macOS. The compiler follows a traditional three-stage pipeline:
+**Slang** is a compiler for a simple programming language written in Go. It targets ARM64 assembly for macOS. The compiler follows a traditional four-stage pipeline:
 
 1. **Lexer** (`frontend/lexer`) - Tokenizes source code into tokens
 2. **Parser** (`frontend/parser`) - Builds an Abstract Syntax Tree (AST) from tokens
-3. **Code Generator** (`backend/as`) - Generates ARM64 assembly from the AST
+3. **Semantic Analyzer** (`frontend/semantic`) - Performs type checking and semantic analysis
+4. **Code Generator** (`backend/as`) - Generates ARM64 assembly from the AST
 
 The compiler currently supports binary expressions with integers and the following operators:
 - Arithmetic: `+`, `-`, `*`, `/`, `%`
@@ -134,6 +135,8 @@ Lexer (tokenization)
     ↓
 Parser (AST construction)
     ↓
+Semantic Analyzer (type checking & validation)
+    ↓
 Code Generator (ARM64 assembly)
     ↓
 Assembly Output (.s file)
@@ -156,7 +159,28 @@ Linker (ld) → Executable binary
 - `Literal` - Represents number literals with type and value
 - `Expr` - Binary expression with `Left`, `Op`, and `Right` fields
 - Currently only supports binary expressions (no operator precedence or parentheses)
-- Outputs: `*Expr` and `[]error`
+- Outputs: `*Program` and `[]error`
+
+**Semantic Analyzer** (`frontend/semantic/analyzer.go`):
+- `Analyzer` - Performs type checking and semantic validation
+- `Type` interface - Represents types in the type system (IntegerType, StringType, etc.)
+- `TypedProgram` - AST annotated with type information
+- Type checking rules:
+  - Arithmetic operators (`+`, `-`, `*`, `/`, `%`) require integer operands
+  - Comparison operators (`==`, `!=`, `<`, `>`, `<=`, `>=`) require integer operands
+  - Print statements can handle any type
+- Outputs: `[]*CompilerError` and `*TypedProgram`
+
+**Error Framework** (`frontend/errors/`):
+- `CompilerError` - Rich error type with filename, position, and error span
+- `FormatError()` - Formats errors with source code context and color highlighting
+- Beautiful error messages showing:
+  - Error type and message
+  - File location (file:line:column)
+  - Source code snippet
+  - Visual error pointer (^ under the error)
+  - Optional hints for fixing the error
+  - Summary of total errors/warnings
 
 **Code Generator** (`backend/as/as.go`):
 - `AsGenerator` interface with `Generate() (string, error)`
@@ -207,12 +231,20 @@ _start:
 
 ## Testing Strategy
 
-The project has comprehensive test coverage (74.3% overall):
-- Backend (Assembly Generator): 100%
+The project has comprehensive test coverage:
+- Backend (Assembly Generator): 62.5%
 - Frontend (Lexer): 96.7%
-- Frontend (Parser): 93.8%
+- Frontend (Parser): 60.4%
+- Frontend (Semantic Analyzer): 62.2%
+- Frontend (Error Framework): 89.6%
 
 All tests follow table-driven patterns with subtests using `t.Run()`. See `TESTING.md` for detailed testing documentation.
+
+**Semantic Analysis Tests** (`frontend/semantic/analyzer_test.go`):
+- Type checking for all operators (arithmetic and comparison)
+- Type error detection and reporting
+- Multi-statement program analysis
+- Integration with error framework
 
 ### Integration Tests
 

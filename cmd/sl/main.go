@@ -9,10 +9,78 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/seanrogers2657/slang/backend/as"
+	"github.com/seanrogers2657/slang/frontend/errors"
 	"github.com/seanrogers2657/slang/frontend/lexer"
 	"github.com/seanrogers2657/slang/frontend/parser"
+	"github.com/seanrogers2657/slang/frontend/semantic"
 	"github.com/urfave/cli/v2"
 )
+
+// compileSource performs the full compilation pipeline with error checking
+func compileSource(filename string) (string, error) {
+	// Read source file
+	source, err := os.ReadFile(filename)
+	if err != nil {
+		return "", fmt.Errorf("failed to read source file: %w", err)
+	}
+
+	// Read source lines for error reporting
+	sourceLines, err := errors.ReadSourceLines(filename)
+	if err != nil {
+		return "", fmt.Errorf("failed to read source file: %w", err)
+	}
+
+	var allErrors []*errors.CompilerError
+
+	// Lexical analysis
+	lex := lexer.NewLexer(source)
+	lex.Parse()
+
+	// Convert lexer errors to CompilerErrors
+	for _, lexErr := range lex.Errors {
+		compilerErr := errors.NewError(lexErr.Error(), filename, lex.Tokens[0].Pos, "lexer")
+		allErrors = append(allErrors, compilerErr)
+	}
+
+	if len(allErrors) > 0 {
+		fmt.Println(errors.FormatErrors(allErrors, sourceLines))
+		return "", fmt.Errorf("compilation failed")
+	}
+
+	// Parsing
+	pars := parser.NewParser(lex.Tokens)
+	ast := pars.Parse()
+
+	// Convert parser errors to CompilerErrors
+	for _, parseErr := range pars.Errors {
+		compilerErr := errors.NewError(parseErr.Error(), filename, ast.StartPos, "parser")
+		allErrors = append(allErrors, compilerErr)
+	}
+
+	if len(allErrors) > 0 {
+		fmt.Println(errors.FormatErrors(allErrors, sourceLines))
+		return "", fmt.Errorf("compilation failed")
+	}
+
+	// Semantic analysis
+	analyzer := semantic.NewAnalyzer(filename)
+	semanticErrors, _ := analyzer.Analyze(ast)
+	allErrors = append(allErrors, semanticErrors...)
+
+	if len(allErrors) > 0 {
+		fmt.Println(errors.FormatErrors(allErrors, sourceLines))
+		return "", fmt.Errorf("compilation failed")
+	}
+
+	// Code generation
+	codeGenerator := as.NewAsGenerator(ast)
+	assemblyOutput, err := codeGenerator.Generate()
+	if err != nil {
+		return "", fmt.Errorf("code generation failed: %w", err)
+	}
+
+	return assemblyOutput, nil
+}
 
 func main() {
 	app := &cli.App{
@@ -29,49 +97,31 @@ func main() {
 						return fmt.Errorf("source file required")
 					}
 
-					dat, err := os.ReadFile(file)
+					// Compile the source
+					assemblyOutput, err := compileSource(file)
 					if err != nil {
-						log.Fatal(err)
+						return err
 					}
 
-					lexer := lexer.NewLexer(dat)
-					lexer.Parse()
-					spew.Dump("done lexing...")
-
-					parser := parser.NewParser(lexer.Tokens)
-					ast := parser.Parse()
-					spew.Dump("done parsing...")
-
-					codeGenerator := as.NewAsGenerator(ast)
-					assemblyOutput, err := codeGenerator.Generate()
-					if err != nil {
-						panic(err)
-					}
-
+					// Write assembly output
 					err = os.WriteFile("build/output.s", []byte(assemblyOutput), fs.ModePerm)
 					if err != nil {
-						panic(err)
+						return fmt.Errorf("failed to write assembly: %w", err)
 					}
 
-					cmd := exec.Command("as", "-arch", "arm64", "_examples/arm64/simple.s", "-o", "build/simple.o")
-					err = cmd.Run()
-					if err != nil {
-						panic(err)
+					// Assemble
+					cmd := exec.Command("as", "-arch", "arm64", "build/output.s", "-o", "build/output.o")
+					if err := cmd.Run(); err != nil {
+						return fmt.Errorf("assembly failed: %w", err)
 					}
 
-					// cmd = exec.Command("xcrun", "-sdk", "macosx", "--show-sdk-path")
-					// err = cmd.Run()
-					// if err != nil {
-					// 	panic(err)
-					// }
-					//sdkPath, err := cmd.Output()
+					// Link
 					sdkPath := "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk"
-
 					cmd = exec.Command(
 						"ld",
 						"-o",
-						"build/simple",
-						"build/simple.o",
+						"build/output",
+						"build/output.o",
 						"-lSystem",
 						"-syslibroot",
 						sdkPath,
@@ -80,11 +130,8 @@ func main() {
 						"-arch",
 						"arm64",
 					)
-					err = cmd.Run()
-					fmt.Print(err)
-
-					if err != nil {
-						panic(err)
+					if err := cmd.Run(); err != nil {
+						return fmt.Errorf("linking failed: %w", err)
 					}
 
 					spew.Dump("compilation done")
@@ -101,22 +148,10 @@ func main() {
 						return fmt.Errorf("source file required")
 					}
 
-					// Read and compile the source file
-					dat, err := os.ReadFile(file)
+					// Compile the source
+					assemblyOutput, err := compileSource(file)
 					if err != nil {
-						log.Fatal(err)
-					}
-
-					lexer := lexer.NewLexer(dat)
-					lexer.Parse()
-
-					parser := parser.NewParser(lexer.Tokens)
-					ast := parser.Parse()
-
-					codeGenerator := as.NewAsGenerator(ast)
-					assemblyOutput, err := codeGenerator.Generate()
-					if err != nil {
-						return fmt.Errorf("code generation failed: %w", err)
+						return err
 					}
 
 					// Write assembly output

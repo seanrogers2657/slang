@@ -28,19 +28,19 @@ func TestSLRunCommand(t *testing.T) {
 		{
 			name:        "simple addition",
 			source:      "2 + 5",
-			expectError: true, // Program exits with non-zero code (result of computation)
+			expectError: false, // Program exits with code 0 (success)
 			description: "compiles and runs a simple addition",
 		},
 		{
 			name:        "subtraction",
 			source:      "5 - 2",
-			expectError: true, // Program exits with non-zero code (result of computation)
+			expectError: false, // Program exits with code 0 (success)
 			description: "compiles and runs a subtraction",
 		},
 		{
 			name:        "multiplication",
 			source:      "3 * 4",
-			expectError: true, // Program exits with non-zero code (result of computation)
+			expectError: false, // Program exits with code 0 (success)
 			description: "compiles and runs a multiplication",
 		},
 	}

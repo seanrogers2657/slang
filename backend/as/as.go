@@ -126,7 +126,7 @@ func GenerateProgram(program *ast.Program) (string, error) {
 	// Exit syscall (only at the end)
 	builder.WriteString("    mov x0, #0\n")
 	builder.WriteString("    mov x16, #1\n")
-	builder.WriteString("    svc #0x80\n")
+	builder.WriteString("    svc #0\n")
 
 	return builder.String(), nil
 }
@@ -316,7 +316,7 @@ func GenerateExpr(expr *ast.BinaryExpr) (string, error) {
 
 	builder.WriteString("    mov x0, #0\n")
 	builder.WriteString("    mov x16, #1\n")
-	builder.WriteString("    svc #0x80\n")
+	builder.WriteString("    svc #0\n")
 
 	return builder.String(), nil
 }

@@ -27,9 +27,9 @@ func TestGenerateExprAddition(t *testing.T) {
 				"    mov x0, #2",
 				"    mov x1, #5",
 				"    add x2, x0, x1",
-				"    mov x0, #1",
-				"    mov x16, #0",
-				"    svc #0",
+				"    mov x0, #0",
+				"    mov x16, #1",
+				"    svc #0x80",
 			},
 		},
 		{
@@ -46,9 +46,9 @@ func TestGenerateExprAddition(t *testing.T) {
 				"    mov x0, #100",
 				"    mov x1, #200",
 				"    add x2, x0, x1",
-				"    mov x0, #1",
-				"    mov x16, #0",
-				"    svc #0",
+				"    mov x0, #0",
+				"    mov x16, #1",
+				"    svc #0x80",
 			},
 		},
 		{
@@ -65,9 +65,9 @@ func TestGenerateExprAddition(t *testing.T) {
 				"    mov x0, #0",
 				"    mov x1, #5",
 				"    add x2, x0, x1",
-				"    mov x0, #1",
-				"    mov x16, #0",
-				"    svc #0",
+				"    mov x0, #0",
+				"    mov x16, #1",
+				"    svc #0x80",
 			},
 		},
 	}
@@ -288,9 +288,9 @@ func TestAsGeneratorInterface(t *testing.T) {
 				"    mov x0, #2",
 				"    mov x1, #5",
 				"    add x2, x0, x1",
-				"    mov x0, #1",
-				"    mov x16, #0",
-				"    svc #0",
+				"    mov x0, #0",
+				"    mov x16, #1",
+				"    svc #0x80",
 			},
 			expectError: false,
 		},
@@ -311,9 +311,9 @@ func TestAsGeneratorInterface(t *testing.T) {
 				"    mov x0, #10",
 				"    mov x1, #3",
 				"    sub x2, x0, x1",
-				"    mov x0, #1",
-				"    mov x16, #0",
-				"    svc #0",
+				"    mov x0, #0",
+				"    mov x16, #1",
+				"    svc #0x80",
 			},
 			expectError: false,
 		},
@@ -408,13 +408,13 @@ func TestGenerateExprStructure(t *testing.T) {
 	})
 
 	t.Run("contains exit syscall", func(t *testing.T) {
-		if !strings.Contains(output, "mov x0, #1") {
+		if !strings.Contains(output, "mov x0, #0") {
 			t.Error("output should contain exit code setup")
 		}
-		if !strings.Contains(output, "mov x16, #0") {
+		if !strings.Contains(output, "mov x16, #1") {
 			t.Error("output should contain syscall number")
 		}
-		if !strings.Contains(output, "svc #0") {
+		if !strings.Contains(output, "svc #0x80") {
 			t.Error("output should contain syscall instruction")
 		}
 	})
@@ -455,9 +455,9 @@ func TestGenerateProgramMultipleStatements(t *testing.T) {
 				"    mov x0, #10",
 				"    mov x1, #3",
 				"    sub x2, x0, x1",
-				"    mov x0, #1",
-				"    mov x16, #0",
-				"    svc #0",
+				"    mov x0, #0",
+				"    mov x16, #1",
+				"    svc #0x80",
 			},
 		},
 		{
@@ -498,9 +498,9 @@ func TestGenerateProgramMultipleStatements(t *testing.T) {
 				"    mov x1, #5",
 				"    cmp x0, x1",
 				"    cset x2, eq",
-				"    mov x0, #1",
-				"    mov x16, #0",
-				"    svc #0",
+				"    mov x0, #0",
+				"    mov x16, #1",
+				"    svc #0x80",
 			},
 		},
 	}

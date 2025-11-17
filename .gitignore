@@ -2,3 +2,5 @@ build/*
 sl
 !sl/
 main
+go.work
+go.work.sum

@@ -321,114 +321,183 @@ func GenerateExpr(expr *ast.BinaryExpr) (string, error) {
 	return builder.String(), nil
 }
 
-// GeneratePrintStmt generates code for a print statement
+// GeneratePrintStmt generates code for a print statement.
+// It evaluates the expression, converts the result to a string, and writes it to stdout.
 func GeneratePrintStmt(stmt *ast.PrintStmt, stringMap map[*ast.LiteralExpr]string) (string, error) {
 	builder := strings.Builder{}
 
-	// Evaluate the expression to print
+	// Step 1: Evaluate the expression (result goes into x2)
 	code, err := GenerateExprInline(stmt.Expr, stringMap)
 	if err != nil {
 		return "", err
 	}
 	builder.WriteString(code)
 
-	// The result is in x2, move it to x0 for int_to_string
-	builder.WriteString("    mov x0, x2\n")
-	builder.WriteString("    bl int_to_string\n")
+	// Step 2: Convert integer to string
+	builder.WriteString("    mov x0, x2              // Pass value to convert\n")
+	builder.WriteString("    bl int_to_string        // Returns buffer in x0, length in x1\n")
+	builder.WriteString("\n")
 
-	// Write syscall (x0 has buffer address, x1 has length from int_to_string)
-	builder.WriteString("    mov x2, x1          // length to x2\n")
-	builder.WriteString("    mov x1, x0          // buffer to x1\n")
-	builder.WriteString("    mov x0, #1          // stdout\n")
-	builder.WriteString("    mov x16, #4         // write syscall\n")
-	builder.WriteString("    svc #0x80\n")
+	// Step 3: Write the string to stdout
+	builder.WriteString(generateWriteSyscall("x0", "x1"))
+	builder.WriteString("\n")
 
-	// Print newline
-	builder.WriteString("    adrp x1, newline@PAGE\n")
-	builder.WriteString("    add x1, x1, newline@PAGEOFF\n")
-	builder.WriteString("    mov x2, #1\n")
-	builder.WriteString("    mov x0, #1\n")
-	builder.WriteString("    mov x16, #4\n")
-	builder.WriteString("    svc #0x80\n")
+	// Step 4: Write a newline character
+	builder.WriteString(generateNewline())
 
 	return builder.String(), nil
 }
 
-// intToStringFunctionText generates the int-to-string conversion routine (text only)
+// generateWriteSyscall creates assembly code to write data to stdout.
+// bufferReg is the register containing the buffer address.
+// lengthReg is the register containing the length.
+func generateWriteSyscall(bufferReg, lengthReg string) string {
+	return fmt.Sprintf("    mov x2, %s              // Length\n", lengthReg) +
+		fmt.Sprintf("    mov x1, %s              // Buffer address\n", bufferReg) +
+		"    mov x0, #1              // File descriptor: stdout\n" +
+		"    mov x16, #4             // Syscall number: write\n" +
+		"    svc #0x80               // Make syscall\n"
+}
+
+// generateNewline creates assembly code to write a newline to stdout.
+func generateNewline() string {
+	return "    adrp x1, newline@PAGE\n" +
+		"    add x1, x1, newline@PAGEOFF\n" +
+		"    mov x2, #1              // Length of newline\n" +
+		"    mov x0, #1              // File descriptor: stdout\n" +
+		"    mov x16, #4             // Syscall number: write\n" +
+		"    svc #0x80               // Make syscall\n"
+}
+
+// intToStringFunctionText generates the int-to-string conversion routine.
+// This function converts an integer to its ASCII string representation.
+//
+// Input:  x0 = integer to convert
+// Output: x0 = address of string buffer, x1 = length of string
+//
+// Register usage:
+//   x19 = buffer pointer (moves through buffer)
+//   x20 = number being converted (modified during conversion)
+//   x21 = is_negative flag (1 if negative, 0 otherwise)
+//   x22 = digit count
 func intToStringFunctionText() string {
+	return buildIntToStringFunction()
+}
+
+func buildIntToStringFunction() string {
+	return functionPrologue() +
+		setupConversion() +
+		handleZeroCase() +
+		handleNegativeNumber() +
+		convertDigitsToASCII() +
+		addMinusSignIfNeeded() +
+		functionEpilogue()
+}
+
+// functionPrologue saves registers and sets up the stack frame
+func functionPrologue() string {
 	return `.align 4
 int_to_string:
-    // Input: x0 = integer to convert
-    // Output: x0 = address of string, x1 = length
-    // Save registers
-    stp x29, x30, [sp, #-16]!
-    mov x29, sp
-    stp x19, x20, [sp, #-16]!
-    stp x21, x22, [sp, #-16]!
+    // Save callee-saved registers to stack
+    stp x29, x30, [sp, #-16]!   // Save frame pointer and link register
+    mov x29, sp                  // Set up frame pointer
+    stp x19, x20, [sp, #-16]!   // Save working registers
+    stp x21, x22, [sp, #-16]!   // Save working registers
 
-    adrp x19, buffer@PAGE        // x19 = buffer page address
-    add x19, x19, buffer@PAGEOFF // x19 = buffer address
+`
+}
+
+// setupConversion initializes registers for the conversion process
+func setupConversion() string {
+	return `    // Initialize conversion state
+    adrp x19, buffer@PAGE        // Load buffer address (page)
+    add x19, x19, buffer@PAGEOFF // Load buffer address (offset)
     mov x20, x0                  // x20 = number to convert
-    mov x21, #0                  // x21 = is_negative flag
+    mov x21, #0                  // x21 = is_negative flag (0 = positive)
 
-    // Handle zero special case
+`
+}
+
+// handleZeroCase handles the special case when the input is zero
+func handleZeroCase() string {
+	return `    // Special case: if number is 0, return "0"
     cmp x20, #0
     bne check_negative
-    mov w10, #48            // '0' = 48
-    strb w10, [x19]
-    mov x0, x19
-    mov x1, #1
+    mov w10, #48                 // ASCII '0' = 48
+    strb w10, [x19]             // Store '0' in buffer
+    mov x0, x19                  // Return buffer address
+    mov x1, #1                   // Return length = 1
     b restore_regs
 
-check_negative:
-    // Check if negative
+`
+}
+
+// handleNegativeNumber checks for negative numbers and converts them to positive
+func handleNegativeNumber() string {
+	return `check_negative:
+    // Check if number is negative
     cmp x20, #0
-    bge convert_loop_setup
+    bge convert_loop_setup       // If positive or zero, skip
 
-    // Handle negative: set flag and negate
-    mov x21, #1
-    neg x20, x20
+    // Number is negative: set flag and make it positive
+    mov x21, #1                  // Set is_negative flag
+    neg x20, x20                 // x20 = -x20 (make positive)
 
-convert_loop_setup:
-    mov x22, #0             // x22 = digit count
-    add x19, x19, #31       // Start at end of buffer
+`
+}
+
+// convertDigitsToASCII converts the number to ASCII digits (backwards)
+func convertDigitsToASCII() string {
+	return `convert_loop_setup:
+    mov x22, #0                  // x22 = digit count (starts at 0)
+    add x19, x19, #31            // Point to end of 32-byte buffer
 
 convert_loop:
-    // Divide by 10
+    // Extract rightmost digit using division by 10
     mov x10, #10
-    udiv x11, x20, x10      // x11 = x20 / 10
-    msub x12, x11, x10, x20 // x12 = x20 % 10 (remainder)
+    udiv x11, x20, x10           // x11 = quotient (x20 / 10)
+    msub x12, x11, x10, x20      // x12 = remainder (x20 % 10)
 
-    // Convert digit to ASCII
-    add x12, x12, #48       // '0' = 48
-    strb w12, [x19]         // Store byte
-    sub x19, x19, #1        // Move backwards
-    add x22, x22, #1        // Increment digit count
+    // Convert digit to ASCII and store it
+    add x12, x12, #48            // Convert to ASCII ('0' = 48)
+    strb w12, [x19]              // Store digit in buffer
+    sub x19, x19, #1             // Move pointer backwards
+    add x22, x22, #1             // Increment digit count
 
-    // Continue if quotient > 0
-    mov x20, x11
+    // Continue if there are more digits
+    mov x20, x11                 // x20 = quotient
     cmp x20, #0
-    bne convert_loop
+    bne convert_loop             // Loop if quotient > 0
 
-    // Add minus sign if negative
+`
+}
+
+// addMinusSignIfNeeded adds a minus sign if the number was negative
+func addMinusSignIfNeeded() string {
+	return `    // If number was negative, prepend '-' sign
     cmp x21, #1
     bne finalize
-    strb wzr, [x19]         // This will be '-'
-    mov w10, #45            // '-' = 45
-    strb w10, [x19]
-    sub x19, x19, #1
-    add x22, x22, #1
+    mov w10, #45                 // ASCII '-' = 45
+    strb w10, [x19]             // Store '-' in buffer
+    sub x19, x19, #1             // Move pointer backwards
+    add x22, x22, #1             // Increment digit count
 
-finalize:
-    add x19, x19, #1        // Adjust to start of string
-    mov x0, x19             // Return buffer address
-    mov x1, x22             // Return length
+`
+}
+
+// functionEpilogue finalizes the result and restores registers
+func functionEpilogue() string {
+	return `finalize:
+    // Adjust pointer to start of string and set return values
+    add x19, x19, #1             // Move to first character
+    mov x0, x19                  // Return buffer address
+    mov x1, x22                  // Return string length
 
 restore_regs:
-    // Restore registers
-    ldp x21, x22, [sp], #16
-    ldp x19, x20, [sp], #16
-    ldp x29, x30, [sp], #16
+    // Restore callee-saved registers from stack
+    ldp x21, x22, [sp], #16     // Restore working registers
+    ldp x19, x20, [sp], #16     // Restore working registers
+    ldp x29, x30, [sp], #16     // Restore frame pointer and link register
     ret
 `
 }

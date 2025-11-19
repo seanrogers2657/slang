@@ -2,12 +2,12 @@ package main
 
 import (
 	"fmt"
-	"io/fs"
 	"log"
 	"os"
 	"os/exec"
 
 	"github.com/davecgh/go-spew/spew"
+	"github.com/seanrogers2657/slang/assembler"
 	"github.com/seanrogers2657/slang/backend/as"
 	"github.com/seanrogers2657/slang/frontend/errors"
 	"github.com/seanrogers2657/slang/frontend/lexer"
@@ -122,51 +122,25 @@ func buildExecutable(filename string, timer *timing.Timer) error {
 		return err
 	}
 
-	// Write assembly output
+	// Create assembler for assembly and linking
+	asm := assembler.New()
+
+	// Build the executable
 	if timer != nil {
-		timer.Start("Write Assembly")
-	}
-	err = os.WriteFile("build/output.s", []byte(assemblyOutput), fs.ModePerm)
-	if err != nil {
-		return fmt.Errorf("failed to write assembly: %w", err)
-	}
-	if timer != nil {
-		timer.End()
+		timer.Start("Assemble & Link")
 	}
 
-	// Assemble
-	if timer != nil {
-		timer.Start("Assemble")
-	}
-	cmd := exec.Command("as", "-arch", "arm64", "build/output.s", "-o", "build/output.o")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("assembly failed: %w", err)
-	}
-	if timer != nil {
-		timer.End()
+	opts := assembler.BuildOptions{
+		AssemblyPath:      "build/output.s",
+		ObjectPath:        "build/output.o",
+		OutputPath:        "build/output",
+		KeepIntermediates: true, // Keep .s and .o files for inspection
 	}
 
-	// Link
-	if timer != nil {
-		timer.Start("Link")
+	if err := asm.Build(assemblyOutput, opts); err != nil {
+		return err
 	}
-	sdkPath := "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk"
-	cmd = exec.Command(
-		"ld",
-		"-o",
-		"build/output",
-		"build/output.o",
-		"-lSystem",
-		"-syslibroot",
-		sdkPath,
-		"-e",
-		"_start",
-		"-arch",
-		"arm64",
-	)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("linking failed: %w", err)
-	}
+
 	if timer != nil {
 		timer.End()
 	}

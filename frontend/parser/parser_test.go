@@ -356,12 +356,13 @@ func TestParserErrors(t *testing.T) {
 		expectedError string
 	}{
 		{
-			name: "unsupported operation - newline",
+			name: "missing operand after operator",
 			tokens: []lexer.Token{
 				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
-				{Type: lexer.TokenTypeNewline, Value: "\n", Pos: ast.Position{Line: 1, Column: 2, Offset: 1}},
+				{Type: lexer.TokenTypePlus, Value: "+", Pos: ast.Position{Line: 1, Column: 3, Offset: 2}},
+				{Type: lexer.TokenTypeNewline, Value: "\n", Pos: ast.Position{Line: 1, Column: 4, Offset: 3}},
 			},
-			expectedError: "unsupported operation: \n",
+			expectedError: "expected expression after operator '+'",
 		},
 	}
 
@@ -473,6 +474,196 @@ func TestParserMultipleStatements(t *testing.T) {
 					t.Errorf("statement %d: expected operator %q, got %q", i, expectedOp, binExpr.Op)
 				}
 			}
+		})
+	}
+}
+
+func TestParserOperatorPrecedence(t *testing.T) {
+	tests := []struct {
+		name        string
+		source      string
+		description string
+		validate    func(t *testing.T, expr ast.Expression)
+	}{
+		{
+			name:        "multiplication before addition",
+			source:      "2 + 3 * 4",
+			description: "should parse as 2 + (3 * 4)",
+			validate: func(t *testing.T, expr ast.Expression) {
+				// Top level should be addition
+				binExpr, ok := expr.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatal("expected BinaryExpr at top level")
+				}
+				if binExpr.Op != "+" {
+					t.Errorf("expected top-level operator '+', got %q", binExpr.Op)
+				}
+
+				// Left should be literal 2
+				leftLit, ok := binExpr.Left.(*ast.LiteralExpr)
+				if !ok {
+					t.Fatal("expected left operand to be literal")
+				}
+				if leftLit.Value != "2" {
+					t.Errorf("expected left literal '2', got %q", leftLit.Value)
+				}
+
+				// Right should be multiplication (3 * 4)
+				rightBin, ok := binExpr.Right.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatal("expected right operand to be BinaryExpr")
+				}
+				if rightBin.Op != "*" {
+					t.Errorf("expected right operator '*', got %q", rightBin.Op)
+				}
+			},
+		},
+		{
+			name:        "division before subtraction",
+			source:      "10 - 6 / 2",
+			description: "should parse as 10 - (6 / 2)",
+			validate: func(t *testing.T, expr ast.Expression) {
+				binExpr := expr.(*ast.BinaryExpr)
+				if binExpr.Op != "-" {
+					t.Errorf("expected top-level operator '-', got %q", binExpr.Op)
+				}
+
+				rightBin := binExpr.Right.(*ast.BinaryExpr)
+				if rightBin.Op != "/" {
+					t.Errorf("expected right operator '/', got %q", rightBin.Op)
+				}
+			},
+		},
+		{
+			name:        "comparison has lower precedence than addition",
+			source:      "2 + 3 < 10",
+			description: "should parse as (2 + 3) < 10",
+			validate: func(t *testing.T, expr ast.Expression) {
+				binExpr := expr.(*ast.BinaryExpr)
+				if binExpr.Op != "<" {
+					t.Errorf("expected top-level operator '<', got %q", binExpr.Op)
+				}
+
+				leftBin, ok := binExpr.Left.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatal("expected left operand to be BinaryExpr")
+				}
+				if leftBin.Op != "+" {
+					t.Errorf("expected left operator '+', got %q", leftBin.Op)
+				}
+			},
+		},
+		{
+			name:        "left associativity for same precedence",
+			source:      "2 + 3 + 4",
+			description: "should parse as (2 + 3) + 4",
+			validate: func(t *testing.T, expr ast.Expression) {
+				binExpr := expr.(*ast.BinaryExpr)
+				if binExpr.Op != "+" {
+					t.Errorf("expected top-level operator '+', got %q", binExpr.Op)
+				}
+
+				// Right should be literal 4
+				rightLit, ok := binExpr.Right.(*ast.LiteralExpr)
+				if !ok {
+					t.Fatal("expected right operand to be literal")
+				}
+				if rightLit.Value != "4" {
+					t.Errorf("expected right literal '4', got %q", rightLit.Value)
+				}
+
+				// Left should be (2 + 3)
+				leftBin, ok := binExpr.Left.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatal("expected left operand to be BinaryExpr")
+				}
+				if leftBin.Op != "+" {
+					t.Errorf("expected left operator '+', got %q", leftBin.Op)
+				}
+			},
+		},
+		{
+			name:        "complex mixed precedence",
+			source:      "2 + 3 * 4 == 14",
+			description: "should parse as (2 + (3 * 4)) == 14",
+			validate: func(t *testing.T, expr ast.Expression) {
+				// Top level should be ==
+				binExpr := expr.(*ast.BinaryExpr)
+				if binExpr.Op != "==" {
+					t.Errorf("expected top-level operator '==', got %q", binExpr.Op)
+				}
+
+				// Left should be (2 + (3 * 4))
+				leftBin, ok := binExpr.Left.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatal("expected left operand to be BinaryExpr")
+				}
+				if leftBin.Op != "+" {
+					t.Errorf("expected left operator '+', got %q", leftBin.Op)
+				}
+
+				// Left's right should be (3 * 4)
+				leftRightBin, ok := leftBin.Right.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatal("expected left's right operand to be BinaryExpr")
+				}
+				if leftRightBin.Op != "*" {
+					t.Errorf("expected nested operator '*', got %q", leftRightBin.Op)
+				}
+			},
+		},
+		{
+			name:        "modulo same precedence as multiplication",
+			source:      "10 % 3 * 2",
+			description: "should parse as (10 % 3) * 2",
+			validate: func(t *testing.T, expr ast.Expression) {
+				binExpr := expr.(*ast.BinaryExpr)
+				if binExpr.Op != "*" {
+					t.Errorf("expected top-level operator '*', got %q", binExpr.Op)
+				}
+
+				leftBin, ok := binExpr.Left.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatal("expected left operand to be BinaryExpr")
+				}
+				if leftBin.Op != "%" {
+					t.Errorf("expected left operator '%%', got %q", leftBin.Op)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			if program == nil {
+				t.Fatal("expected program, got nil")
+			}
+
+			if len(program.Statements) != 1 {
+				t.Fatalf("expected 1 statement, got %d", len(program.Statements))
+			}
+
+			stmt := program.Statements[0]
+			exprStmt, ok := stmt.(*ast.ExprStmt)
+			if !ok {
+				t.Fatal("expected ExprStmt")
+			}
+
+			tt.validate(t, exprStmt.Expr)
 		})
 	}
 }

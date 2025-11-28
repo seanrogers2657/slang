@@ -8,6 +8,8 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/seanrogers2657/slang/assembler"
+	nativeasm "github.com/seanrogers2657/slang/assembler/asm"
+	"github.com/seanrogers2657/slang/assembler/system"
 	"github.com/seanrogers2657/slang/backend/as"
 	"github.com/seanrogers2657/slang/frontend/errors"
 	"github.com/seanrogers2657/slang/frontend/lexer"
@@ -115,15 +117,24 @@ func compileSource(filename string, timer *timing.Timer) (string, error) {
 
 // buildExecutable performs the full build pipeline: compile, assemble, and link
 // If timer is provided, stages will be timed
-func buildExecutable(filename string, timer *timing.Timer) error {
+// assemblerType specifies which assembler to use: "system" or "native"
+func buildExecutable(filename string, assemblerType string, timer *timing.Timer) error {
 	// Compile the source
 	assemblyOutput, err := compileSource(filename, timer)
 	if err != nil {
 		return err
 	}
 
-	// Create assembler for assembly and linking
-	asm := assembler.New()
+	// Create assembler based on type
+	var asm assembler.Assembler
+	switch assemblerType {
+	case "native":
+		asm = nativeasm.New()
+	case "system":
+		asm = system.New()
+	default:
+		return fmt.Errorf("unknown assembler type: %s (use 'system' or 'native')", assemblerType)
+	}
 
 	// Build the executable
 	if timer != nil {
@@ -157,16 +168,25 @@ func main() {
 				Name:      "build",
 				Usage:     "Build a Slang source file",
 				ArgsUsage: "<source-file>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:    "assembler",
+						Aliases: []string{"a"},
+						Value:   "system",
+						Usage:   "Assembler to use: 'system' (default, uses macOS as/ld) or 'native' (custom implementation)",
+					},
+				},
 				Action: func(c *cli.Context) error {
 					file := c.Args().First()
 					if file == "" {
 						return fmt.Errorf("source file required")
 					}
 
+					assemblerType := c.String("assembler")
 					timer := timing.NewTimer()
 
 					// Build the executable with timing
-					if err := buildExecutable(file, timer); err != nil {
+					if err := buildExecutable(file, assemblerType, timer); err != nil {
 						return err
 					}
 
@@ -179,16 +199,25 @@ func main() {
 				Name:      "run",
 				Usage:     "Compile and execute a Slang source file",
 				ArgsUsage: "<source-file>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:    "assembler",
+						Aliases: []string{"a"},
+						Value:   "system",
+						Usage:   "Assembler to use: 'system' (default, uses macOS as/ld) or 'native' (custom implementation)",
+					},
+				},
 				Action: func(c *cli.Context) error {
 					file := c.Args().First()
 					if file == "" {
 						return fmt.Errorf("source file required")
 					}
 
+					assemblerType := c.String("assembler")
 					timer := timing.NewTimer()
 
 					// Build the executable with timing
-					if err := buildExecutable(file, timer); err != nil {
+					if err := buildExecutable(file, assemblerType, timer); err != nil {
 						return err
 					}
 

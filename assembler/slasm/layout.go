@@ -1,4 +1,4 @@
-package asm
+package slasm
 
 // Layout calculates addresses for all instructions and data
 type Layout struct {

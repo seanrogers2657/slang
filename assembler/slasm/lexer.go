@@ -1,4 +1,4 @@
-package asm
+package slasm
 
 // TokenType represents the type of token in assembly source
 type TokenType int

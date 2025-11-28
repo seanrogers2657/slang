@@ -13,7 +13,7 @@ import (
 
 func main() {
 	app := &cli.App{
-		Name:  "asm",
+		Name:  "slasm",
 		Usage: "Assemble and link ARM64 assembly programs",
 		Commands: []*cli.Command{
 			{

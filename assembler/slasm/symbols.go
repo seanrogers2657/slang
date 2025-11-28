@@ -1,4 +1,4 @@
-package asm
+package slasm
 
 // SymbolTable tracks label definitions and their addresses
 type SymbolTable struct {

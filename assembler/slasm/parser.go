@@ -1,4 +1,4 @@
-package asm
+package slasm
 
 // Parser parses tokens into an intermediate representation (IR)
 type Parser struct {

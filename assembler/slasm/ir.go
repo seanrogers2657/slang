@@ -1,4 +1,4 @@
-package asm
+package slasm
 
 // Program represents a complete assembly program
 type Program struct {

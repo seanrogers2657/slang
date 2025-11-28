@@ -1,4 +1,4 @@
-package asm
+package slasm
 
 import (
 	"fmt"

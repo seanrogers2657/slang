@@ -1,4 +1,4 @@
-package asm
+package slasm
 
 // MachOWriter writes Mach-O object files and executables
 type MachOWriter struct {

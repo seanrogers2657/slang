@@ -8,7 +8,7 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/seanrogers2657/slang/assembler"
-	nativeasm "github.com/seanrogers2657/slang/assembler/asm"
+	nativeasm "github.com/seanrogers2657/slang/assembler/slasm"
 	"github.com/seanrogers2657/slang/assembler/system"
 	"github.com/seanrogers2657/slang/backend/as"
 	"github.com/seanrogers2657/slang/frontend/errors"

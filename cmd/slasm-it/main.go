@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/seanrogers2657/slang/assembler/asm"
+	"github.com/seanrogers2657/slang/assembler/slasm"
 	"github.com/urfave/cli/v2"
 )
 
@@ -18,7 +18,7 @@ type testResult struct {
 
 func main() {
 	app := &cli.App{
-		Name:  "asm-it",
+		Name:  "slasm-it",
 		Usage: "Run integration tests for the native assembler",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
@@ -72,12 +72,12 @@ func runLexerIntegrationTests(verbose bool) []testResult {
 	tests := []struct {
 		name     string
 		input    string
-		validate func([]asm.Token) error
+		validate func([]slasm.Token) error
 	}{
 		{
 			name:  "tokenize simple instruction",
 			input: "mov x0, #1",
-			validate: func(tokens []asm.Token) error {
+			validate: func(tokens []slasm.Token) error {
 				if len(tokens) < 5 {
 					return fmt.Errorf("expected at least 5 tokens, got %d", len(tokens))
 				}
@@ -94,7 +94,7 @@ func runLexerIntegrationTests(verbose bool) []testResult {
 _start:
     mov x0, #1
     svc #0`,
-			validate: func(tokens []asm.Token) error {
+			validate: func(tokens []slasm.Token) error {
 				// Just check we got tokens without error
 				if len(tokens) == 0 {
 					return fmt.Errorf("expected tokens but got none")
@@ -107,7 +107,7 @@ _start:
 			input: `.data
 buffer: .space 32
 newline: .byte 10`,
-			validate: func(tokens []asm.Token) error {
+			validate: func(tokens []slasm.Token) error {
 				foundSpace := false
 				foundByte := false
 				for _, tok := range tokens {
@@ -130,10 +130,10 @@ newline: .byte 10`,
 		{
 			name:  "tokenize with comments",
 			input: "mov x0, #1  // Load 1 into x0",
-			validate: func(tokens []asm.Token) error {
+			validate: func(tokens []slasm.Token) error {
 				foundComment := false
 				for _, tok := range tokens {
-					if tok.Type == asm.TokenComment {
+					if tok.Type == slasm.TokenComment {
 						foundComment = true
 					}
 				}
@@ -146,7 +146,7 @@ newline: .byte 10`,
 		{
 			name:  "tokenize page offset relocations",
 			input: "adrp x0, buffer@PAGE\nadd x0, x0, buffer@PAGEOFF",
-			validate: func(tokens []asm.Token) error {
+			validate: func(tokens []slasm.Token) error {
 				foundPage := false
 				foundPageoff := false
 				for _, tok := range tokens {
@@ -170,7 +170,7 @@ newline: .byte 10`,
 
 	results := []testResult{}
 	for _, tt := range tests {
-		lexer := asm.NewLexer(tt.input)
+		lexer := slasm.NewLexer(tt.input)
 		tokens, err := lexer.Tokenize()
 
 		if err != nil {
@@ -203,12 +203,12 @@ func runParserIntegrationTests(verbose bool) []testResult {
 	tests := []struct {
 		name     string
 		input    string
-		validate func(*asm.Program) error
+		validate func(*slasm.Program) error
 	}{
 		{
 			name:  "parse simple instruction",
 			input: "mov x0, #1",
-			validate: func(program *asm.Program) error {
+			validate: func(program *slasm.Program) error {
 				if program == nil {
 					return fmt.Errorf("program is nil")
 				}
@@ -224,7 +224,7 @@ func runParserIntegrationTests(verbose bool) []testResult {
     mov x0, #1
 main:
     ret`,
-			validate: func(program *asm.Program) error {
+			validate: func(program *slasm.Program) error {
 				if program == nil {
 					return fmt.Errorf("program is nil")
 				}
@@ -236,7 +236,7 @@ main:
 			name: "parse data section",
 			input: `.data
 buffer: .space 32`,
-			validate: func(program *asm.Program) error {
+			validate: func(program *slasm.Program) error {
 				if program == nil {
 					return fmt.Errorf("program is nil")
 				}
@@ -250,7 +250,7 @@ buffer: .space 32`,
 
 	results := []testResult{}
 	for _, tt := range tests {
-		lexer := asm.NewLexer(tt.input)
+		lexer := slasm.NewLexer(tt.input)
 		tokens, err := lexer.Tokenize()
 		if err != nil {
 			results = append(results, testResult{
@@ -261,7 +261,7 @@ buffer: .space 32`,
 			continue
 		}
 
-		parser := asm.NewParser(tokens)
+		parser := slasm.NewParser(tokens)
 		program, err := parser.Parse()
 
 		if err != nil {
@@ -294,7 +294,7 @@ func runSymbolTableIntegrationTests(verbose bool) []testResult {
 	results := []testResult{}
 
 	// Test creating and using a symbol table
-	st := asm.NewSymbolTable()
+	st := slasm.NewSymbolTable()
 
 	// Define multiple symbols
 	symbols := map[string]uint64{
@@ -304,7 +304,7 @@ func runSymbolTableIntegrationTests(verbose bool) []testResult {
 	}
 
 	for name, addr := range symbols {
-		if err := st.Define(name, addr, asm.SectionText); err != nil {
+		if err := st.Define(name, addr, slasm.SectionText); err != nil {
 			results = append(results, testResult{
 				name:    "symbol-table-integration/define-symbols",
 				passed:  false,
@@ -347,21 +347,21 @@ func runLayoutIntegrationTests(verbose bool) []testResult {
 	results := []testResult{}
 
 	// Create a simple program for layout testing
-	program := &asm.Program{
-		Sections: []*asm.Section{
+	program := &slasm.Program{
+		Sections: []*slasm.Section{
 			{
-				Type: asm.SectionText,
-				Items: []asm.Item{
-					&asm.Label{Name: "_start"},
-					&asm.Instruction{
+				Type: slasm.SectionText,
+				Items: []slasm.Item{
+					&slasm.Label{Name: "_start"},
+					&slasm.Instruction{
 						Mnemonic: "mov",
-						Operands: []*asm.Operand{
-							{Type: asm.OperandRegister, Value: "x0"},
-							{Type: asm.OperandImmediate, Value: "1"},
+						Operands: []*slasm.Operand{
+							{Type: slasm.OperandRegister, Value: "x0"},
+							{Type: slasm.OperandImmediate, Value: "1"},
 						},
 					},
-					&asm.Label{Name: "main"},
-					&asm.Instruction{
+					&slasm.Label{Name: "main"},
+					&slasm.Instruction{
 						Mnemonic: "ret",
 					},
 				},
@@ -369,7 +369,7 @@ func runLayoutIntegrationTests(verbose bool) []testResult {
 		},
 	}
 
-	layout := asm.NewLayout(program)
+	layout := slasm.NewLayout(program)
 	if err := layout.Calculate(); err != nil {
 		results = append(results, testResult{
 			name:    "layout-integration/calculate",
@@ -431,7 +431,7 @@ func runEndToEndTests(verbose bool) []testResult {
 	tests := []struct {
 		name     string
 		assembly string
-		validate func(*asm.Program, *asm.SymbolTable) error
+		validate func(*slasm.Program, *slasm.SymbolTable) error
 	}{
 		{
 			name: "minimal program",
@@ -441,7 +441,7 @@ _start:
     mov x0, #1
     mov x16, #1
     svc #0`,
-			validate: func(program *asm.Program, st *asm.SymbolTable) error {
+			validate: func(program *slasm.Program, st *slasm.SymbolTable) error {
 				// Check that _start symbol exists
 				sym, exists := st.Lookup("_start")
 				if !exists {
@@ -464,13 +464,13 @@ newline: .byte 10
 .global _start
 _start:
     mov x0, #0`,
-			validate: func(program *asm.Program, st *asm.SymbolTable) error {
+			validate: func(program *slasm.Program, st *slasm.SymbolTable) error {
 				// Check for buffer and newline symbols
 				buffer, exists := st.Lookup("buffer")
 				if !exists {
 					return fmt.Errorf("buffer symbol not found")
 				}
-				if buffer.Section != asm.SectionData {
+				if buffer.Section != slasm.SectionData {
 					return fmt.Errorf("buffer should be in data section")
 				}
 
@@ -497,7 +497,7 @@ main:
 
 helper:
     ret`,
-			validate: func(program *asm.Program, st *asm.SymbolTable) error {
+			validate: func(program *slasm.Program, st *slasm.SymbolTable) error {
 				symbols := []string{"_start", "main", "helper"}
 				for _, name := range symbols {
 					if _, exists := st.Lookup(name); !exists {
@@ -512,7 +512,7 @@ helper:
 	results := []testResult{}
 	for _, tt := range tests {
 		// Tokenize
-		lexer := asm.NewLexer(tt.assembly)
+		lexer := slasm.NewLexer(tt.assembly)
 		tokens, err := lexer.Tokenize()
 		if err != nil {
 			results = append(results, testResult{
@@ -524,7 +524,7 @@ helper:
 		}
 
 		// Parse
-		parser := asm.NewParser(tokens)
+		parser := slasm.NewParser(tokens)
 		program, err := parser.Parse()
 		if err != nil {
 			results = append(results, testResult{
@@ -536,7 +536,7 @@ helper:
 		}
 
 		// Layout
-		layout := asm.NewLayout(program)
+		layout := slasm.NewLayout(program)
 		if err := layout.Calculate(); err != nil {
 			results = append(results, testResult{
 				name:    "end-to-end/" + tt.name,

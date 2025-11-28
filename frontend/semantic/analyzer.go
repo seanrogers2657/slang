@@ -23,20 +23,95 @@ func NewAnalyzer(filename string) *Analyzer {
 
 // Analyze performs semantic analysis on a program
 func (a *Analyzer) Analyze(program *ast.Program) ([]*errors.CompilerError, *TypedProgram) {
-	typedStmts := make([]TypedStatement, 0, len(program.Statements))
+	typedProgram := &TypedProgram{
+		Declarations: make([]TypedDeclaration, 0),
+		Statements:   make([]TypedStatement, 0),
+		StartPos:     program.StartPos,
+		EndPos:       program.EndPos,
+	}
 
-	for _, stmt := range program.Statements {
+	// Handle function-based programs
+	if len(program.Declarations) > 0 {
+		// Check that a main function exists
+		hasMain := false
+		for _, decl := range program.Declarations {
+			typedDecl := a.analyzeDeclaration(decl)
+			typedProgram.Declarations = append(typedProgram.Declarations, typedDecl)
+
+			// Check if this is the main function
+			if fnDecl, ok := decl.(*ast.FunctionDecl); ok {
+				if fnDecl.Name == "main" {
+					hasMain = true
+				}
+			}
+		}
+
+		if !hasMain {
+			// Add error if no main function found
+			a.addError("program must have a 'main' function", program.StartPos, program.EndPos)
+		}
+	} else {
+		// Handle legacy statement-based programs
+		for _, stmt := range program.Statements {
+			typedStmt := a.analyzeStatement(stmt)
+			typedProgram.Statements = append(typedProgram.Statements, typedStmt)
+		}
+	}
+
+	return a.errors, typedProgram
+}
+
+// analyzeDeclaration performs semantic analysis on a declaration
+func (a *Analyzer) analyzeDeclaration(decl ast.Declaration) TypedDeclaration {
+	switch d := decl.(type) {
+	case *ast.FunctionDecl:
+		return a.analyzeFunctionDecl(d)
+	default:
+		a.addError("unknown declaration type", decl.Pos(), decl.End())
+		return &TypedFunctionDecl{
+			FnKeyword:  decl.Pos(),
+			Name:       "error",
+			NamePos:    decl.Pos(),
+			LeftParen:  decl.Pos(),
+			RightParen: decl.Pos(),
+			Body: &TypedBlockStmt{
+				LeftBrace:  decl.Pos(),
+				Statements: []TypedStatement{},
+				RightBrace: decl.End(),
+			},
+		}
+	}
+}
+
+// analyzeFunctionDecl analyzes a function declaration
+func (a *Analyzer) analyzeFunctionDecl(fn *ast.FunctionDecl) TypedDeclaration {
+	// Analyze the function body
+	typedBody := a.analyzeBlockStmt(fn.Body)
+
+	return &TypedFunctionDecl{
+		FnKeyword:  fn.FnKeyword,
+		Name:       fn.Name,
+		NamePos:    fn.NamePos,
+		LeftParen:  fn.LeftParen,
+		RightParen: fn.RightParen,
+		Body:       typedBody,
+	}
+}
+
+// analyzeBlockStmt analyzes a block statement
+func (a *Analyzer) analyzeBlockStmt(block *ast.BlockStmt) *TypedBlockStmt {
+	typedStmts := make([]TypedStatement, 0, len(block.Statements))
+
+	for _, stmt := range block.Statements {
 		typedStmt := a.analyzeStatement(stmt)
 		typedStmts = append(typedStmts, typedStmt)
 	}
 
-	typedProgram := &TypedProgram{
+	return &TypedBlockStmt{
+		LeftBrace:  block.LeftBrace,
 		Statements: typedStmts,
-		StartPos:   program.StartPos,
-		EndPos:     program.EndPos,
+		RightBrace: block.RightBrace,
 	}
-
-	return a.errors, typedProgram
 }
 
 // analyzeStatement performs semantic analysis on a statement
@@ -46,6 +121,8 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 		return a.analyzeExprStatement(s)
 	case *ast.PrintStmt:
 		return a.analyzePrintStatement(s)
+	case *ast.BlockStmt:
+		return a.analyzeBlockStmt(s)
 	default:
 		a.addError("unknown statement type", stmt.Pos(), stmt.End())
 		return &TypedExprStmt{

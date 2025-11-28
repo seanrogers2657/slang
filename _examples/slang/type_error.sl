@@ -1,1 +1,3 @@
-"hello" + 5
+fn main() {
+    "hello" + 5
+}

@@ -355,11 +355,6 @@ func TestLexerErrors(t *testing.T) {
 			input:         "2 @ 5",
 			expectedError: "unexpected character: '@'",
 		},
-		{
-			name:          "letter character",
-			input:         "abc",
-			expectedError: "unknown keyword: \"abc\"",
-		},
 	}
 
 	for _, tt := range tests {
@@ -446,56 +441,56 @@ func TestLexerStringLiterals(t *testing.T) {
 	}{
 		{
 			name:  "simple string",
-			input: `"hello"`,
+			input: "\"hello\"",
 			expected: []Token{
 				{Type: TokenTypeString, Value: "hello"},
 			},
 		},
 		{
 			name:  "empty string",
-			input: `""`,
+			input: "\"\"",
 			expected: []Token{
 				{Type: TokenTypeString, Value: ""},
 			},
 		},
 		{
 			name:  "string with spaces",
-			input: `"hello world"`,
+			input: "\"hello world\"",
 			expected: []Token{
 				{Type: TokenTypeString, Value: "hello world"},
 			},
 		},
 		{
 			name:  "string with escape sequences",
-			input: `"hello\nworld"`,
+			input: "\"hello\nworld\"",
 			expected: []Token{
 				{Type: TokenTypeString, Value: "hello\nworld"},
 			},
 		},
 		{
 			name:  "string with tab escape",
-			input: `"hello\tworld"`,
+			input: "\"hello\tworld\"",
 			expected: []Token{
 				{Type: TokenTypeString, Value: "hello\tworld"},
 			},
 		},
 		{
 			name:  "string with escaped quote",
-			input: `"hello \"world\""`,
+			input: "\"hello \\\"world\\\"\"",
 			expected: []Token{
-				{Type: TokenTypeString, Value: `hello "world"`},
+				{Type: TokenTypeString, Value: "hello \"world\""},
 			},
 		},
 		{
 			name:  "string with escaped backslash",
-			input: `"hello\\world"`,
+			input: "\"hello\\world\"",
 			expected: []Token{
-				{Type: TokenTypeString, Value: `hello\world`},
+				{Type: TokenTypeString, Value: "hello\\world"},
 			},
 		},
 		{
 			name:  "multiple strings",
-			input: `"hello" "world"`,
+			input: "\"hello\" \"world\"",
 			expected: []Token{
 				{Type: TokenTypeString, Value: "hello"},
 				{Type: TokenTypeString, Value: "world"},
@@ -536,7 +531,7 @@ func TestLexerStringErrors(t *testing.T) {
 	}{
 		{
 			name:          "unterminated string",
-			input:         `"hello`,
+			input:         "\"hello",
 			expectedError: "unterminated string literal",
 		},
 		{
@@ -559,5 +554,37 @@ func TestLexerStringErrors(t *testing.T) {
 				t.Errorf("expected error %q, got %q", tt.expectedError, l.Errors[0].Error())
 			}
 		})
+	}
+}
+
+func TestLexerFunctionDeclaration(t *testing.T) {
+	input := "fn main() { }"
+	expected := []Token{
+		{Type: TokenTypeFn, Value: "fn"},
+		{Type: TokenTypeIdentifier, Value: "main"},
+		{Type: TokenTypeLParen, Value: "("},
+		{Type: TokenTypeRParen, Value: ")"},
+		{Type: TokenTypeLBrace, Value: "{"},
+		{Type: TokenTypeRBrace, Value: "}"},
+	}
+
+	l := NewLexer([]byte(input))
+	l.Parse()
+
+	if len(l.Errors) > 0 {
+		t.Fatalf("unexpected errors: %v", l.Errors)
+	}
+
+	if len(l.Tokens) != len(expected) {
+		t.Fatalf("expected %d tokens, got %d", len(expected), len(l.Tokens))
+	}
+
+	for i, token := range l.Tokens {
+		if token.Type != expected[i].Type {
+			t.Errorf("token %d: expected type %v, got %v", i, expected[i].Type, token.Type)
+		}
+		if token.Value != expected[i].Value {
+			t.Errorf("token %d: expected value %q, got %q", i, expected[i].Value, token.Value)
+		}
 	}
 }

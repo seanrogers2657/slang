@@ -111,15 +111,51 @@ func (p *PrintStmt) Pos() Position { return p.Keyword }
 func (p *PrintStmt) End() Position { return p.Expr.End() }
 func (p *PrintStmt) stmtNode()     {}
 
+// BlockStmt represents a block of statements enclosed in braces
+type BlockStmt struct {
+	LeftBrace  Position    // position of '{'
+	Statements []Statement // statements in the block
+	RightBrace Position    // position of '}'
+}
+
+func (b *BlockStmt) Pos() Position { return b.LeftBrace }
+func (b *BlockStmt) End() Position { return b.RightBrace }
+func (b *BlockStmt) stmtNode()     {}
+
+// ============================================================================
+// Declarations
+// ============================================================================
+
+// Declaration represents any declaration node
+type Declaration interface {
+	Node
+	declNode() // marker method
+}
+
+// FunctionDecl represents a function declaration
+type FunctionDecl struct {
+	FnKeyword  Position  // position of 'fn' keyword
+	Name       string    // function name
+	NamePos    Position  // position of function name
+	LeftParen  Position  // position of '('
+	RightParen Position  // position of ')'
+	Body       *BlockStmt // function body
+}
+
+func (f *FunctionDecl) Pos() Position { return f.FnKeyword }
+func (f *FunctionDecl) End() Position { return f.Body.End() }
+func (f *FunctionDecl) declNode()     {}
+
 // ============================================================================
 // Program
 // ============================================================================
 
 // Program represents the root node of the AST
 type Program struct {
-	Statements []Statement
-	StartPos   Position
-	EndPos     Position
+	Declarations []Declaration // top-level declarations (functions, etc.)
+	Statements   []Statement   // legacy: top-level statements (will be deprecated)
+	StartPos     Position
+	EndPos       Position
 }
 
 func (p *Program) Pos() Position { return p.StartPos }

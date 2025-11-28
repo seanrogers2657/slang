@@ -1,1 +1,3 @@
-"value" + 42
+fn main() {
+    "value" + 42
+}

@@ -30,6 +30,29 @@ func (c *asGenerator) Generate() (string, error) {
 func GenerateProgram(program *ast.Program) (string, error) {
 	builder := strings.Builder{}
 
+	// Determine which statements to process (function-based or legacy)
+	var statementsToProcess []ast.Statement
+
+	if len(program.Declarations) > 0 {
+		// Function-based program: extract statements from main function
+		var mainFunc *ast.FunctionDecl
+		for _, decl := range program.Declarations {
+			if fn, ok := decl.(*ast.FunctionDecl); ok && fn.Name == "main" {
+				mainFunc = fn
+				break
+			}
+		}
+
+		if mainFunc == nil {
+			return "", fmt.Errorf("no main function found")
+		}
+
+		statementsToProcess = mainFunc.Body.Statements
+	} else {
+		// Legacy: use top-level statements
+		statementsToProcess = program.Statements
+	}
+
 	// Check if we need a .data section for strings or print statements
 	hasStrings := false
 	hasPrint := false
@@ -54,7 +77,7 @@ func GenerateProgram(program *ast.Program) (string, error) {
 		}
 	}
 
-	for _, stmt := range program.Statements {
+	for _, stmt := range statementsToProcess {
 		// Check for print statements
 		if _, ok := stmt.(*ast.PrintStmt); ok {
 			hasPrint = true
@@ -104,7 +127,7 @@ func GenerateProgram(program *ast.Program) (string, error) {
 	builder.WriteString("main:\n")
 
 	// Generate code for each statement
-	for _, stmt := range program.Statements {
+	for _, stmt := range statementsToProcess {
 		var code string
 		var err error
 

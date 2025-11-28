@@ -1,1 +1,3 @@
-"hello\nworld" + "test"
+fn main() {
+    "hello\nworld" + "test"
+}

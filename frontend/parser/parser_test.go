@@ -746,3 +746,81 @@ func TestParserIntegrationWithLexer(t *testing.T) {
 		})
 	}
 }
+
+func TestParserFunctionDeclaration(t *testing.T) {
+	tests := []struct {
+		name         string
+		source       string
+		expectedName string
+		expectedBody int // number of statements in body
+	}{
+		{
+			name:         "empty main function",
+			source:       "fn main() {}",
+			expectedName: "main",
+			expectedBody: 0,
+		},
+		{
+			name:         "main function with single statement",
+			source:       "fn main() {\n    print 42\n}",
+			expectedName: "main",
+			expectedBody: 1,
+		},
+		{
+			name:         "main function with multiple statements",
+			source:       "fn main() {\n    print 1\n    print 2\n}",
+			expectedName: "main",
+			expectedBody: 2,
+		},
+		{
+			name:         "function with expression statement",
+			source:       "fn main() {\n    5 + 3\n}",
+			expectedName: "main",
+			expectedBody: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			if program == nil {
+				t.Fatal("expected program, got nil")
+			}
+
+			if len(program.Declarations) != 1 {
+				t.Fatalf("expected 1 declaration, got %d", len(program.Declarations))
+			}
+
+			decl := program.Declarations[0]
+			fnDecl, ok := decl.(*ast.FunctionDecl)
+			if !ok {
+				t.Fatal("expected FunctionDecl")
+			}
+
+			if fnDecl.Name != tt.expectedName {
+				t.Errorf("expected function name %q, got %q", tt.expectedName, fnDecl.Name)
+			}
+
+			if fnDecl.Body == nil {
+				t.Fatal("expected function body, got nil")
+			}
+
+			if len(fnDecl.Body.Statements) != tt.expectedBody {
+				t.Errorf("expected %d statements in body, got %d", tt.expectedBody, len(fnDecl.Body.Statements))
+			}
+		})
+	}
+}

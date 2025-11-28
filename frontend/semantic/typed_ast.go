@@ -80,15 +80,53 @@ func (s *TypedPrintStmt) End() ast.Position { return s.Expr.End() }
 func (s *TypedPrintStmt) GetType() Type     { return TypeVoid }
 func (s *TypedPrintStmt) typedStmtNode()    {}
 
+// TypedBlockStmt represents a typed block statement
+type TypedBlockStmt struct {
+	LeftBrace  ast.Position
+	Statements []TypedStatement
+	RightBrace ast.Position
+}
+
+func (s *TypedBlockStmt) Pos() ast.Position { return s.LeftBrace }
+func (s *TypedBlockStmt) End() ast.Position { return s.RightBrace }
+func (s *TypedBlockStmt) GetType() Type     { return TypeVoid }
+func (s *TypedBlockStmt) typedStmtNode()    {}
+
+// ============================================================================
+// Typed Declarations
+// ============================================================================
+
+// TypedDeclaration represents a typed declaration
+type TypedDeclaration interface {
+	TypedNode
+	typedDeclNode()
+}
+
+// TypedFunctionDecl represents a typed function declaration
+type TypedFunctionDecl struct {
+	FnKeyword  ast.Position
+	Name       string
+	NamePos    ast.Position
+	LeftParen  ast.Position
+	RightParen ast.Position
+	Body       *TypedBlockStmt
+}
+
+func (d *TypedFunctionDecl) Pos() ast.Position { return d.FnKeyword }
+func (d *TypedFunctionDecl) End() ast.Position { return d.Body.End() }
+func (d *TypedFunctionDecl) GetType() Type     { return TypeVoid }
+func (d *TypedFunctionDecl) typedDeclNode()    {}
+
 // ============================================================================
 // Typed Program
 // ============================================================================
 
 // TypedProgram represents a typed program
 type TypedProgram struct {
-	Statements []TypedStatement
-	StartPos   ast.Position
-	EndPos     ast.Position
+	Declarations []TypedDeclaration // typed function declarations
+	Statements   []TypedStatement   // legacy: typed top-level statements
+	StartPos     ast.Position
+	EndPos       ast.Position
 }
 
 func (p *TypedProgram) Pos() ast.Position { return p.StartPos }

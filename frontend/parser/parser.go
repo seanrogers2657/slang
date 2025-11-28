@@ -132,37 +132,65 @@ func (p *parser) Parse() *ast.Program {
 	}
 
 	program := &ast.Program{
-		Statements: []ast.Statement{},
-		StartPos:   startPos,
+		Declarations: []ast.Declaration{},
+		Statements:   []ast.Statement{},
+		StartPos:     startPos,
 	}
 
 	// Skip leading newlines
 	p.skipNewlines()
 
-	for !p.isAtEnd() {
-		stmt := p.ParseStatement()
-		if stmt != nil {
-			program.Statements = append(program.Statements, stmt)
-		}
-
-		// After each statement, we expect a newline or end of input
-		if !p.isAtEnd() {
-			if p.CurrentToken().Type == lexer.TokenTypeNewline {
-				p.Index++ // Consume the newline
-				p.skipNewlines() // Skip any additional newlines
-			} else {
-				// Error: expected newline or end of input
-				p.Errors = append(p.Errors, fmt.Errorf("expected newline after statement, got %s", p.CurrentToken().Value))
+	// Check if this is a function-based program or legacy statement-based program
+	if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeFn {
+		// New style: parse function declarations
+		for !p.isAtEnd() {
+			p.skipNewlines()
+			if p.isAtEnd() {
 				break
 			}
-		}
-	}
 
-	// Set end position
-	if len(program.Statements) > 0 {
-		program.EndPos = program.Statements[len(program.Statements)-1].End()
+			fnDecl := p.ParseFunctionDecl()
+			if fnDecl != nil {
+				program.Declarations = append(program.Declarations, fnDecl)
+			}
+
+			// Skip newlines after function declaration
+			p.skipNewlines()
+		}
+
+		// Set end position
+		if len(program.Declarations) > 0 {
+			program.EndPos = program.Declarations[len(program.Declarations)-1].End()
+		} else {
+			program.EndPos = startPos
+		}
 	} else {
-		program.EndPos = startPos
+		// Legacy style: parse top-level statements
+		for !p.isAtEnd() {
+			stmt := p.ParseStatement()
+			if stmt != nil {
+				program.Statements = append(program.Statements, stmt)
+			}
+
+			// After each statement, we expect a newline or end of input
+			if !p.isAtEnd() {
+				if p.CurrentToken().Type == lexer.TokenTypeNewline {
+					p.Index++ // Consume the newline
+					p.skipNewlines() // Skip any additional newlines
+				} else {
+					// Error: expected newline or end of input
+					p.Errors = append(p.Errors, fmt.Errorf("expected newline after statement, got %s", p.CurrentToken().Value))
+					break
+				}
+			}
+		}
+
+		// Set end position
+		if len(program.Statements) > 0 {
+			program.EndPos = program.Statements[len(program.Statements)-1].End()
+		} else {
+			program.EndPos = startPos
+		}
 	}
 
 	return program
@@ -294,4 +322,113 @@ func (p *parser) ParseBinaryExpression() ast.Expression {
 		p.Errors = append(p.Errors, fmt.Errorf("unsupported operation: %s", p.CurrentToken().Value))
 	}
 	return expr
+}
+
+// ParseBlockStmt parses a block statement: { <statements> }
+func (p *parser) ParseBlockStmt() *ast.BlockStmt {
+	// Expect '{'
+	if p.CurrentToken().Type != lexer.TokenTypeLBrace {
+		p.Errors = append(p.Errors, fmt.Errorf("expected '{', got %s", p.CurrentToken().Value))
+		return nil
+	}
+
+	leftBrace := p.CurrentToken().Pos
+	p.advance() // consume '{'
+
+	// Skip newlines after opening brace
+	p.skipNewlines()
+
+	statements := []ast.Statement{}
+
+	// Parse statements until we hit '}'
+	for !p.isAtEnd() && p.CurrentToken().Type != lexer.TokenTypeRBrace {
+		stmt := p.ParseStatement()
+		if stmt != nil {
+			statements = append(statements, stmt)
+		}
+
+		// After each statement, expect newline or '}'
+		if !p.isAtEnd() && p.CurrentToken().Type != lexer.TokenTypeRBrace {
+			if p.CurrentToken().Type == lexer.TokenTypeNewline {
+				p.advance() // consume newline
+				p.skipNewlines() // skip any additional newlines
+			} else {
+				p.Errors = append(p.Errors, fmt.Errorf("expected newline or '}' after statement, got %s", p.CurrentToken().Value))
+				break
+			}
+		}
+	}
+
+	// Expect '}'
+	if p.isAtEnd() || p.CurrentToken().Type != lexer.TokenTypeRBrace {
+		p.Errors = append(p.Errors, fmt.Errorf("expected '}' to close block"))
+		return nil
+	}
+
+	rightBrace := p.CurrentToken().Pos
+	p.advance() // consume '}'
+
+	return &ast.BlockStmt{
+		LeftBrace:  leftBrace,
+		Statements: statements,
+		RightBrace: rightBrace,
+	}
+}
+
+// ParseFunctionDecl parses a function declaration: fn <name>() { <body> }
+func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
+	// Expect 'fn' keyword
+	if p.CurrentToken().Type != lexer.TokenTypeFn {
+		p.Errors = append(p.Errors, fmt.Errorf("expected 'fn', got %s", p.CurrentToken().Value))
+		return nil
+	}
+
+	fnKeyword := p.CurrentToken().Pos
+	p.advance() // consume 'fn'
+
+	// Expect identifier (function name)
+	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+		p.Errors = append(p.Errors, fmt.Errorf("expected function name, got %s", p.CurrentToken().Value))
+		return nil
+	}
+
+	name := p.CurrentToken().Value
+	namePos := p.CurrentToken().Pos
+	p.advance() // consume identifier
+
+	// Expect '('
+	if p.CurrentToken().Type != lexer.TokenTypeLParen {
+		p.Errors = append(p.Errors, fmt.Errorf("expected '(' after function name, got %s", p.CurrentToken().Value))
+		return nil
+	}
+
+	leftParen := p.CurrentToken().Pos
+	p.advance() // consume '('
+
+	// For now, we don't support parameters, so expect ')'
+	if p.CurrentToken().Type != lexer.TokenTypeRParen {
+		p.Errors = append(p.Errors, fmt.Errorf("expected ')' (parameters not yet supported), got %s", p.CurrentToken().Value))
+		return nil
+	}
+
+	rightParen := p.CurrentToken().Pos
+	p.advance() // consume ')'
+
+	// Skip newlines before body
+	p.skipNewlines()
+
+	// Parse function body (block statement)
+	body := p.ParseBlockStmt()
+	if body == nil {
+		return nil
+	}
+
+	return &ast.FunctionDecl{
+		FnKeyword:  fnKeyword,
+		Name:       name,
+		NamePos:    namePos,
+		LeftParen:  leftParen,
+		RightParen: rightParen,
+		Body:       body,
+	}
 }

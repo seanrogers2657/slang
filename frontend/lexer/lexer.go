@@ -25,6 +25,12 @@ const (
 	TokenTypeGreaterThanOrEqual
 	TokenTypeNewline
 	TokenTypePrint
+	TokenTypeFn
+	TokenTypeLParen
+	TokenTypeRParen
+	TokenTypeLBrace
+	TokenTypeRBrace
+	TokenTypeIdentifier
 )
 
 type Token struct {
@@ -150,31 +156,41 @@ func (p *lexer) ParseString() {
 	p.Errors = append(p.Errors, fmt.Errorf("unterminated string literal"))
 }
 
-func (p *lexer) ParseKeyword() {
+func (p *lexer) ParseIdentifierOrKeyword() {
 	startPos := p.currentPos()
-	keyword := ""
+	ident := ""
 	for p.Index < len(p.Source) {
 		currentChar := p.Source[p.Index]
 
-		// Keywords are alphabetic characters
+		// Identifiers are alphabetic characters
 		if !unicode.IsLetter(rune(currentChar)) {
 			break
 		}
 
-		keyword += string(currentChar)
+		ident += string(currentChar)
 		p.advance()
 	}
 
 	// Check if it's a recognized keyword
-	switch keyword {
+	switch ident {
 	case "print":
 		p.Tokens = append(p.Tokens, Token{
 			Type:  TokenTypePrint,
-			Value: keyword,
+			Value: ident,
+			Pos:   startPos,
+		})
+	case "fn":
+		p.Tokens = append(p.Tokens, Token{
+			Type:  TokenTypeFn,
+			Value: ident,
 			Pos:   startPos,
 		})
 	default:
-		p.Errors = append(p.Errors, fmt.Errorf("unknown keyword: %q", keyword))
+		p.Tokens = append(p.Tokens, Token{
+			Type:  TokenTypeIdentifier,
+			Value: ident,
+			Pos:   startPos,
+		})
 	}
 }
 
@@ -192,11 +208,27 @@ func (p *lexer) Parse() {
 			// spew.Dump("is space")
 			p.advance()
 		} else if unicode.IsLetter(rune(b)) {
-			p.ParseKeyword()
+			p.ParseIdentifierOrKeyword()
 		} else if p.Source[p.Index] >= '0' && p.Source[p.Index] <= '9' {
 			p.ParseNumber()
 		} else if b == '"' {
 			p.ParseString()
+		} else if b == '(' {
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeLParen, Value: "(", Pos: pos})
+			p.advance()
+		} else if b == ')' {
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeRParen, Value: ")", Pos: pos})
+			p.advance()
+		} else if b == '{' {
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeLBrace, Value: "{", Pos: pos})
+			p.advance()
+		} else if b == '}' {
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeRBrace, Value: "}", Pos: pos})
+			p.advance()
 		} else if b == '+' {
 			// spew.Dump("is plus")
 			pos := p.currentPos()

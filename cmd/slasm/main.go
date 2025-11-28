@@ -7,9 +7,22 @@ import (
 	"strings"
 
 	"github.com/seanrogers2657/slang/assembler"
+	"github.com/seanrogers2657/slang/assembler/slasm"
 	"github.com/seanrogers2657/slang/assembler/system"
 	"github.com/urfave/cli/v2"
 )
+
+// createAssembler creates the appropriate assembler based on the backend flag
+func createAssembler(backend string) (assembler.Assembler, error) {
+	switch backend {
+	case "system":
+		return system.New(), nil
+	case "slasm":
+		return slasm.New(), nil
+	default:
+		return nil, fmt.Errorf("unknown backend: %s (valid options: system, slasm)", backend)
+	}
+}
 
 func main() {
 	app := &cli.App{
@@ -34,6 +47,12 @@ func main() {
 						Value:   "arm64",
 						Usage:   "Target architecture",
 					},
+					&cli.StringFlag{
+						Name:    "backend",
+						Aliases: []string{"b"},
+						Value:   "system",
+						Usage:   "Assembler backend to use (system or slasm)",
+					},
 				},
 				Action: func(c *cli.Context) error {
 					if c.NArg() != 1 {
@@ -43,11 +62,21 @@ func main() {
 					inputPath := c.Args().First()
 					outputPath := c.String("output")
 
-					// Create assembler and assemble
-					asm := system.New()
-					asm.Arch = c.String("arch")
+					// Create assembler based on backend flag
+					asm, err := createAssembler(c.String("backend"))
+					if err != nil {
+						return err
+					}
 
-					fmt.Printf("Assembling %s -> %s\n", inputPath, outputPath)
+					// Set architecture (both implementations support this field)
+					switch a := asm.(type) {
+					case *system.SystemAssembler:
+						a.Arch = c.String("arch")
+					case *slasm.NativeAssembler:
+						a.Arch = c.String("arch")
+					}
+
+					fmt.Printf("Assembling %s -> %s (backend: %s)\n", inputPath, outputPath, c.String("backend"))
 					if err := asm.Assemble(inputPath, outputPath); err != nil {
 						return err
 					}
@@ -89,6 +118,12 @@ func main() {
 						Name:  "no-system",
 						Usage: "Don't link system libraries",
 					},
+					&cli.StringFlag{
+						Name:    "backend",
+						Aliases: []string{"b"},
+						Value:   "system",
+						Usage:   "Assembler backend to use (system or slasm)",
+					},
 				},
 				Action: func(c *cli.Context) error {
 					if c.NArg() == 0 {
@@ -99,16 +134,31 @@ func main() {
 					objectFiles := c.Args().Slice()
 					outputPath := c.String("output")
 
-					// Create assembler (which also handles linking)
-					asm := system.New()
-					asm.Arch = c.String("arch")
-					asm.EntryPoint = c.String("entry")
-					asm.SystemLibs = !c.Bool("no-system")
-					if c.String("sdk") != "" {
-						asm.SDKPath = c.String("sdk")
+					// Create assembler based on backend flag
+					asm, err := createAssembler(c.String("backend"))
+					if err != nil {
+						return err
 					}
 
-					fmt.Printf("Linking %s -> %s\n", strings.Join(objectFiles, ", "), outputPath)
+					// Set configuration based on assembler type
+					switch a := asm.(type) {
+					case *system.SystemAssembler:
+						a.Arch = c.String("arch")
+						a.EntryPoint = c.String("entry")
+						a.SystemLibs = !c.Bool("no-system")
+						if c.String("sdk") != "" {
+							a.SDKPath = c.String("sdk")
+						}
+					case *slasm.NativeAssembler:
+						a.Arch = c.String("arch")
+						a.EntryPoint = c.String("entry")
+						a.SystemLibs = !c.Bool("no-system")
+						if c.String("sdk") != "" {
+							a.SDKPath = c.String("sdk")
+						}
+					}
+
+					fmt.Printf("Linking %s -> %s (backend: %s)\n", strings.Join(objectFiles, ", "), outputPath, c.String("backend"))
 					if err := asm.Link(objectFiles, outputPath); err != nil {
 						return err
 					}
@@ -150,6 +200,12 @@ func main() {
 						Name:  "keep-intermediates",
 						Usage: "Keep intermediate .o files",
 					},
+					&cli.StringFlag{
+						Name:    "backend",
+						Aliases: []string{"be"},
+						Value:   "system",
+						Usage:   "Assembler backend to use (system or slasm)",
+					},
 				},
 				Action: func(c *cli.Context) error {
 					if c.NArg() != 1 {
@@ -165,15 +221,29 @@ func main() {
 						return fmt.Errorf("failed to read assembly file: %w", err)
 					}
 
-					// Create assembler
-					asm := system.New()
-					asm.Arch = c.String("arch")
-					asm.EntryPoint = c.String("entry")
-					if c.String("sdk") != "" {
-						asm.SDKPath = c.String("sdk")
+					// Create assembler based on backend flag
+					asm, err := createAssembler(c.String("backend"))
+					if err != nil {
+						return err
 					}
 
-					fmt.Printf("Building %s -> %s\n", inputPath, outputPath)
+					// Set configuration based on assembler type
+					switch a := asm.(type) {
+					case *system.SystemAssembler:
+						a.Arch = c.String("arch")
+						a.EntryPoint = c.String("entry")
+						if c.String("sdk") != "" {
+							a.SDKPath = c.String("sdk")
+						}
+					case *slasm.NativeAssembler:
+						a.Arch = c.String("arch")
+						a.EntryPoint = c.String("entry")
+						if c.String("sdk") != "" {
+							a.SDKPath = c.String("sdk")
+						}
+					}
+
+					fmt.Printf("Building %s -> %s (backend: %s)\n", inputPath, outputPath, c.String("backend"))
 
 					// Build
 					opts := assembler.BuildOptions{

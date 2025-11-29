@@ -2,6 +2,24 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repository Organization
+
+This repository follows strict organizational rules:
+
+1. **Documentation**: All documentation files (README files, markdown files, guides, etc.) must be placed in the `docs/` directory. The only exceptions are:
+   - `CLAUDE.md` - This file, which must remain in the root for Claude Code to find
+   - `README.md` in root (if present) - Project root readme
+   - `go.mod` and `go.sum` - Go module files
+
+2. **Command-line Tools**: All main functions and executable tools must be in the `cmd/` directory, with each tool in its own subdirectory:
+   - `cmd/sl/` - The Slang compiler
+   - `cmd/slm/` - The build tool
+   - `cmd/slasm/` - The assembler
+   - `cmd/slasm-debug/` - Assembler debug tool
+   - etc.
+
+3. **Testing Documentation**: Testing guides and documentation should be in `docs/` (e.g., `docs/TESTING.md`)
+
 ## Project Overview
 
 **Slang** is a compiler for a simple programming language written in Go. It targets ARM64 assembly for macOS. The compiler follows a traditional four-stage pipeline:
@@ -238,7 +256,7 @@ The project has comprehensive test coverage:
 - Frontend (Semantic Analyzer): 62.2%
 - Frontend (Error Framework): 89.6%
 
-All tests follow table-driven patterns with subtests using `t.Run()`. See `TESTING.md` for detailed testing documentation.
+All tests follow table-driven patterns with subtests using `t.Run()`. See `docs/TESTING.md` for detailed testing documentation.
 
 **Semantic Analysis Tests** (`frontend/semantic/analyzer_test.go`):
 - Type checking for all operators (arithmetic and comparison)

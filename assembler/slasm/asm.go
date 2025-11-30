@@ -61,6 +61,32 @@ func (a *NativeAssembler) Link(objectFiles []string, outputPath string) error {
 func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) error {
 	a.Logger.Header("========== SLASM ASSEMBLER - BUILD PIPELINE ==========")
 
+	// Write intermediate files if paths are specified
+	if opts.AssemblyPath != "" {
+		// Ensure directory exists
+		if err := os.MkdirAll("build", 0755); err != nil {
+			return fmt.Errorf("failed to create build directory: %w", err)
+		}
+		if err := os.WriteFile(opts.AssemblyPath, []byte(assembly), 0644); err != nil {
+			return fmt.Errorf("failed to write assembly file: %w", err)
+		}
+		a.Logger.Printf("Wrote assembly to %s\n", opts.AssemblyPath)
+	}
+
+	// Create placeholder object file (slasm doesn't use separate object files)
+	if opts.ObjectPath != "" && opts.KeepIntermediates {
+		// Ensure directory exists
+		if err := os.MkdirAll("build", 0755); err != nil {
+			return fmt.Errorf("failed to create build directory: %w", err)
+		}
+		// Write a placeholder comment - slasm goes directly to executable
+		placeholder := []byte("// slasm object placeholder - direct compilation to executable\n")
+		if err := os.WriteFile(opts.ObjectPath, placeholder, 0644); err != nil {
+			return fmt.Errorf("failed to write object file placeholder: %w", err)
+		}
+		a.Logger.Printf("Wrote object placeholder to %s\n", opts.ObjectPath)
+	}
+
 	// Step 1: Lex the assembly source
 	a.Logger.Section("STEP 1: LEXER")
 	a.Logger.Printf("Input assembly:\n%s\n\n", assembly)

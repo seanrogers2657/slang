@@ -176,10 +176,11 @@ func TestSLRunCommandNoArguments(t *testing.T) {
 // TestSLRunCommandWithMainFunction tests the 'sl run' command with main function syntax
 func TestSLRunCommandWithMainFunction(t *testing.T) {
 	tests := []struct {
-		name        string
-		source      string
-		expectError bool
-		description string
+		name         string
+		source       string
+		expectError  bool
+		description  string
+		useSystemAsm bool // use system assembler (as/ld) instead of native slasm
 	}{
 		{
 			name: "simple main function",
@@ -194,8 +195,9 @@ func TestSLRunCommandWithMainFunction(t *testing.T) {
 			source: `fn main() {
     print 42
 }`,
-			expectError: false,
-			description: "compiles and runs main function with print statement",
+			expectError:  false,
+			description:  "compiles and runs main function with print statement",
+			useSystemAsm: true, // print requires system assembler (slasm doesn't support advanced ARM64 yet)
 		},
 		{
 			name: "main function with multiple statements",
@@ -204,8 +206,9 @@ func TestSLRunCommandWithMainFunction(t *testing.T) {
     print 2
     5 + 3
 }`,
-			expectError: false,
-			description: "compiles and runs main function with multiple statements",
+			expectError:  false,
+			description:  "compiles and runs main function with multiple statements",
+			useSystemAsm: true, // print requires system assembler
 		},
 	}
 
@@ -244,8 +247,13 @@ func TestSLRunCommandWithMainFunction(t *testing.T) {
 				t.Fatalf("failed to change directory: %v", err)
 			}
 
-			// Run the run command
-			cmd = exec.Command(slBinary, "run", testFile)
+			// Run the run command with appropriate assembler
+			args := []string{"run"}
+			if tt.useSystemAsm {
+				args = append(args, "--assembler", "system")
+			}
+			args = append(args, testFile)
+			cmd = exec.Command(slBinary, args...)
 			output, err = cmd.CombinedOutput()
 
 			// Check if error matches expectation

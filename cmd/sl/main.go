@@ -480,8 +480,8 @@ func main() {
 					&cli.StringFlag{
 						Name:    "assembler",
 						Aliases: []string{"a"},
-						Value:   "system",
-						Usage:   "Assembler to use: 'system' (default, uses macOS as/ld) or 'native' (custom implementation)",
+						Value:   "native",
+						Usage:   "Assembler to use: 'native' (default, uses slasm) or 'system' (uses macOS as/ld)",
 					},
 					&cli.BoolFlag{
 						Name:    "verbose",
@@ -517,8 +517,8 @@ func main() {
 					&cli.StringFlag{
 						Name:    "assembler",
 						Aliases: []string{"a"},
-						Value:   "system",
-						Usage:   "Assembler to use: 'system' (default, uses macOS as/ld) or 'native' (custom implementation)",
+						Value:   "native",
+						Usage:   "Assembler to use: 'native' (default, uses slasm) or 'system' (uses macOS as/ld)",
 					},
 					&cli.BoolFlag{
 						Name:    "verbose",

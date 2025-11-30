@@ -18,12 +18,62 @@ func NewLayout(program *Program) *Layout {
 // First pass: collect all label definitions and calculate addresses
 // Second pass: resolve label references
 func (l *Layout) Calculate() error {
-	// TODO: Implement layout calculation
-	// 1. First pass: iterate through all sections
-	// 2. For each instruction/data, calculate its size
-	// 3. Assign addresses to labels
-	// 4. Track section offsets
-	// 5. Build symbol table
+	// Track current address for each section
+	textAddr := uint64(0)
+	dataAddr := uint64(0)
+
+	// Process each section
+	for _, section := range l.program.Sections {
+		currentAddr := &textAddr
+		sectionType := section.Type
+
+		if section.Type == SectionData {
+			currentAddr = &dataAddr
+		}
+
+		// Process each item in the section
+		for _, item := range section.Items {
+			switch v := item.(type) {
+			case *Label:
+				// Define symbol at current address
+				err := l.symbolTable.Define(v.Name, *currentAddr, sectionType, v.Line, v.Column)
+				if err != nil {
+					return err
+				}
+
+			case *Instruction:
+				// Each instruction is 4 bytes
+				*currentAddr += uint64(instructionSize(v))
+
+			case *Directive:
+				// Handle alignment directives
+				if v.Name == "align" && len(v.Args) > 0 {
+					// Parse alignment value
+					alignment := uint64(4) // default
+					if len(v.Args) > 0 {
+						// Simple parsing - assume it's a number
+						alignValue := parseAlignment(v.Args[0])
+						if alignValue > 0 {
+							alignment = uint64(1 << alignValue) // 2^n
+						}
+					}
+					padding := alignmentPadding(*currentAddr, alignment)
+					*currentAddr += padding
+				}
+				// Mark symbols as global
+				if v.Name == "global" && len(v.Args) > 0 {
+					for _, arg := range v.Args {
+						l.symbolTable.MarkGlobal(arg)
+					}
+				}
+
+			case *DataDeclaration:
+				// Add size of data
+				*currentAddr += uint64(dataSize(v))
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -36,19 +86,42 @@ func (l *Layout) GetSymbolTable() *SymbolTable {
 
 // instructionSize returns the size in bytes of an instruction
 func instructionSize(inst *Instruction) int {
-	// TODO: Implement instruction size calculation
-	// Most ARM64 instructions are 4 bytes
-	// Some pseudo-instructions expand to multiple instructions
+	// All ARM64 instructions are 4 bytes
 	return 4
 }
 
 // dataSize returns the size in bytes of a data declaration
 func dataSize(data *DataDeclaration) int {
-	// TODO: Implement data size calculation
-	// .byte = 1 byte
-	// .space N = N bytes
-	// .asciz = string length + 1 (null terminator)
-	return 0
+	switch data.Type {
+	case "byte":
+		return 1
+	case "space":
+		// Parse the size from Value (simple decimal parsing)
+		size := 0
+		for _, ch := range data.Value {
+			if ch >= '0' && ch <= '9' {
+				size = size*10 + int(ch-'0')
+			}
+		}
+		return size
+	case "asciz":
+		// String length + 1 for null terminator
+		return len(data.Value) + 1
+	default:
+		return 0
+	}
+}
+
+// parseAlignment parses an alignment value
+func parseAlignment(s string) int {
+	// Simple decimal parsing
+	result := 0
+	for _, ch := range s {
+		if ch >= '0' && ch <= '9' {
+			result = result*10 + int(ch-'0')
+		}
+	}
+	return result
 }
 
 // alignmentPadding calculates padding needed for alignment

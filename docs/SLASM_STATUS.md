@@ -1,6 +1,8 @@
 # slasm Implementation Status
 
-Last updated: 2025-11-28
+Last updated: 2025-11-29
+
+**STATUS: ✅ WORKING** - Generated binaries now execute correctly!
 
 ## Overview
 
@@ -81,18 +83,21 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - `__LINKEDIT`: Link-edit data (for code signatures)
   - Reserves 8KB for codesign data
 
-**Load Commands:**
-- `LC_SEGMENT_64`: __PAGEZERO, __TEXT, __LINKEDIT
+**Load Commands (15 total, codesign adds 16th):**
+- `LC_SEGMENT_64`: __PAGEZERO, __TEXT, __LINKEDIT (3 segments)
 - `LC_LOAD_DYLINKER`: `/usr/lib/dyld`
 - `LC_LOAD_DYLIB`: `/usr/lib/libSystem.B.dylib`
 - `LC_MAIN`: Entry point (references __text section offset)
 - `LC_UUID`: Binary identifier
 - `LC_BUILD_VERSION`: Platform and SDK versions
 - `LC_SOURCE_VERSION`: Source version info
-- `LC_DYLD_CHAINED_FIXUPS`: Modern dyld fixups (minimal empty table)
+- `LC_DYLD_CHAINED_FIXUPS`: Modern dyld fixups (56-byte data structure)
+- `LC_DYLD_EXPORTS_TRIE`: Symbol exports trie (48 bytes)
 - `LC_SYMTAB`: Symbol table with _start symbol
 - `LC_DYSYMTAB`: Dynamic symbol table
-- Space for `LC_CODE_SIGNATURE` (added by codesign)
+- `LC_FUNCTION_STARTS`: Function start addresses
+- `LC_DATA_IN_CODE`: Data embedded in code (empty)
+- `LC_CODE_SIGNATURE`: Added by codesign tool
 
 **Section Layout:**
 - `__text` section:
@@ -122,8 +127,9 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
   - `TestEncodeCmp` ✅
   - `TestEncodeCset` ✅
 
-### ⚠️ Failing Tests
-- End-to-end execution tests (binaries are killed at runtime)
+### ✅ All Tests Passing
+- End-to-end execution tests now work correctly
+- Generated binaries execute and return expected exit codes
 
 ## Key Achievements
 
@@ -151,45 +157,42 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
    - LC_SYMTAB and LC_DYSYMTAB with minimal symbol table
    - All required load commands for modern macOS executables
 
-## Known Issues
+## Resolved Issues
 
-### 1. Runtime Execution Fails (Critical)
+### Runtime Execution ✅ FIXED (2025-11-29)
 
-**Symptom:** Generated binaries are killed by kernel (SIGKILL, exit code 137)
+**Previous Symptom:** Generated binaries were killed by kernel (SIGKILL, exit code 137)
 
-**Evidence:**
+**Root Causes Identified and Fixed:**
+
+1. **Used old `LC_DYLD_INFO_ONLY` instead of modern format**
+   - Fixed: Switched to `LC_DYLD_CHAINED_FIXUPS` + `LC_DYLD_EXPORTS_TRIE`
+   - Modern macOS requires the chained fixups format
+
+2. **Missing load commands**
+   - Fixed: Added `LC_FUNCTION_STARTS` and `LC_DATA_IN_CODE`
+   - These are expected by modern dyld
+
+3. **Incorrect NCmds count**
+   - Fixed: Header declared 16 commands but only 15 were written
+   - Machine code was being interpreted as a load command
+
+4. **LC_CODE_SIGNATURE placement issue**
+   - Fixed: codesign was overwriting machine code when adding signature
+   - Solution: Reserve 16 bytes of space in loadCmdsSize for codesign
+   - Set `NCmds=15` and `SizeofCmds=648` (our commands)
+   - But `codeOffset=32+664=696` to leave room for codesign to insert its command
+
+5. **__TEXT segment size**
+   - Fixed: Changed from 0x1000 to 0x4000 (16KB) to match system linker
+
+**Result:**
 ```bash
 $ ./test_slasm_binary
-Killed: 9
 $ echo $?
-137
+42
 ```
-
-**Analysis:**
-- Mach-O structure appears correct (verified with `otool -l`)
-- Instruction encoding is correct (verified with `otool -tV`)
-- Code signing passes (`codesign --verify`)
-- Comparison with system assembler output shows similar structure
-- No dyld output (killed before dyld initialization)
-
-**Recent Improvements (2025-11-28):**
-- ✅ Added `LC_DYLD_CHAINED_FIXUPS` - matches C binary format exactly
-- ✅ Added `LC_SYMTAB` and `LC_DYSYMTAB` - minimal symbol table with _start symbol
-- ✅ Generated proper chained fixups data structure (56 bytes)
-- ✅ Symbol table data with nlist_64 entry and string table
-
-**Possible Causes (Remaining):**
-- Subtle difference in Mach-O structure not visible with standard tools
-- Missing additional load commands (LC_FUNCTION_STARTS, LC_DATA_IN_CODE, LC_DYLD_EXPORTS_TRIE)
-- Kernel-level validation failure (not related to structure)
-- Security policy or entitlement requirement
-
-**Next Steps:**
-1. Add remaining optional load commands (LC_FUNCTION_STARTS, LC_DATA_IN_CODE, LC_DYLD_EXPORTS_TRIE)
-2. Use kernel debugging tools (kdebug, dtrace with sudo) to see exact kill reason
-3. Compare complete hex dumps byte-by-byte with working binaries
-4. Test with completely minimal assembly (single instruction)
-5. Try different entry point mechanisms (LC_UNIXTHREAD vs LC_MAIN)
+Binary executes correctly and returns expected exit code!
 
 ## Not Yet Implemented
 
@@ -272,8 +275,8 @@ _start:
 |---------|-------|-------------------|
 | Mach-O generation | ✅ Direct | ✅ Via linker |
 | Code signing | ✅ Passes validation | ✅ Full support |
-| Instruction set | ⚠️ Partial | ✅ Complete |
-| Execution | ❌ Fails | ✅ Works |
+| Instruction set | ⚠️ Partial (core ops) | ✅ Complete |
+| Execution | ✅ Works | ✅ Works |
 | Object files | ❌ Not implemented | ✅ Supported |
 | Relocations | ❌ Not implemented | ✅ Supported |
 | Speed | ? Not tested | Baseline |

@@ -304,7 +304,7 @@ func runSymbolTableIntegrationTests(verbose bool) []testResult {
 	}
 
 	for name, addr := range symbols {
-		if err := st.Define(name, addr, slasm.SectionText); err != nil {
+		if err := st.Define(name, addr, slasm.SectionText, 0, 0); err != nil {
 			results = append(results, testResult{
 				name:    "symbol-table-integration/define-symbols",
 				passed:  false,

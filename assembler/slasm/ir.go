@@ -26,15 +26,19 @@ type Item interface {
 
 // Directive represents an assembler directive (.global, .align, etc.)
 type Directive struct {
-	Name string   // e.g., "global", "align"
-	Args []string // directive arguments
+	Name   string   // e.g., "global", "align"
+	Args   []string // directive arguments
+	Line   int      // source line number
+	Column int      // source column number
 }
 
 func (d *Directive) isItem() {}
 
 // Label represents a label definition
 type Label struct {
-	Name string
+	Name   string
+	Line   int // source line number
+	Column int // source column number
 }
 
 func (l *Label) isItem() {}
@@ -43,6 +47,8 @@ func (l *Label) isItem() {}
 type Instruction struct {
 	Mnemonic string     // e.g., "mov", "add", "sub"
 	Operands []*Operand // instruction operands
+	Line     int        // source line number
+	Column   int        // source column number
 }
 
 func (i *Instruction) isItem() {}

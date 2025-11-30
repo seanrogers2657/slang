@@ -220,11 +220,15 @@ Shows all load commands in detail (segments, dylinker, entry point, etc.)
 - Check the debug output to see what was generated
 
 ### Issue: Binary created but execution fails
-This is the **known issue** - binaries are valid but fail at runtime. The debug output helps narrow down whether the issue is:
+If binaries fail to execute, check the following:
 - Instruction encoding (check with otool -tV)
 - Mach-O structure (check with otool -l)
 - Code signing (check with codesign --verify)
-- Something at the kernel level (likely the current issue)
+- Verify NCmds matches actual load command count
+- Ensure SizeofCmds equals the actual bytes written for load commands
+- Check that codeOffset leaves room for codesign to add LC_CODE_SIGNATURE
+
+**Note:** As of 2025-11-29, the execution issue has been resolved. Binaries should now execute correctly.
 
 ## Tips
 

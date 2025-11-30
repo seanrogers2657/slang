@@ -8,7 +8,7 @@ func TestSymbolTable_DefineAndLookup(t *testing.T) {
 	st := NewSymbolTable()
 
 	// Define a symbol
-	err := st.Define("main", 0x1000, SectionText)
+	err := st.Define("main", 0x1000, SectionText, 0, 0)
 	if err != nil {
 		t.Fatalf("failed to define symbol: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestSymbolTable_MultipleSymbols(t *testing.T) {
 
 	// Define all symbols
 	for _, sym := range symbols {
-		err := st.Define(sym.name, sym.address, sym.section)
+		err := st.Define(sym.name, sym.address, sym.section, 0, 0)
 		if err != nil {
 			t.Fatalf("failed to define symbol %q: %v", sym.name, err)
 		}
@@ -87,7 +87,7 @@ func TestSymbolTable_MarkGlobal(t *testing.T) {
 	st := NewSymbolTable()
 
 	// Define a symbol
-	err := st.Define("_start", 0x0, SectionText)
+	err := st.Define("_start", 0x0, SectionText, 0, 0)
 	if err != nil {
 		t.Fatalf("failed to define symbol: %v", err)
 	}
@@ -111,13 +111,21 @@ func TestSymbolTable_MarkGlobal(t *testing.T) {
 func TestSymbolTable_MarkGlobalNonexistent(t *testing.T) {
 	st := NewSymbolTable()
 
-	// Marking a nonexistent symbol as global should not panic
+	// Marking a nonexistent symbol as global creates a forward reference
 	st.MarkGlobal("nonexistent")
 
-	// Symbol should still not exist
-	_, exists := st.Lookup("nonexistent")
-	if exists {
-		t.Error("nonexistent symbol should not be created by MarkGlobal")
+	// Symbol should exist as a forward reference
+	sym, exists := st.Lookup("nonexistent")
+	if !exists {
+		t.Error("MarkGlobal should create forward reference for nonexistent symbol")
+	}
+
+	if !sym.Global {
+		t.Error("symbol should be marked as global")
+	}
+
+	if sym.Defined {
+		t.Error("symbol should not be defined yet (forward reference)")
 	}
 }
 
@@ -126,7 +134,7 @@ func TestSymbolTable_All(t *testing.T) {
 
 	expectedNames := []string{"_start", "main", "buffer"}
 	for i, name := range expectedNames {
-		err := st.Define(name, uint64(i*0x100), SectionText)
+		err := st.Define(name, uint64(i*0x100), SectionText, 0, 0)
 		if err != nil {
 			t.Fatalf("failed to define symbol %q: %v", name, err)
 		}
@@ -155,13 +163,13 @@ func TestSymbolTable_DuplicateDefinition(t *testing.T) {
 	st := NewSymbolTable()
 
 	// Define a symbol
-	err := st.Define("main", 0x1000, SectionText)
+	err := st.Define("main", 0x1000, SectionText, 0, 0)
 	if err != nil {
 		t.Fatalf("failed to define symbol: %v", err)
 	}
 
 	// Try to define it again - should return an error
-	err = st.Define("main", 0x2000, SectionText)
+	err = st.Define("main", 0x2000, SectionText, 0, 0)
 	if err == nil {
 		t.Error("expected error when defining duplicate symbol")
 	}
@@ -171,7 +179,7 @@ func TestSymbolTable_AddressZero(t *testing.T) {
 	st := NewSymbolTable()
 
 	// Address 0 should be valid
-	err := st.Define("start", 0, SectionText)
+	err := st.Define("start", 0, SectionText, 0, 0)
 	if err != nil {
 		t.Fatalf("failed to define symbol at address 0: %v", err)
 	}
@@ -198,7 +206,7 @@ func TestSymbolTable_SectionTypes(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		err := st.Define(tt.name, 0, tt.section)
+		err := st.Define(tt.name, 0, tt.section, 0, 0)
 		if err != nil {
 			t.Fatalf("failed to define symbol %q: %v", tt.name, err)
 		}
@@ -219,8 +227,8 @@ func TestSymbolTable_GlobalFlag(t *testing.T) {
 	st := NewSymbolTable()
 
 	// Define two symbols
-	st.Define("local", 0x100, SectionText)
-	st.Define("global", 0x200, SectionText)
+	st.Define("local", 0x100, SectionText, 0, 0)
+	st.Define("global", 0x200, SectionText, 0, 0)
 
 	// Mark one as global
 	st.MarkGlobal("global")

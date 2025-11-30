@@ -33,6 +33,56 @@ const (
 	TokenTypeIdentifier
 )
 
+// String returns a human-readable name for the token type
+func (t TokenType) String() string {
+	switch t {
+	case TokenTypeInteger:
+		return "INTEGER"
+	case TokenTypeString:
+		return "STRING"
+	case TokenTypePlus:
+		return "PLUS"
+	case TokenTypeMinus:
+		return "MINUS"
+	case TokenTypeMultiply:
+		return "MULTIPLY"
+	case TokenTypeDivide:
+		return "DIVIDE"
+	case TokenTypeModulo:
+		return "MODULO"
+	case TokenTypeEqual:
+		return "EQUAL"
+	case TokenTypeNotEqual:
+		return "NOT_EQUAL"
+	case TokenTypeLessThan:
+		return "LESS_THAN"
+	case TokenTypeGreaterThan:
+		return "GREATER_THAN"
+	case TokenTypeLessThanOrEqual:
+		return "LESS_EQUAL"
+	case TokenTypeGreaterThanOrEqual:
+		return "GREATER_EQUAL"
+	case TokenTypeNewline:
+		return "NEWLINE"
+	case TokenTypePrint:
+		return "PRINT"
+	case TokenTypeFn:
+		return "FN"
+	case TokenTypeLParen:
+		return "LPAREN"
+	case TokenTypeRParen:
+		return "RPAREN"
+	case TokenTypeLBrace:
+		return "LBRACE"
+	case TokenTypeRBrace:
+		return "RBRACE"
+	case TokenTypeIdentifier:
+		return "IDENTIFIER"
+	default:
+		return "UNKNOWN"
+	}
+}
+
 type Token struct {
 	Type  TokenType
 	Value string

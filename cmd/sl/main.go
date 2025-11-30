@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/seanrogers2657/slang/assembler"
@@ -11,6 +12,7 @@ import (
 	"github.com/seanrogers2657/slang/assembler/system"
 	"github.com/seanrogers2657/slang/backend/as"
 	"github.com/seanrogers2657/slang/errors"
+	"github.com/seanrogers2657/slang/frontend/ast"
 	"github.com/seanrogers2657/slang/frontend/lexer"
 	"github.com/seanrogers2657/slang/frontend/parser"
 	"github.com/seanrogers2657/slang/frontend/semantic"
@@ -21,13 +23,270 @@ import (
 // Global error handler for sl
 var errorHandler = errors.NewHandler(errors.ToolSL)
 
+const sectionWidth = 66
+
+// printSection prints a section header with box drawing characters
+func printSection(title string) {
+	// Top border
+	fmt.Println("╔" + strings.Repeat("═", sectionWidth) + "╗")
+
+	// Title line - center the title
+	padding := (sectionWidth - len(title)) / 2
+	leftPad := strings.Repeat(" ", padding)
+	rightPad := strings.Repeat(" ", sectionWidth-padding-len(title))
+	fmt.Println("║" + leftPad + title + rightPad + "║")
+
+	// Bottom border
+	fmt.Println("╚" + strings.Repeat("═", sectionWidth) + "╝")
+	fmt.Println()
+}
+
+// printDivider prints a horizontal divider line
+func printDivider() {
+	fmt.Println(strings.Repeat("─", sectionWidth+2))
+}
+
+// formatTokens returns a formatted table of tokens
+func formatTokens(tokens []lexer.Token) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("Tokens (%d):\n", len(tokens)))
+
+	// Header
+	sb.WriteString(fmt.Sprintf("  %-4s %-14s %-20s %s\n", "#", "Type", "Value", "Position"))
+	sb.WriteString("  " + strings.Repeat("-", 60) + "\n")
+
+	// Token rows
+	for i, tok := range tokens {
+		// Escape special characters for display
+		value := tok.Value
+		if tok.Type == lexer.TokenTypeNewline {
+			value = "\\n"
+		} else if tok.Type == lexer.TokenTypeString {
+			value = fmt.Sprintf("%q", value)
+		}
+
+		// Truncate long values
+		if len(value) > 18 {
+			value = value[:15] + "..."
+		}
+
+		sb.WriteString(fmt.Sprintf("  %-4d %-14s %-20s %d:%d\n",
+			i+1,
+			tok.Type.String(),
+			value,
+			tok.Pos.Line,
+			tok.Pos.Column,
+		))
+	}
+
+	return sb.String()
+}
+
+// formatAST returns a formatted tree representation of the AST
+func formatAST(program *ast.Program) string {
+	var sb strings.Builder
+	sb.WriteString("AST:\n")
+	sb.WriteString("Program\n")
+
+	// Handle function-based programs
+	if len(program.Declarations) > 0 {
+		for i, decl := range program.Declarations {
+			isLast := i == len(program.Declarations)-1
+			formatDeclaration(&sb, decl, "", isLast)
+		}
+	}
+
+	// Handle legacy statement-based programs
+	if len(program.Statements) > 0 {
+		for i, stmt := range program.Statements {
+			isLast := i == len(program.Statements)-1
+			formatStatement(&sb, stmt, "", isLast)
+		}
+	}
+
+	return sb.String()
+}
+
+func formatDeclaration(sb *strings.Builder, decl ast.Declaration, prefix string, isLast bool) {
+	connector := "├── "
+	if isLast {
+		connector = "└── "
+	}
+
+	switch d := decl.(type) {
+	case *ast.FunctionDecl:
+		sb.WriteString(prefix + connector + fmt.Sprintf("FunctionDecl: %s\n", d.Name))
+		childPrefix := prefix
+		if isLast {
+			childPrefix += "    "
+		} else {
+			childPrefix += "│   "
+		}
+		formatStatement(sb, d.Body, childPrefix, true)
+	}
+}
+
+func formatStatement(sb *strings.Builder, stmt ast.Statement, prefix string, isLast bool) {
+	connector := "├── "
+	if isLast {
+		connector = "└── "
+	}
+
+	childPrefix := prefix
+	if isLast {
+		childPrefix += "    "
+	} else {
+		childPrefix += "│   "
+	}
+
+	switch s := stmt.(type) {
+	case *ast.BlockStmt:
+		sb.WriteString(prefix + connector + "BlockStmt\n")
+		for i, innerStmt := range s.Statements {
+			formatStatement(sb, innerStmt, childPrefix, i == len(s.Statements)-1)
+		}
+	case *ast.PrintStmt:
+		sb.WriteString(prefix + connector + "PrintStmt\n")
+		formatExpression(sb, s.Expr, childPrefix, true)
+	case *ast.ExprStmt:
+		sb.WriteString(prefix + connector + "ExprStmt\n")
+		formatExpression(sb, s.Expr, childPrefix, true)
+	}
+}
+
+func formatExpression(sb *strings.Builder, expr ast.Expression, prefix string, isLast bool) {
+	connector := "├── "
+	if isLast {
+		connector = "└── "
+	}
+
+	childPrefix := prefix
+	if isLast {
+		childPrefix += "    "
+	} else {
+		childPrefix += "│   "
+	}
+
+	switch e := expr.(type) {
+	case *ast.BinaryExpr:
+		sb.WriteString(prefix + connector + fmt.Sprintf("BinaryExpr: %s\n", e.Op))
+		formatExpression(sb, e.Left, childPrefix, false)
+		formatExpression(sb, e.Right, childPrefix, true)
+	case *ast.LiteralExpr:
+		kind := "number"
+		if e.Kind == ast.LiteralTypeString {
+			kind = "string"
+		} else if e.Kind == ast.LiteralTypeBoolean {
+			kind = "boolean"
+		}
+		sb.WriteString(prefix + connector + fmt.Sprintf("LiteralExpr: %s (%s)\n", e.Value, kind))
+	}
+}
+
+// formatTypedAST returns a formatted tree representation of the typed AST
+func formatTypedAST(program *semantic.TypedProgram) string {
+	var sb strings.Builder
+	sb.WriteString("Typed AST:\n")
+	sb.WriteString("Program\n")
+
+	// Handle function-based programs
+	if len(program.Declarations) > 0 {
+		for i, decl := range program.Declarations {
+			isLast := i == len(program.Declarations)-1
+			formatTypedDeclaration(&sb, decl, "", isLast)
+		}
+	}
+
+	// Handle legacy statement-based programs
+	if len(program.Statements) > 0 {
+		for i, stmt := range program.Statements {
+			isLast := i == len(program.Statements)-1
+			formatTypedStatement(&sb, stmt, "", isLast)
+		}
+	}
+
+	return sb.String()
+}
+
+func formatTypedDeclaration(sb *strings.Builder, decl semantic.TypedDeclaration, prefix string, isLast bool) {
+	connector := "├── "
+	if isLast {
+		connector = "└── "
+	}
+
+	switch d := decl.(type) {
+	case *semantic.TypedFunctionDecl:
+		sb.WriteString(prefix + connector + fmt.Sprintf("FunctionDecl: %s\n", d.Name))
+		childPrefix := prefix
+		if isLast {
+			childPrefix += "    "
+		} else {
+			childPrefix += "│   "
+		}
+		formatTypedStatement(sb, d.Body, childPrefix, true)
+	}
+}
+
+func formatTypedStatement(sb *strings.Builder, stmt semantic.TypedStatement, prefix string, isLast bool) {
+	connector := "├── "
+	if isLast {
+		connector = "└── "
+	}
+
+	childPrefix := prefix
+	if isLast {
+		childPrefix += "    "
+	} else {
+		childPrefix += "│   "
+	}
+
+	switch s := stmt.(type) {
+	case *semantic.TypedBlockStmt:
+		sb.WriteString(prefix + connector + "BlockStmt\n")
+		for i, innerStmt := range s.Statements {
+			formatTypedStatement(sb, innerStmt, childPrefix, i == len(s.Statements)-1)
+		}
+	case *semantic.TypedPrintStmt:
+		sb.WriteString(prefix + connector + "PrintStmt\n")
+		formatTypedExpression(sb, s.Expr, childPrefix, true)
+	case *semantic.TypedExprStmt:
+		sb.WriteString(prefix + connector + "ExprStmt\n")
+		formatTypedExpression(sb, s.Expr, childPrefix, true)
+	}
+}
+
+func formatTypedExpression(sb *strings.Builder, expr semantic.TypedExpression, prefix string, isLast bool) {
+	connector := "├── "
+	if isLast {
+		connector = "└── "
+	}
+
+	childPrefix := prefix
+	if isLast {
+		childPrefix += "    "
+	} else {
+		childPrefix += "│   "
+	}
+
+	switch e := expr.(type) {
+	case *semantic.TypedBinaryExpr:
+		sb.WriteString(prefix + connector + fmt.Sprintf("BinaryExpr: %s -> %s\n", e.Op, e.Type.String()))
+		formatTypedExpression(sb, e.Left, childPrefix, false)
+		formatTypedExpression(sb, e.Right, childPrefix, true)
+	case *semantic.TypedLiteralExpr:
+		sb.WriteString(prefix + connector + fmt.Sprintf("LiteralExpr: %s -> %s\n", e.Value, e.Type.String()))
+	}
+}
+
 // toErrorPos converts an ast.Position to an errors.Position
 func toErrorPos(line, column, offset int) errors.Position {
 	return errors.Position{Line: line, Column: column, Offset: offset}
 }
 
 // compileSource performs the full compilation pipeline with error checking
-func compileSource(filename string, timer *timing.Timer) (string, error) {
+// If verbose is true, debug output is printed for each stage
+func compileSource(filename string, verbose bool, timer *timing.Timer) (string, error) {
 	// Read source file
 	if timer != nil {
 		timer.Start("Read Source")
@@ -44,6 +303,14 @@ func compileSource(filename string, timer *timing.Timer) (string, error) {
 	}
 	if timer != nil {
 		timer.End()
+	}
+
+	// Verbose: print source input
+	if verbose {
+		printSection("SOURCE INPUT")
+		fmt.Printf("File: %s\n", filename)
+		printDivider()
+		fmt.Println(string(source))
 	}
 
 	var allErrors []*errors.CompilerError
@@ -73,19 +340,25 @@ func compileSource(filename string, timer *timing.Timer) (string, error) {
 		return "", fmt.Errorf("compilation failed")
 	}
 
+	// Verbose: print lexer output
+	if verbose {
+		printSection("LEXER OUTPUT")
+		fmt.Println(formatTokens(lex.Tokens))
+	}
+
 	// Parsing
 	if timer != nil {
 		timer.Start("Parser")
 	}
 	pars := parser.NewParser(lex.Tokens)
-	ast := pars.Parse()
+	parsedAST := pars.Parse()
 	if timer != nil {
 		timer.End()
 	}
 
 	// Convert parser errors to CompilerErrors
 	for _, parseErr := range pars.Errors {
-		pos := toErrorPos(ast.StartPos.Line, ast.StartPos.Column, ast.StartPos.Offset)
+		pos := toErrorPos(parsedAST.StartPos.Line, parsedAST.StartPos.Column, parsedAST.StartPos.Offset)
 		compilerErr := errors.NewError(parseErr.Error(), filename, pos, "parser").WithTool(errors.ToolSL)
 		allErrors = append(allErrors, compilerErr)
 	}
@@ -95,12 +368,18 @@ func compileSource(filename string, timer *timing.Timer) (string, error) {
 		return "", fmt.Errorf("compilation failed")
 	}
 
+	// Verbose: print parser output
+	if verbose {
+		printSection("PARSER OUTPUT")
+		fmt.Println(formatAST(parsedAST))
+	}
+
 	// Semantic analysis
 	if timer != nil {
 		timer.Start("Semantic Analysis")
 	}
 	analyzer := semantic.NewAnalyzer(filename)
-	semanticErrors, _ := analyzer.Analyze(ast)
+	semanticErrors, typedAST := analyzer.Analyze(parsedAST)
 	allErrors = append(allErrors, semanticErrors...)
 	if timer != nil {
 		timer.End()
@@ -111,11 +390,17 @@ func compileSource(filename string, timer *timing.Timer) (string, error) {
 		return "", fmt.Errorf("compilation failed")
 	}
 
+	// Verbose: print semantic analysis output
+	if verbose {
+		printSection("SEMANTIC ANALYSIS OUTPUT")
+		fmt.Println(formatTypedAST(typedAST))
+	}
+
 	// Code generation
 	if timer != nil {
 		timer.Start("Code Generation")
 	}
-	codeGenerator := as.NewAsGenerator(ast)
+	codeGenerator := as.NewAsGenerator(parsedAST)
 	assemblyOutput, err := codeGenerator.Generate()
 	if err != nil {
 		return "", fmt.Errorf("code generation failed: %w", err)
@@ -124,16 +409,24 @@ func compileSource(filename string, timer *timing.Timer) (string, error) {
 		timer.End()
 	}
 
+	// Verbose: print code generation output
+	if verbose {
+		printSection("CODE GENERATION OUTPUT")
+		fmt.Printf("Generated Assembly (%d bytes):\n", len(assemblyOutput))
+		printDivider()
+		fmt.Println(assemblyOutput)
+	}
+
 	return assemblyOutput, nil
 }
 
 // buildExecutable performs the full build pipeline: compile, assemble, and link
 // If timer is provided, stages will be timed
 // assemblerType specifies which assembler to use: "system" or "native"
-// verbose enables debug output for the native assembler
+// verbose enables debug output for all compilation stages and the native assembler
 func buildExecutable(filename string, assemblerType string, verbose bool, timer *timing.Timer) error {
 	// Compile the source
-	assemblyOutput, err := compileSource(filename, timer)
+	assemblyOutput, err := compileSource(filename, verbose, timer)
 	if err != nil {
 		return err
 	}
@@ -193,7 +486,7 @@ func main() {
 					&cli.BoolFlag{
 						Name:    "verbose",
 						Aliases: []string{"v"},
-						Usage:   "Enable verbose debug output for the native assembler",
+						Usage:   "Enable verbose debug output for all compilation stages",
 					},
 				},
 				Action: func(c *cli.Context) error {
@@ -230,7 +523,7 @@ func main() {
 					&cli.BoolFlag{
 						Name:    "verbose",
 						Aliases: []string{"v"},
-						Usage:   "Enable verbose debug output for the native assembler",
+						Usage:   "Enable verbose debug output for all compilation stages",
 					},
 				},
 				Action: func(c *cli.Context) error {

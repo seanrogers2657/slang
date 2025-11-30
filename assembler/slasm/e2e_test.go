@@ -112,6 +112,68 @@ _start:
 	t.Log("Success! The program exited with code 0 as expected!")
 }
 
+func TestEndToEnd_BranchInstruction(t *testing.T) {
+	// Program that uses unconditional branch to skip over code
+	// _start branches to main, which sets x0 to 25 and exits
+	assembly := `.global _start
+
+_start:
+    b main
+
+skip_this:
+    mov x0, #99
+
+main:
+    mov x0, #25
+    mov x16, #1
+    svc #0
+`
+
+	asm := New()
+	outputPath := "/tmp/test_slasm_branch"
+	defer os.Remove(outputPath)
+
+	err := asm.Build(assembly, assembler.BuildOptions{
+		OutputPath: outputPath,
+	})
+
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	// Sign the binary
+	signCmd := exec.Command("codesign", "-s", "-", "-f", outputPath)
+	if err := signCmd.Run(); err != nil {
+		t.Fatalf("Failed to sign binary: %v", err)
+	}
+
+	// Disassemble to verify branch encoding
+	otoolCmd := exec.Command("otool", "-tV", outputPath)
+	otoolBytes, err := otoolCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("otool -tV failed: %v", err)
+	}
+	t.Logf("Disassembly:\n%s", string(otoolBytes))
+
+	// Execute the program
+	cmd := exec.Command(outputPath)
+	err = cmd.Run()
+
+	// Check exit code (should be 25, not 99)
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		exitCode := exitErr.ExitCode()
+		if exitCode != 25 {
+			t.Errorf("Expected exit code 25 (branch worked), got %d", exitCode)
+		} else {
+			t.Log("Success! Branch instruction correctly skipped to main label")
+		}
+	} else if err != nil {
+		t.Fatalf("Failed to execute program: %v", err)
+	} else {
+		t.Error("Expected exit code 25, but program exited with 0")
+	}
+}
+
 func TestEndToEnd_DifferentExitCodes(t *testing.T) {
 	tests := []struct {
 		name     string

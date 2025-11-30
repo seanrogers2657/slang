@@ -411,8 +411,43 @@ func (e *Encoder) encodeCset(inst *Instruction) ([]byte, error) {
 }
 
 func (e *Encoder) encodeBranch(inst *Instruction, address uint64) ([]byte, error) {
-	// TODO: Implement branch encoding (unconditional)
-	return make([]byte, 4), nil
+	// B label (unconditional branch)
+	// Encoding: 0 00101 imm26
+	// imm26 is a signed offset in instructions (not bytes) from PC
+
+	if len(inst.Operands) != 1 {
+		return nil, fmt.Errorf("line %d:%d: b requires 1 operand, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	if inst.Operands[0].Type != OperandLabel {
+		return nil, fmt.Errorf("line %d:%d: b requires a label operand",
+			inst.Line, inst.Column)
+	}
+
+	labelName := inst.Operands[0].Value
+	symbol, found := e.symbolTable.Lookup(labelName)
+	if !found {
+		return nil, fmt.Errorf("line %d:%d: undefined label '%s'",
+			inst.Line, inst.Column, labelName)
+	}
+
+	// Calculate offset in instructions (each instruction is 4 bytes)
+	// offset = (target - current) / 4
+	targetAddr := symbol.Address
+	offset := (int64(targetAddr) - int64(address)) / 4
+
+	// Check if offset fits in 26 bits (signed)
+	if offset < -0x2000000 || offset > 0x1FFFFFF {
+		return nil, fmt.Errorf("line %d:%d: branch target '%s' is too far away (offset %d)",
+			inst.Line, inst.Column, labelName, offset)
+	}
+
+	// Encode: 000101 followed by 26-bit signed offset
+	imm26 := uint32(offset) & 0x03FFFFFF
+	encoding := (0b000101 << 26) | imm26
+
+	return EncodeLittleEndian(encoding), nil
 }
 
 func (e *Encoder) encodeBranchLink(inst *Instruction, address uint64) ([]byte, error) {

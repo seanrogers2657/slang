@@ -3,7 +3,6 @@ package slasm
 import (
 	"fmt"
 	"os"
-	"os/exec"
 
 	"github.com/seanrogers2657/slang/assembler"
 )
@@ -194,17 +193,7 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	}
 
 	a.Logger.Printf("Set executable permissions (0755)\n")
-
-	// Step 7: Sign the binary (required on macOS)
-	a.Logger.Section("\nSTEP 7: CODE SIGNING")
-
-	err = signBinary(opts.OutputPath)
-	if err != nil {
-		// Non-fatal: binary is still usable but may not run without signing
-		a.Logger.Printf("Warning: failed to sign binary: %v\n", err)
-	} else {
-		a.Logger.Printf("Successfully signed binary with ad-hoc signature\n")
-	}
+	a.Logger.Printf("Code signature: embedded during Mach-O generation\n")
 
 	// Summary
 	a.Logger.Printf("\n========== BUILD SUMMARY ==========\n")
@@ -222,15 +211,4 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 // makeExecutable sets the executable permission on a file
 func makeExecutable(path string) error {
 	return os.Chmod(path, 0755)
-}
-
-// signBinary signs the binary with an ad-hoc signature
-func signBinary(path string) error {
-	cmd := exec.Command("codesign", "--sign", "-", "--force", "--deep", path)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		// Return more detailed error
-		return fmt.Errorf("codesign failed: %w, output: %s", err, string(output))
-	}
-	return nil
 }

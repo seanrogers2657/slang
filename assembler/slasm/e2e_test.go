@@ -36,11 +36,7 @@ _start:
 		t.Fatalf("Build failed: %v", err)
 	}
 
-	// Sign the binary
-	signCmd := exec.Command("codesign", "-s", "-", "-f", outputPath)
-	if err := signCmd.Run(); err != nil {
-		t.Fatalf("Failed to sign binary: %v", err)
-	}
+	// Binary is now signed inline during Mach-O generation
 
 	// Disassemble the binary
 	otoolCmd := exec.Command("otool", "-tV", outputPath)
@@ -94,11 +90,7 @@ _start:
 		t.Fatalf("Build failed: %v", err)
 	}
 
-	// Sign the binary
-	signCmd := exec.Command("codesign", "-s", "-", "-f", outputPath)
-	if err := signCmd.Run(); err != nil {
-		t.Fatalf("Failed to sign binary: %v", err)
-	}
+	// Binary is now signed inline during Mach-O generation
 
 	// Execute the program
 	cmd := exec.Command(outputPath)
@@ -141,11 +133,7 @@ main:
 		t.Fatalf("Build failed: %v", err)
 	}
 
-	// Sign the binary
-	signCmd := exec.Command("codesign", "-s", "-", "-f", outputPath)
-	if err := signCmd.Run(); err != nil {
-		t.Fatalf("Failed to sign binary: %v", err)
-	}
+	// Binary is now signed inline during Mach-O generation
 
 	// Disassemble to verify branch encoding
 	otoolCmd := exec.Command("otool", "-tV", outputPath)
@@ -212,11 +200,7 @@ _start:
 				t.Fatalf("Build failed: %v", err)
 			}
 
-			// Sign the binary
-			signCmd := exec.Command("codesign", "-s", "-", "-f", outputPath)
-			if err := signCmd.Run(); err != nil {
-				t.Fatalf("Failed to sign binary: %v", err)
-			}
+			// Binary is now signed inline during Mach-O generation
 
 			cmd := exec.Command(outputPath)
 			err = cmd.Run()

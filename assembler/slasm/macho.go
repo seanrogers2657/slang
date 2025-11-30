@@ -1,8 +1,12 @@
 package slasm
 
 import (
+	"bytes"
 	"encoding/binary"
+	"io"
 	"os"
+
+	"github.com/seanrogers2657/slang/assembler/slasm/codesign"
 )
 
 // MachOWriter writes Mach-O object files and executables
@@ -79,24 +83,24 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	// Add __LINKEDIT segment (required for code signatures)
 	linkeditSegmentSize := uint64(72) // segment_command_64 without sections
 
-	// Reserve space for LC_CODE_SIGNATURE which codesign will add
-	codeSignatureCmdSize := uint64(16) // LC_CODE_SIGNATURE load command size
-	// Calculate total size of all load commands (including symbol tables)
+	// LC_CODE_SIGNATURE command size (we now write this ourselves)
+	codeSignatureCmdSize := uint64(16)
+	// Calculate total size of all load commands (including LC_CODE_SIGNATURE)
 	loadCmdsSize := pagezeroSize + segmentCmdSize + sectionHeaderSize + linkeditSegmentSize +
 		dylinkerCmdSize + dylibCmdSize + entryPointCmdSize + uuidCmdSize +
 		buildVersionCmdSize + sourceVersionCmdSize +
 		chainedFixupsCmdSize + exportsTrieCmdSize +
 		symtabCmdSize + dysymtabCmdSize +
 		functionStartsCmdSize + dataInCodeCmdSize +
-		codeSignatureCmdSize // Reserved space for codesign
+		codeSignatureCmdSize
 
 	// Place code right after load commands, aligned to 8 bytes
 	// (like the system linker does - no page alignment for code offset)
 	codeOffset := headerSize + loadCmdsSize
 	codeOffset = ((codeOffset + 7) / 8) * 8 // Align to 8 bytes
 
-	// Calculate code size
-	codeSize := uint64(len(code))
+	// Calculate machine code size
+	machineCodeSize := uint64(len(code))
 
 	// Virtual memory base address
 	vmAddr := uint64(0x100000000) // Standard base for ARM64 executables
@@ -105,8 +109,8 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	// Match the system linker layout: use 0x4000 (16KB) minimum for __TEXT
 	// This ensures proper alignment and matches macOS conventions
 	textSegmentFileSize := uint64(0x4000) // 16KB like system linker
-	if (codeOffset + codeSize) > textSegmentFileSize {
-		textSegmentFileSize = ((codeOffset + codeSize + 0xFFF) / 0x1000) * 0x1000
+	if (codeOffset + machineCodeSize) > textSegmentFileSize {
+		textSegmentFileSize = ((codeOffset + machineCodeSize + 0xFFF) / 0x1000) * 0x1000
 	}
 	vmSize := textSegmentFileSize // VM size matches file size
 
@@ -115,9 +119,33 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	linkeditOffset := textSegmentFileSize                   // Right after __TEXT in file
 	linkeditVMAddr := vmAddr + vmSize                       // Right after __TEXT in VM
 
-	// Reserve space for code signature (8KB should be enough for a simple binary)
-	linkeditSize := uint64(0x2000) // 8KB for signature data
-	linkeditVMSize := linkeditSize
+	// Calculate __LINKEDIT content sizes (before signature)
+	chainedFixupsDataSize := uint64(56)
+	exportsTrieSize := uint64(48)
+	numSymbols := uint32(1)
+	symbolSize := uint64(16)
+	symbolDataSize := uint64(numSymbols) * symbolSize
+	stringTableSize := uint64(16)
+	functionStartsDataSize := uint64(8)
+
+	// Total __LINKEDIT data before signature
+	linkeditDataBeforeSig := chainedFixupsDataSize + exportsTrieSize + symbolDataSize + stringTableSize + functionStartsDataSize
+
+	// Calculate code signature size
+	// fileSizeForSig is the file size up to (but not including) the signature
+	fileSizeForSig := int64(linkeditOffset + linkeditDataBeforeSig)
+	signatureID := "slasm-binary"
+	signatureSize := codesign.Size(fileSizeForSig, signatureID)
+	// Align signature size to 16 bytes
+	signatureSize = (signatureSize + 15) &^ 15
+
+	// Total __LINKEDIT size includes signature
+	linkeditSize := linkeditDataBeforeSig + uint64(signatureSize)
+	// Align to page boundary for VM size
+	linkeditVMSize := ((linkeditSize + 0xFFF) / 0x1000) * 0x1000
+	if linkeditVMSize < 0x1000 {
+		linkeditVMSize = 0x1000
+	}
 
 	// Build Mach-O header
 	// Load commands: __PAGEZERO, __TEXT, __LINKEDIT (3 segments)
@@ -126,15 +154,15 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	// + LC_DYLD_CHAINED_FIXUPS, LC_DYLD_EXPORTS_TRIE
 	// + LC_SYMTAB, LC_DYSYMTAB
 	// + LC_FUNCTION_STARTS, LC_DATA_IN_CODE
-	// Total: 15 load commands (codesign adds LC_CODE_SIGNATURE, making it 16)
-	// SizeofCmds includes space reserved for LC_CODE_SIGNATURE
+	// + LC_CODE_SIGNATURE
+	// Total: 16 load commands
 	header := machHeader64{
 		Magic:      MH_MAGIC_64,
 		CPUType:    CPU_TYPE_ARM64,
 		CPUSubtype: CPU_SUBTYPE_ARM64,
 		FileType:   MH_EXECUTE,
-		NCmds:      15, // Not counting LC_CODE_SIGNATURE yet
-		SizeofCmds: uint32(loadCmdsSize - codeSignatureCmdSize), // Our actual commands size
+		NCmds:      16, // Including LC_CODE_SIGNATURE
+		SizeofCmds: uint32(loadCmdsSize),
 		Flags:      MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL | MH_PIE,
 		Reserved:   0,
 	}
@@ -166,7 +194,7 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 		Sectname:  sectname,
 		Segname:   segname,
 		Addr:      vmAddr + codeOffset, // VM address where code will be loaded
-		Size:      codeSize,
+		Size:      machineCodeSize,
 		Offset:    uint32(codeOffset),
 		Align:     2, // 2^2 = 4 byte alignment
 		Reloff:    0,
@@ -279,7 +307,6 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 
 	// Build LC_DYLD_CHAINED_FIXUPS command
 	// Modern format required by newer macOS versions
-	chainedFixupsDataSize := uint64(56) // Minimal chained fixups data structure
 	chainedFixupsCmd := linkeditDataCommand{
 		Cmd:      LC_DYLD_CHAINED_FIXUPS,
 		Cmdsize:  uint32(chainedFixupsCmdSize),
@@ -288,7 +315,6 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	}
 
 	// Build LC_DYLD_EXPORTS_TRIE command
-	exportsTrieSize := uint64(48) // Minimal exports trie with _start and _mh_execute_header
 	exportsTrieCmd := linkeditDataCommand{
 		Cmd:      LC_DYLD_EXPORTS_TRIE,
 		Cmdsize:  uint32(exportsTrieCmdSize),
@@ -299,11 +325,6 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	// Build LC_SYMTAB command
 	// Place symbol table after chained fixups and exports trie in __LINKEDIT
 	symtabOffset := linkeditOffset + chainedFixupsDataSize + exportsTrieSize
-	// Minimal symbol table with one symbol (_start)
-	numSymbols := uint32(1)
-	symbolSize := uint64(16)                         // nlist_64 size
-	symbolDataSize := uint64(numSymbols) * symbolSize
-	stringTableSize := uint64(16) // "_start\0" + padding
 	symtabCmd := symtabCommand{
 		Cmd:     LC_SYMTAB,
 		Cmdsize: uint32(symtabCmdSize),
@@ -340,7 +361,6 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	// Build LC_FUNCTION_STARTS command
 	// Function starts data comes after string table
 	functionStartsOffset := symtabOffset + symbolDataSize + stringTableSize
-	functionStartsDataSize := uint64(8) // Minimal function starts data (just points to _start)
 	functionStartsCmd := linkeditDataCommand{
 		Cmd:      LC_FUNCTION_STARTS,
 		Cmdsize:  uint32(functionStartsCmdSize),
@@ -358,8 +378,15 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 		DataSize: 0, // No data in code
 	}
 
-	// Note: LC_CODE_SIGNATURE will be added by codesign
-	// We leave space for it in the load commands area (16 bytes) and in __LINKEDIT
+	// Build LC_CODE_SIGNATURE command
+	// Signature data comes at the end of __LINKEDIT
+	signatureOffset := linkeditOffset + linkeditDataBeforeSig
+	codeSignatureCmd := codeSignatureCommand{
+		Cmd:      LC_CODE_SIGNATURE,
+		Cmdsize:  uint32(codeSignatureCmdSize),
+		DataOff:  uint32(signatureOffset),
+		DataSize: uint32(signatureSize),
+	}
 
 	// Write everything to file
 	if err := writeStruct(file, &header); err != nil {
@@ -444,20 +471,23 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	if err := writeStruct(file, &dataInCodeCmd); err != nil {
 		return err
 	}
-	// Note: We leave 16 bytes of space here for codesign to add LC_CODE_SIGNATURE
+	// Write LC_CODE_SIGNATURE command
+	if err := writeStruct(file, &codeSignatureCmd); err != nil {
+		return err
+	}
 
 	// Print Mach-O structure information (only if verbose logging is enabled)
 	w.logger.Printf("\nMach-O Structure:\n")
 	w.logger.Printf("  Header:            size=%d bytes\n", headerSize)
 	w.logger.Printf("  Load commands:     size=%d bytes, count=%d\n", loadCmdsSize, header.NCmds)
 	w.logger.Printf("  Code offset:       0x%x (%d bytes)\n", codeOffset, codeOffset)
-	w.logger.Printf("  Code size:         %d bytes\n", codeSize)
+	w.logger.Printf("  Code size:         %d bytes\n", machineCodeSize)
 	w.logger.Printf("\nSegments:\n")
 	w.logger.Printf("  __PAGEZERO:        vm=0x%x-0x%x (size=0x%x)\n", uint64(0), uint64(0x100000000), uint64(0x100000000))
 	w.logger.Printf("  __TEXT:            vm=0x%x-0x%x (size=0x%x), file=0x%x-0x%x\n",
 		vmAddr, vmAddr+vmSize, vmSize, uint64(0), textSegmentFileSize)
 	w.logger.Printf("    __text section:  vm=0x%x-0x%x (size=0x%x), file=0x%x\n",
-		vmAddr+codeOffset, vmAddr+codeOffset+codeSize, codeSize, codeOffset)
+		vmAddr+codeOffset, vmAddr+codeOffset+machineCodeSize, machineCodeSize, codeOffset)
 	w.logger.Printf("  __LINKEDIT:        vm=0x%x-0x%x (size=0x%x), file=0x%x\n",
 		linkeditVMAddr, linkeditVMAddr+linkeditVMSize, linkeditVMSize, linkeditOffset)
 	w.logger.Printf("\nEntry point:         0x%x (file offset 0x%x)\n", vmAddr+codeOffset, codeOffset)
@@ -476,7 +506,7 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 
 	// Pad the __TEXT segment to match vmSize
 	// The __TEXT segment starts at file offset 0 and should have filesize = vmSize
-	currentPos := codeOffset + codeSize
+	currentPos := codeOffset + machineCodeSize
 	textPadding := vmSize - currentPos
 	if textPadding > 0 {
 		padding := make([]byte, textPadding)
@@ -527,13 +557,31 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 		return err
 	}
 
-	// Pad the remaining __LINKEDIT space (codesign will use this for signature)
-	totalLinkeditDataSize := chainedFixupsDataSize + exportsTrieSize + symbolDataSize + stringTableSize + functionStartsDataSize
-	remainingLinkeditSize := linkeditSize - totalLinkeditDataSize
-	linkeditPadding := make([]byte, remainingLinkeditSize)
-	if _, err := file.Write(linkeditPadding); err != nil {
+	// Now generate and write the code signature
+	// First, seek back to the beginning to read the file content for hashing
+	if _, err := file.Seek(0, 0); err != nil {
 		return err
 	}
+
+	// Read the file content up to the signature offset
+	fileContent := make([]byte, fileSizeForSig)
+	if _, err := io.ReadFull(file, fileContent); err != nil {
+		return err
+	}
+
+	// Generate the signature
+	signatureData := make([]byte, signatureSize)
+	codesign.Sign(signatureData, bytes.NewReader(fileContent), signatureID, fileSizeForSig, 0, int64(textSegmentFileSize), true)
+
+	// Seek to the signature offset and write the signature
+	if _, err := file.Seek(int64(signatureOffset), 0); err != nil {
+		return err
+	}
+	if _, err := file.Write(signatureData); err != nil {
+		return err
+	}
+
+	w.logger.Printf("  Code signature:    offset=0x%x, size=%d bytes\n", signatureOffset, signatureSize)
 
 	return nil
 }

@@ -29,18 +29,42 @@ func color(code string) string {
 func FormatError(err *CompilerError, sourceLines []string) string {
 	var builder strings.Builder
 
-	// Error header with color
+	// Error header with tool name and color
+	// Format: tool: Kind: message
 	errorColor := colorRed
 	if err.Kind == ErrorKindWarning {
 		errorColor = colorYellow
 	}
 
-	builder.WriteString(fmt.Sprintf("%s%s%s%s: %s\n",
-		color(colorBold), color(errorColor), err.Kind.String(), color(colorReset), err.Message))
+	// Include tool name if set
+	if err.Tool != "" {
+		builder.WriteString(fmt.Sprintf("%s%s%s: %s%s%s: %s\n",
+			color(colorBold), err.Tool, color(colorReset),
+			color(colorBold), color(errorColor), err.Kind.String(), color(colorReset)))
+		builder.WriteString(fmt.Sprintf("  %s\n", err.Message))
+	} else {
+		builder.WriteString(fmt.Sprintf("%s%s%s%s: %s\n",
+			color(colorBold), color(errorColor), err.Kind.String(), color(colorReset), err.Message))
+	}
 
-	// Location info
-	builder.WriteString(fmt.Sprintf("%s  --> %s:%d:%d%s\n",
-		color(colorCyan), err.Filename, err.Position.Line, err.Position.Column, color(colorReset)))
+	// Location info with stage
+	// Format:   --> file:line:column (stage)
+	if err.Filename != "" {
+		if err.Position.Line > 0 {
+			builder.WriteString(fmt.Sprintf("%s  --> %s:%d:%d",
+				color(colorCyan), err.Filename, err.Position.Line, err.Position.Column))
+		} else {
+			builder.WriteString(fmt.Sprintf("%s  --> %s",
+				color(colorCyan), err.Filename))
+		}
+	} else if err.Stage != "" {
+		builder.WriteString(fmt.Sprintf("%s  -->", color(colorCyan)))
+	}
+
+	if err.Stage != "" {
+		builder.WriteString(fmt.Sprintf(" (%s)", err.Stage))
+	}
+	builder.WriteString(fmt.Sprintf("%s\n", color(colorReset)))
 
 	// Source context
 	if err.Position.Line > 0 && err.Position.Line <= len(sourceLines) {
@@ -87,9 +111,14 @@ func FormatError(err *CompilerError, sourceLines []string) string {
 
 	// Hint
 	if err.Hint != "" {
-		builder.WriteString(fmt.Sprintf("%s%*s |%s %shelp:%s %s\n",
-			color(colorCyan), len(fmt.Sprintf("%d", err.Position.Line)), "", color(colorReset),
-			color(colorCyan), color(colorReset), err.Hint))
+		if err.Position.Line > 0 {
+			builder.WriteString(fmt.Sprintf("%s%*s |%s %shelp:%s %s\n",
+				color(colorCyan), len(fmt.Sprintf("%d", err.Position.Line)), "", color(colorReset),
+				color(colorCyan), color(colorReset), err.Hint))
+		} else {
+			builder.WriteString(fmt.Sprintf("  %shelp:%s %s\n",
+				color(colorCyan), color(colorReset), err.Hint))
+		}
 	}
 
 	return builder.String()

@@ -2,15 +2,18 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"strings"
 
 	"github.com/seanrogers2657/slang/assembler"
 	"github.com/seanrogers2657/slang/assembler/slasm"
 	"github.com/seanrogers2657/slang/assembler/system"
+	"github.com/seanrogers2657/slang/errors"
 	"github.com/urfave/cli/v2"
 )
+
+// Global error handler for slasm
+var errorHandler = errors.NewHandler(errors.ToolSlasm)
 
 // createAssembler creates the appropriate assembler based on the backend flag
 func createAssembler(backend string) (assembler.Assembler, error) {
@@ -84,7 +87,7 @@ func main() {
 
 					fmt.Printf("Assembling %s -> %s (backend: %s)\n", inputPath, outputPath, c.String("backend"))
 					if err := asm.Assemble(inputPath, outputPath); err != nil {
-						return err
+						return fmt.Errorf("[assemble] %w", err)
 					}
 
 					fmt.Printf("Successfully created object file: %s\n", outputPath)
@@ -172,7 +175,7 @@ func main() {
 
 					fmt.Printf("Linking %s -> %s (backend: %s)\n", strings.Join(objectFiles, ", "), outputPath, c.String("backend"))
 					if err := asm.Link(objectFiles, outputPath); err != nil {
-						return err
+						return fmt.Errorf("[link] %w", err)
 					}
 
 					fmt.Printf("Successfully created executable: %s\n", outputPath)
@@ -271,7 +274,7 @@ func main() {
 					}
 
 					if err := asm.Build(string(assemblyCode), opts); err != nil {
-						return err
+						return fmt.Errorf("[build] %w", err)
 					}
 
 					fmt.Printf("Successfully created executable: %s\n", outputPath)
@@ -285,6 +288,9 @@ func main() {
 	}
 
 	if err := app.Run(os.Args); err != nil {
-		log.Fatal(err)
+		// Wrap the error with slasm tool identification and display
+		compilerErr := errorHandler.Wrap(err, "")
+		errorHandler.Handle([]*errors.CompilerError{compilerErr})
+		os.Exit(1)
 	}
 }

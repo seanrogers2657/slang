@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 
@@ -11,13 +10,21 @@ import (
 	nativeasm "github.com/seanrogers2657/slang/assembler/slasm"
 	"github.com/seanrogers2657/slang/assembler/system"
 	"github.com/seanrogers2657/slang/backend/as"
-	"github.com/seanrogers2657/slang/frontend/errors"
+	"github.com/seanrogers2657/slang/errors"
 	"github.com/seanrogers2657/slang/frontend/lexer"
 	"github.com/seanrogers2657/slang/frontend/parser"
 	"github.com/seanrogers2657/slang/frontend/semantic"
 	"github.com/seanrogers2657/slang/internal/timing"
 	"github.com/urfave/cli/v2"
 )
+
+// Global error handler for sl
+var errorHandler = errors.NewHandler(errors.ToolSL)
+
+// toErrorPos converts an ast.Position to an errors.Position
+func toErrorPos(line, column, offset int) errors.Position {
+	return errors.Position{Line: line, Column: column, Offset: offset}
+}
 
 // compileSource performs the full compilation pipeline with error checking
 func compileSource(filename string, timer *timing.Timer) (string, error) {
@@ -53,7 +60,11 @@ func compileSource(filename string, timer *timing.Timer) (string, error) {
 
 	// Convert lexer errors to CompilerErrors
 	for _, lexErr := range lex.Errors {
-		compilerErr := errors.NewError(lexErr.Error(), filename, lex.Tokens[0].Pos, "lexer")
+		pos := errors.Position{Line: 1, Column: 1}
+		if len(lex.Tokens) > 0 {
+			pos = toErrorPos(lex.Tokens[0].Pos.Line, lex.Tokens[0].Pos.Column, lex.Tokens[0].Pos.Offset)
+		}
+		compilerErr := errors.NewError(lexErr.Error(), filename, pos, "lexer").WithTool(errors.ToolSL)
 		allErrors = append(allErrors, compilerErr)
 	}
 
@@ -74,7 +85,8 @@ func compileSource(filename string, timer *timing.Timer) (string, error) {
 
 	// Convert parser errors to CompilerErrors
 	for _, parseErr := range pars.Errors {
-		compilerErr := errors.NewError(parseErr.Error(), filename, ast.StartPos, "parser")
+		pos := toErrorPos(ast.StartPos.Line, ast.StartPos.Column, ast.StartPos.Offset)
+		compilerErr := errors.NewError(parseErr.Error(), filename, pos, "parser").WithTool(errors.ToolSL)
 		allErrors = append(allErrors, compilerErr)
 	}
 
@@ -152,7 +164,7 @@ func buildExecutable(filename string, assemblerType string, verbose bool, timer 
 	}
 
 	if err := asm.Build(assemblyOutput, opts); err != nil {
-		return err
+		return fmt.Errorf("[assemble] %w", err)
 	}
 
 	if timer != nil {
@@ -260,6 +272,9 @@ func main() {
 	}
 
 	if err := app.Run(os.Args); err != nil {
-		log.Fatal(err)
+		// Wrap the error with sl tool identification and display
+		compilerErr := errorHandler.Wrap(err, "")
+		errorHandler.Handle([]*errors.CompilerError{compilerErr})
+		os.Exit(1)
 	}
 }

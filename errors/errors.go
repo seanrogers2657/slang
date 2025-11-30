@@ -1,7 +1,11 @@
 package errors
 
-import (
-	"github.com/seanrogers2657/slang/frontend/ast"
+// Tool identifies which tool generated an error
+type Tool string
+
+const (
+	ToolSL    Tool = "sl"
+	ToolSlasm Tool = "slasm"
 )
 
 // ErrorKind represents the severity of a compiler error
@@ -28,13 +32,14 @@ func (k ErrorKind) String() string {
 
 // CompilerError represents a detailed error with source location
 type CompilerError struct {
-	Message  string       // Error description
-	Filename string       // Source file path
-	Position ast.Position // Where the error occurred
-	EndPos   ast.Position // End position (for multi-character spans)
-	Stage    string       // "lexer", "parser", "semantic", "codegen"
-	Kind     ErrorKind    // Warning, Error, Fatal
-	Hint     string       // Optional suggestion for fixing the error
+	Tool     Tool     // which tool generated this error (sl, slasm)
+	Stage    string   // "lexer", "parser", "semantic", "codegen", "assemble", "link"
+	Message  string   // error description
+	Filename string   // source file path
+	Position Position // where the error occurred
+	EndPos   Position // end position (for multi-character spans)
+	Kind     ErrorKind
+	Hint     string // optional suggestion for fixing the error
 }
 
 // Error implements the error interface
@@ -43,7 +48,7 @@ func (e *CompilerError) Error() string {
 }
 
 // NewError creates a new compiler error
-func NewError(message string, filename string, pos ast.Position, stage string) *CompilerError {
+func NewError(message string, filename string, pos Position, stage string) *CompilerError {
 	return &CompilerError{
 		Message:  message,
 		Filename: filename,
@@ -55,7 +60,7 @@ func NewError(message string, filename string, pos ast.Position, stage string) *
 }
 
 // NewErrorWithSpan creates a new compiler error with a position span
-func NewErrorWithSpan(message string, filename string, startPos, endPos ast.Position, stage string) *CompilerError {
+func NewErrorWithSpan(message string, filename string, startPos, endPos Position, stage string) *CompilerError {
 	return &CompilerError{
 		Message:  message,
 		Filename: filename,
@@ -67,7 +72,7 @@ func NewErrorWithSpan(message string, filename string, startPos, endPos ast.Posi
 }
 
 // NewWarning creates a new compiler warning
-func NewWarning(message string, filename string, pos ast.Position, stage string) *CompilerError {
+func NewWarning(message string, filename string, pos Position, stage string) *CompilerError {
 	return &CompilerError{
 		Message:  message,
 		Filename: filename,
@@ -76,6 +81,12 @@ func NewWarning(message string, filename string, pos ast.Position, stage string)
 		Stage:    stage,
 		Kind:     ErrorKindWarning,
 	}
+}
+
+// WithTool sets the tool that generated this error
+func (e *CompilerError) WithTool(tool Tool) *CompilerError {
+	e.Tool = tool
+	return e
 }
 
 // WithHint adds a hint to the error

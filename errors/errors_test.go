@@ -1,15 +1,14 @@
 package errors
 
 import (
+	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/seanrogers2657/slang/frontend/ast"
 )
 
 func TestCompilerError(t *testing.T) {
 	t.Run("creates error with message", func(t *testing.T) {
-		err := NewError("test error", "test.sl", ast.Position{Line: 1, Column: 5}, "parser")
+		err := NewError("test error", "test.sl", Position{Line: 1, Column: 5}, "parser")
 
 		if err.Message != "test error" {
 			t.Errorf("expected message 'test error', got %q", err.Message)
@@ -33,8 +32,8 @@ func TestCompilerError(t *testing.T) {
 
 	t.Run("creates error with span", func(t *testing.T) {
 		err := NewErrorWithSpan("test error", "test.sl",
-			ast.Position{Line: 1, Column: 5},
-			ast.Position{Line: 1, Column: 10},
+			Position{Line: 1, Column: 5},
+			Position{Line: 1, Column: 10},
 			"semantic")
 
 		if err.EndPos.Column != 10 {
@@ -43,7 +42,7 @@ func TestCompilerError(t *testing.T) {
 	})
 
 	t.Run("creates warning", func(t *testing.T) {
-		warn := NewWarning("test warning", "test.sl", ast.Position{Line: 2, Column: 3}, "semantic")
+		warn := NewWarning("test warning", "test.sl", Position{Line: 2, Column: 3}, "semantic")
 
 		if warn.Kind != ErrorKindWarning {
 			t.Errorf("expected warning kind, got %v", warn.Kind)
@@ -51,7 +50,7 @@ func TestCompilerError(t *testing.T) {
 	})
 
 	t.Run("adds hint to error", func(t *testing.T) {
-		err := NewError("test error", "test.sl", ast.Position{Line: 1, Column: 1}, "parser").
+		err := NewError("test error", "test.sl", Position{Line: 1, Column: 1}, "parser").
 			WithHint("try using parentheses")
 
 		if err.Hint != "try using parentheses" {
@@ -59,8 +58,17 @@ func TestCompilerError(t *testing.T) {
 		}
 	})
 
+	t.Run("adds tool to error", func(t *testing.T) {
+		err := NewError("test error", "test.sl", Position{Line: 1, Column: 1}, "parser").
+			WithTool(ToolSL)
+
+		if err.Tool != ToolSL {
+			t.Errorf("expected tool %q, got %q", ToolSL, err.Tool)
+		}
+	})
+
 	t.Run("error implements error interface", func(t *testing.T) {
-		err := NewError("test error", "test.sl", ast.Position{Line: 1, Column: 1}, "parser")
+		err := NewError("test error", "test.sl", Position{Line: 1, Column: 1}, "parser")
 
 		if err.Error() != "test error" {
 			t.Errorf("expected Error() to return message, got %q", err.Error())
@@ -100,7 +108,7 @@ func TestFormatError(t *testing.T) {
 
 	t.Run("formats error with source context", func(t *testing.T) {
 		err := NewError("unexpected token", "test.sl",
-			ast.Position{Line: 2, Column: 10}, "lexer")
+			Position{Line: 2, Column: 10}, "lexer")
 
 		formatted := FormatError(err, sourceLines)
 		t.Logf("Formatted output:\n%s", formatted)
@@ -120,10 +128,42 @@ func TestFormatError(t *testing.T) {
 		}
 	})
 
+	t.Run("formats error with tool name", func(t *testing.T) {
+		err := NewError("type mismatch", "test.sl",
+			Position{Line: 1, Column: 7}, "semantic").
+			WithTool(ToolSL)
+
+		formatted := FormatError(err, sourceLines)
+		t.Logf("Formatted output:\n%s", formatted)
+
+		if !strings.Contains(formatted, "sl:") {
+			t.Error("formatted error should contain tool name")
+		}
+		if !strings.Contains(formatted, "(semantic)") {
+			t.Error("formatted error should contain stage")
+		}
+	})
+
+	t.Run("formats error with slasm tool", func(t *testing.T) {
+		err := NewError("invalid instruction", "test.s",
+			Position{Line: 3, Column: 5}, "assemble").
+			WithTool(ToolSlasm)
+
+		formatted := FormatError(err, sourceLines)
+		t.Logf("Formatted output:\n%s", formatted)
+
+		if !strings.Contains(formatted, "slasm:") {
+			t.Error("formatted error should contain tool name 'slasm'")
+		}
+		if !strings.Contains(formatted, "(assemble)") {
+			t.Error("formatted error should contain stage 'assemble'")
+		}
+	})
+
 	t.Run("formats error with span", func(t *testing.T) {
 		err := NewErrorWithSpan("type mismatch", "test.sl",
-			ast.Position{Line: 1, Column: 7},
-			ast.Position{Line: 1, Column: 11},
+			Position{Line: 1, Column: 7},
+			Position{Line: 1, Column: 11},
 			"semantic")
 
 		formatted := FormatError(err, sourceLines)
@@ -136,7 +176,7 @@ func TestFormatError(t *testing.T) {
 
 	t.Run("formats error with hint", func(t *testing.T) {
 		err := NewError("invalid syntax", "test.sl",
-			ast.Position{Line: 3, Column: 7}, "parser").
+			Position{Line: 3, Column: 7}, "parser").
 			WithHint("strings must be enclosed in double quotes")
 
 		formatted := FormatError(err, sourceLines)
@@ -148,7 +188,7 @@ func TestFormatError(t *testing.T) {
 
 	t.Run("formats warning with different color", func(t *testing.T) {
 		warn := NewWarning("unused variable", "test.sl",
-			ast.Position{Line: 1, Column: 1}, "semantic")
+			Position{Line: 1, Column: 1}, "semantic")
 
 		formatted := FormatError(warn, sourceLines)
 
@@ -170,8 +210,8 @@ func TestFormatErrors(t *testing.T) {
 
 	t.Run("formats multiple errors", func(t *testing.T) {
 		errors := []*CompilerError{
-			NewError("error 1", "test.sl", ast.Position{Line: 1, Column: 1}, "lexer"),
-			NewError("error 2", "test.sl", ast.Position{Line: 2, Column: 1}, "parser"),
+			NewError("error 1", "test.sl", Position{Line: 1, Column: 1}, "lexer"),
+			NewError("error 2", "test.sl", Position{Line: 2, Column: 1}, "parser"),
 		}
 
 		formatted := FormatErrors(errors, sourceLines)
@@ -189,8 +229,8 @@ func TestFormatErrors(t *testing.T) {
 
 	t.Run("formats errors and warnings together", func(t *testing.T) {
 		errors := []*CompilerError{
-			NewError("error 1", "test.sl", ast.Position{Line: 1, Column: 1}, "semantic"),
-			NewWarning("warning 1", "test.sl", ast.Position{Line: 2, Column: 1}, "semantic"),
+			NewError("error 1", "test.sl", Position{Line: 1, Column: 1}, "semantic"),
+			NewWarning("warning 1", "test.sl", Position{Line: 2, Column: 1}, "semantic"),
 		}
 
 		formatted := FormatErrors(errors, sourceLines)
@@ -202,7 +242,7 @@ func TestFormatErrors(t *testing.T) {
 
 	t.Run("formats only warnings", func(t *testing.T) {
 		errors := []*CompilerError{
-			NewWarning("warning 1", "test.sl", ast.Position{Line: 1, Column: 1}, "semantic"),
+			NewWarning("warning 1", "test.sl", Position{Line: 1, Column: 1}, "semantic"),
 		}
 
 		formatted := FormatErrors(errors, sourceLines)
@@ -212,3 +252,52 @@ func TestFormatErrors(t *testing.T) {
 		}
 	})
 }
+
+func TestHandler(t *testing.T) {
+	// Disable colors for testing
+	DisableColors = true
+	defer func() { DisableColors = false }()
+
+	t.Run("creates handler with tool", func(t *testing.T) {
+		handler := NewHandler(ToolSL)
+
+		if handler.Tool != ToolSL {
+			t.Errorf("expected tool %q, got %q", ToolSL, handler.Tool)
+		}
+	})
+
+	t.Run("wraps error with tool", func(t *testing.T) {
+		handler := NewHandler(ToolSlasm)
+		err := handler.Wrap(fmt.Errorf("test error"), "assemble")
+
+		if err.Tool != ToolSlasm {
+			t.Errorf("expected tool %q, got %q", ToolSlasm, err.Tool)
+		}
+		if err.Stage != "assemble" {
+			t.Errorf("expected stage 'assemble', got %q", err.Stage)
+		}
+	})
+
+	t.Run("wraps error with position", func(t *testing.T) {
+		handler := NewHandler(ToolSL)
+		pos := Position{Line: 5, Column: 10}
+		err := handler.WrapWithPos(fmt.Errorf("test error"), "test.sl", pos, "parser")
+
+		if err.Position.Line != 5 {
+			t.Errorf("expected line 5, got %d", err.Position.Line)
+		}
+		if err.Filename != "test.sl" {
+			t.Errorf("expected filename 'test.sl', got %q", err.Filename)
+		}
+	})
+
+	t.Run("returns 0 for no errors", func(t *testing.T) {
+		handler := NewHandler(ToolSL)
+		exitCode := handler.Handle([]*CompilerError{})
+
+		if exitCode != 0 {
+			t.Errorf("expected exit code 0, got %d", exitCode)
+		}
+	})
+}
+

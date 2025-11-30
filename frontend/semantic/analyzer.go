@@ -3,9 +3,14 @@ package semantic
 import (
 	"fmt"
 
+	"github.com/seanrogers2657/slang/errors"
 	"github.com/seanrogers2657/slang/frontend/ast"
-	"github.com/seanrogers2657/slang/frontend/errors"
 )
+
+// toErrorPos converts an ast.Position to an errors.Position
+func toErrorPos(p ast.Position) errors.Position {
+	return errors.Position{Line: p.Line, Column: p.Column, Offset: p.Offset}
+}
 
 // Analyzer performs semantic analysis on the AST
 type Analyzer struct {
@@ -282,7 +287,8 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 
 // addError adds a compiler error to the error list
 func (a *Analyzer) addError(message string, startPos, endPos ast.Position) *errors.CompilerError {
-	err := errors.NewErrorWithSpan(message, a.filename, startPos, endPos, "semantic")
+	err := errors.NewErrorWithSpan(message, a.filename, toErrorPos(startPos), toErrorPos(endPos), "semantic")
+	err.Tool = errors.ToolSL
 	a.errors = append(a.errors, err)
 	return err
 }

@@ -29,7 +29,7 @@ func New() *NativeAssembler {
 		Arch:       "arm64",
 		EntryPoint: "_start",
 		SystemLibs: true,
-		Logger:     NewDefaultLogger(true), // Enabled by default for debugging
+		Logger:     NewDefaultLogger(false), // Disabled by default, enable with --verbose
 	}
 }
 
@@ -175,9 +175,9 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 
 	// Step 5: Generate Mach-O executable
 	a.Logger.Section("STEP 5: MACH-O GENERATION")
-	
 
-	writer := NewMachOWriter(a.Arch)
+
+	writer := NewMachOWriter(a.Arch, a.Logger)
 	err = writer.WriteExecutable(opts.OutputPath, codeBytes, nil, layout.GetSymbolTable(), a.EntryPoint)
 	if err != nil {
 		return fmt.Errorf("mach-o generation error: %w", err)

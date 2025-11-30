@@ -4,3 +4,5 @@ sl
 main
 go.work
 go.work.sum
+slasm
+!slasm/

@@ -53,6 +53,11 @@ func main() {
 						Value:   "system",
 						Usage:   "Assembler backend to use (system or slasm)",
 					},
+					&cli.BoolFlag{
+						Name:    "verbose",
+						Aliases: []string{"v"},
+						Usage:   "Enable verbose debug output",
+					},
 				},
 				Action: func(c *cli.Context) error {
 					if c.NArg() != 1 {
@@ -68,12 +73,13 @@ func main() {
 						return err
 					}
 
-					// Set architecture (both implementations support this field)
+					// Set architecture and verbose (both implementations support this field)
 					switch a := asm.(type) {
 					case *system.SystemAssembler:
 						a.Arch = c.String("arch")
 					case *slasm.NativeAssembler:
 						a.Arch = c.String("arch")
+						a.Logger.SetEnabled(c.Bool("verbose"))
 					}
 
 					fmt.Printf("Assembling %s -> %s (backend: %s)\n", inputPath, outputPath, c.String("backend"))
@@ -124,6 +130,11 @@ func main() {
 						Value:   "system",
 						Usage:   "Assembler backend to use (system or slasm)",
 					},
+					&cli.BoolFlag{
+						Name:    "verbose",
+						Aliases: []string{"v"},
+						Usage:   "Enable verbose debug output",
+					},
 				},
 				Action: func(c *cli.Context) error {
 					if c.NArg() == 0 {
@@ -156,6 +167,7 @@ func main() {
 						if c.String("sdk") != "" {
 							a.SDKPath = c.String("sdk")
 						}
+						a.Logger.SetEnabled(c.Bool("verbose"))
 					}
 
 					fmt.Printf("Linking %s -> %s (backend: %s)\n", strings.Join(objectFiles, ", "), outputPath, c.String("backend"))
@@ -206,6 +218,11 @@ func main() {
 						Value:   "system",
 						Usage:   "Assembler backend to use (system or slasm)",
 					},
+					&cli.BoolFlag{
+						Name:    "verbose",
+						Aliases: []string{"v"},
+						Usage:   "Enable verbose debug output",
+					},
 				},
 				Action: func(c *cli.Context) error {
 					if c.NArg() != 1 {
@@ -241,6 +258,7 @@ func main() {
 						if c.String("sdk") != "" {
 							a.SDKPath = c.String("sdk")
 						}
+						a.Logger.SetEnabled(c.Bool("verbose"))
 					}
 
 					fmt.Printf("Building %s -> %s (backend: %s)\n", inputPath, outputPath, c.String("backend"))

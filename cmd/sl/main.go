@@ -118,7 +118,8 @@ func compileSource(filename string, timer *timing.Timer) (string, error) {
 // buildExecutable performs the full build pipeline: compile, assemble, and link
 // If timer is provided, stages will be timed
 // assemblerType specifies which assembler to use: "system" or "native"
-func buildExecutable(filename string, assemblerType string, timer *timing.Timer) error {
+// verbose enables debug output for the native assembler
+func buildExecutable(filename string, assemblerType string, verbose bool, timer *timing.Timer) error {
 	// Compile the source
 	assemblyOutput, err := compileSource(filename, timer)
 	if err != nil {
@@ -129,7 +130,9 @@ func buildExecutable(filename string, assemblerType string, timer *timing.Timer)
 	var asm assembler.Assembler
 	switch assemblerType {
 	case "native":
-		asm = nativeasm.New()
+		nasm := nativeasm.New()
+		nasm.Logger.SetEnabled(verbose)
+		asm = nasm
 	case "system":
 		asm = system.New()
 	default:
@@ -175,6 +178,11 @@ func main() {
 						Value:   "system",
 						Usage:   "Assembler to use: 'system' (default, uses macOS as/ld) or 'native' (custom implementation)",
 					},
+					&cli.BoolFlag{
+						Name:    "verbose",
+						Aliases: []string{"v"},
+						Usage:   "Enable verbose debug output for the native assembler",
+					},
 				},
 				Action: func(c *cli.Context) error {
 					file := c.Args().First()
@@ -183,10 +191,11 @@ func main() {
 					}
 
 					assemblerType := c.String("assembler")
+					verbose := c.Bool("verbose")
 					timer := timing.NewTimer()
 
 					// Build the executable with timing
-					if err := buildExecutable(file, assemblerType, timer); err != nil {
+					if err := buildExecutable(file, assemblerType, verbose, timer); err != nil {
 						return err
 					}
 
@@ -206,6 +215,11 @@ func main() {
 						Value:   "system",
 						Usage:   "Assembler to use: 'system' (default, uses macOS as/ld) or 'native' (custom implementation)",
 					},
+					&cli.BoolFlag{
+						Name:    "verbose",
+						Aliases: []string{"v"},
+						Usage:   "Enable verbose debug output for the native assembler",
+					},
 				},
 				Action: func(c *cli.Context) error {
 					file := c.Args().First()
@@ -214,10 +228,11 @@ func main() {
 					}
 
 					assemblerType := c.String("assembler")
+					verbose := c.Bool("verbose")
 					timer := timing.NewTimer()
 
 					// Build the executable with timing
-					if err := buildExecutable(file, assemblerType, timer); err != nil {
+					if err := buildExecutable(file, assemblerType, verbose, timer); err != nil {
 						return err
 					}
 

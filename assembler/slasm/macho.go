@@ -2,7 +2,6 @@ package slasm
 
 import (
 	"encoding/binary"
-	"fmt"
 	"os"
 )
 
@@ -12,12 +11,17 @@ type MachOWriter struct {
 	objectCode  []byte
 	dataSection []byte
 	symbolTable *SymbolTable
+	logger      *Logger
 }
 
 // NewMachOWriter creates a new Mach-O file writer
-func NewMachOWriter(arch string) *MachOWriter {
+func NewMachOWriter(arch string, logger *Logger) *MachOWriter {
+	if logger == nil {
+		logger = NewSilentLogger()
+	}
 	return &MachOWriter{
-		arch: arch,
+		arch:   arch,
+		logger: logger,
 	}
 }
 
@@ -442,22 +446,22 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	}
 	// Note: We leave 16 bytes of space here for codesign to add LC_CODE_SIGNATURE
 
-	// Print Mach-O structure information
-	fmt.Fprintf(os.Stderr, "\nMach-O Structure:\n")
-	fmt.Fprintf(os.Stderr, "  Header:            size=%d bytes\n", headerSize)
-	fmt.Fprintf(os.Stderr, "  Load commands:     size=%d bytes, count=%d\n", loadCmdsSize, header.NCmds)
-	fmt.Fprintf(os.Stderr, "  Code offset:       0x%x (%d bytes)\n", codeOffset, codeOffset)
-	fmt.Fprintf(os.Stderr, "  Code size:         %d bytes\n", codeSize)
-	fmt.Fprintf(os.Stderr, "\nSegments:\n")
-	fmt.Fprintf(os.Stderr, "  __PAGEZERO:        vm=0x%x-0x%x (size=0x%x)\n", uint64(0), uint64(0x100000000), uint64(0x100000000))
-	fmt.Fprintf(os.Stderr, "  __TEXT:            vm=0x%x-0x%x (size=0x%x), file=0x%x-0x%x\n",
+	// Print Mach-O structure information (only if verbose logging is enabled)
+	w.logger.Printf("\nMach-O Structure:\n")
+	w.logger.Printf("  Header:            size=%d bytes\n", headerSize)
+	w.logger.Printf("  Load commands:     size=%d bytes, count=%d\n", loadCmdsSize, header.NCmds)
+	w.logger.Printf("  Code offset:       0x%x (%d bytes)\n", codeOffset, codeOffset)
+	w.logger.Printf("  Code size:         %d bytes\n", codeSize)
+	w.logger.Printf("\nSegments:\n")
+	w.logger.Printf("  __PAGEZERO:        vm=0x%x-0x%x (size=0x%x)\n", uint64(0), uint64(0x100000000), uint64(0x100000000))
+	w.logger.Printf("  __TEXT:            vm=0x%x-0x%x (size=0x%x), file=0x%x-0x%x\n",
 		vmAddr, vmAddr+vmSize, vmSize, uint64(0), textSegmentFileSize)
-	fmt.Fprintf(os.Stderr, "    __text section:  vm=0x%x-0x%x (size=0x%x), file=0x%x\n",
+	w.logger.Printf("    __text section:  vm=0x%x-0x%x (size=0x%x), file=0x%x\n",
 		vmAddr+codeOffset, vmAddr+codeOffset+codeSize, codeSize, codeOffset)
-	fmt.Fprintf(os.Stderr, "  __LINKEDIT:        vm=0x%x-0x%x (size=0x%x), file=0x%x\n",
+	w.logger.Printf("  __LINKEDIT:        vm=0x%x-0x%x (size=0x%x), file=0x%x\n",
 		linkeditVMAddr, linkeditVMAddr+linkeditVMSize, linkeditVMSize, linkeditOffset)
-	fmt.Fprintf(os.Stderr, "\nEntry point:         0x%x (file offset 0x%x)\n", vmAddr+codeOffset, codeOffset)
-	fmt.Fprintf(os.Stderr, "Total file size:     %d bytes\n", linkeditOffset+linkeditSize)
+	w.logger.Printf("\nEntry point:         0x%x (file offset 0x%x)\n", vmAddr+codeOffset, codeOffset)
+	w.logger.Printf("Total file size:     %d bytes\n", linkeditOffset+linkeditSize)
 
 	// Seek to code offset (leave room for codesign to add LC_CODE_SIGNATURE)
 	if _, err := file.Seek(int64(codeOffset), 0); err != nil {

@@ -19,7 +19,7 @@ The assembler successfully:
 **Current Limitations:**
 - ⚠️ No data section support yet
 - ⚠️ No relocations for label references
-- ⚠️ No branch instructions yet
+- ⚠️ Branch instructions not fully implemented (no label resolution)
 
 ## What Works
 
@@ -117,7 +117,7 @@ End-to-end tests:
 - ✅ Generate valid Mach-O executables
 - ✅ Pass `codesign --verify` validation
 - ✅ Correct instruction encoding (verified with `otool -tV`)
-- ❌ Binaries fail at runtime (killed by kernel)
+- ✅ Binaries execute correctly and return expected exit codes
 
 ### Debug Testing
 
@@ -212,25 +212,14 @@ The debug output helps identify issues at each stage of the assembly process, ma
 
 ## Known Issues
 
-1. **Runtime execution fails** - Generated binaries are killed by the kernel (SIGKILL) before execution.
+1. **Limited instruction set** - Only implements instructions needed for the Slang compiler. Many ARM64 instructions are not yet implemented:
+   - Branch instructions with label resolution (`b`, `bl`, `b.cond`)
+   - Memory operations (`ldr`, `str`, `ldp`, `stp`)
+   - PC-relative addressing (`adr`, `adrp`)
 
-   **Investigation status (2025-11-28):**
-   - ✅ Mach-O structure verified correct with `otool -l`
-   - ✅ Instruction encoding verified correct with `otool -tV`
-   - ✅ Passes `codesign --verify` validation
-   - ✅ Has LC_DYLD_CHAINED_FIXUPS with correct 56-byte data structure
-   - ✅ Has LC_SYMTAB and LC_DYSYMTAB with minimal symbol table
-   - ✅ Chained fixups data matches working C binaries byte-for-byte
-   - ✅ Symbol table in proper nlist_64 format with string table
-   - ⚠️ Still killed by kernel - root cause unknown
+2. **No data section support** - Cannot assemble programs with `.data` sections, string literals, or data directives (`.byte`, `.word`, `.asciz`, etc.).
 
-   **Possible remaining causes:**
-   - Missing optional load commands (LC_FUNCTION_STARTS, LC_DATA_IN_CODE, LC_DYLD_EXPORTS_TRIE)
-   - Subtle Mach-O structure difference not detectable with standard tools
-   - Kernel-level security validation failure
-   - Requires kernel debugging (kdebug/dtrace) to identify exact reason
-
-2. **Limited instruction set** - Only implements instructions needed for the Slang compiler. Many ARM64 instructions are not yet implemented (branches, memory operations, etc.).
+3. **No relocations** - Cannot handle label references in instructions that require relocation.
 
 ## Usage
 
@@ -263,23 +252,13 @@ _start:
 
 ## Future Work
 
-### Immediate Priority
-1. **Fix runtime execution** - Debug why binaries are killed by kernel
-   - ✅ Added LC_DYLD_CHAINED_FIXUPS - complete, matches C binaries exactly
-   - ✅ Added LC_SYMTAB and LC_DYSYMTAB - complete with minimal symbol table
-   - 📋 Try adding remaining optional load commands (LC_FUNCTION_STARTS, LC_DATA_IN_CODE, LC_DYLD_EXPORTS_TRIE)
-   - 📋 Use kernel debugging tools (kdebug/dtrace with sudo) to find exact rejection reason
-   - 📋 Test with LC_UNIXTHREAD entry point instead of LC_MAIN
-   - 📋 Compare complete hex dumps byte-by-byte with working system assembler binaries
-
 ### Next Steps
-2. **Implement branch instructions** - `b`, `bl`, `b.cond` with label resolution
-3. **Implement memory operations** - `ldr`, `str`, `ldp`, `stp`
-4. **Data section support** - `.data`, `.rodata`, `.space`, `.asciz`, etc.
-5. **Relocations** - Support label references in instructions
-6. **Symbol table generation** - Include symbols in Mach-O output
-7. **Object file generation** - Implement `Assemble()` for `.o` files
-8. **Linker** - Implement `Link()` to combine object files
+1. **Implement branch instructions** - `b`, `bl`, `b.cond` with label resolution
+2. **Implement memory operations** - `ldr`, `str`, `ldp`, `stp`
+3. **Data section support** - `.data`, `.rodata`, `.space`, `.asciz`, etc.
+4. **Relocations** - Support label references in instructions
+5. **Object file generation** - Implement `Assemble()` for `.o` files
+6. **Linker** - Implement `Link()` to combine object files
 
 ## Documentation
 

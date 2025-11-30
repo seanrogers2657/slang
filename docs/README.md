@@ -5,9 +5,10 @@ This directory contains all documentation for the Slang compiler and its compone
 ## Command-Line Tools
 
 - **[CMD_TOOLS.md](CMD_TOOLS.md)** - Complete guide to all command-line tools:
-  - Compiler (`sl`)
-  - Build tool (`slm`)
-  - Assembler debugger (`slasm-debug`)
+  - Compiler (`sl`) - Main Slang compiler
+  - Build tool (`slm`) - Cross-platform build system
+  - Assembler (`slasm`) - Standalone ARM64 assembler
+  - Integration test runners (`it`, `slasm-it`)
   - Usage examples and workflows
 
 ## SLASM Assembler Documentation
@@ -75,10 +76,11 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - LC_DYLD_CHAINED_FIXUPS with correct format
 - LC_SYMTAB and LC_DYSYMTAB with minimal symbol table
 - Code signing validation passes
+- Generated binaries execute correctly
 
-⚠️ **Known Issue:**
-- Generated binaries are killed by kernel at runtime (SIGKILL, exit code 137)
-- Mach-O structure is correct and matches working C binaries
-- Root cause under investigation
+⚠️ **Current Limitations:**
+- No data section support yet
+- No branch instructions with label resolution
+- Limited to instructions needed by Slang compiler
 
 See [SLASM_STATUS.md](SLASM_STATUS.md) for detailed status information.

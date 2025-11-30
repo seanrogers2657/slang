@@ -4,13 +4,22 @@ This guide explains how to use the comprehensive debugging tools built into the 
 
 ## Quick Start
 
-### Option 1: Run the Standalone Debug Program
+### Option 1: Use the Verbose Flag
+
+The `slasm` command supports a `--verbose` flag that shows detailed output from every stage of the build process:
 
 ```bash
-go run cmd/slasm-debug/main.go
+# Build with verbose output
+go run cmd/slasm/main.go build -o output --verbose input.s
 ```
 
-This creates a simple test binary with full debug output showing every stage of the build process.
+This shows detailed output for every stage:
+1. Lexer tokens
+2. Parser IR
+3. Symbol table
+4. Instruction encoding (with hex bytes)
+5. Mach-O structure
+6. Verification steps
 
 ### Option 2: Run Debug Tests
 
@@ -236,7 +245,7 @@ If binaries fail to execute, check the following:
 2. **Compare encodings**: Use otool -tV to verify your machine code
 3. **Check addresses**: Symbol addresses should increment by 4 for each instruction
 4. **Verify hex bytes**: Little-endian can be confusing - the bytes are reversed
-5. **Use the standalone program**: It's the easiest way to see everything at once
+5. **Use verbose mode**: The `--verbose` flag is the easiest way to see everything at once
 
 ## Example: Debugging a New Instruction
 
@@ -265,10 +274,10 @@ Then check:
 
 ## Files
 
-- `cmd/slasm-debug/main.go` - Standalone debug build program
-- `debug_example_test.go` - Debug tests with comprehensive output
-- `asm.go` - Build() method contains all debug logging
-- `macho.go` - Mach-O generation with structure details
+- `assembler/slasm/asm.go` - Build() method contains all debug logging (enabled via verbose flag)
+- `assembler/slasm/e2e_test.go` - End-to-end tests with comprehensive output
+- `assembler/slasm/macho.go` - Mach-O generation with structure details
+- `cmd/slasm/main.go` - CLI with --verbose flag support
 
 ## More Information
 

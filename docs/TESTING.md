@@ -8,17 +8,20 @@ The testing framework covers all major components of the Slang compiler:
 
 - **Lexer** (frontend/lexer) - Tokenization of source code
 - **Parser** (frontend/parser) - AST construction
+- **Semantic Analyzer** (frontend/semantic) - Type checking and validation
 - **Code Generator** (backend/as) - ARM64 assembly generation
+- **Assembler** (assembler/slasm) - Native ARM64 assembler
 - **Integration Tests** - End-to-end compilation pipeline
 
 ## Test Coverage
 
 Current test coverage statistics:
 
-- **Backend (Assembly Generator)**: 100% coverage
+- **Backend (Assembly Generator)**: 62.5% coverage
 - **Frontend (Lexer)**: 96.7% coverage
-- **Frontend (Parser)**: 93.8% coverage
-- **Overall**: 74.3% coverage (main.go not included)
+- **Frontend (Parser)**: 60.4% coverage
+- **Frontend (Semantic Analyzer)**: 62.2% coverage
+- **Frontend (Error Framework)**: 89.6% coverage
 
 ## Running Tests
 
@@ -54,7 +57,9 @@ go tool cover -html=coverage.out -o coverage.html
 # Run specific package tests
 go test ./frontend/lexer/...
 go test ./frontend/parser/...
+go test ./frontend/semantic/...
 go test ./backend/as/...
+go test ./assembler/slasm/...
 go test ./cmd/sl/...
 
 # Run tests with race detector
@@ -64,6 +69,9 @@ go test ./... -race
 go test -run TestLexerNumbers
 go test -run TestEndToEndCompilation
 go test -run TestSLRunCommand
+
+# Run assembler encoder tests
+go test ./assembler/slasm/... -run TestEncode
 ```
 
 ## Test Organization
@@ -90,6 +98,17 @@ Tests for the AST construction stage:
 - **TestParserErrors**: Error handling for unsupported operations
 - **TestParserIntegrationWithLexer**: Integration between lexer and parser
 
+### Semantic Analyzer Tests (`frontend/semantic/analyzer_test.go`)
+
+Tests for type checking and semantic validation:
+
+- **TestAnalyzerArithmetic**: Type checking for arithmetic operators (+, -, *, /, %)
+- **TestAnalyzerComparison**: Type checking for comparison operators (==, !=, <, >, <=, >=)
+- **TestAnalyzerTypeErrors**: Detection of type mismatches
+- **TestAnalyzerMultiStatement**: Analysis of multi-statement programs
+- **TestAnalyzerPrintStatement**: Type checking for print statements
+- **TestAnalyzerMainFunction**: Validation of main function presence
+
 ### Code Generator Tests (`backend/as/as_test.go`)
 
 Tests for ARM64 assembly generation:
@@ -107,6 +126,45 @@ End-to-end tests for the complete compilation pipeline:
 - **TestCompilationPipelineStages**: Individual stage verification
 - **TestExampleFile**: Verification of example files
 - **TestRegressions**: Edge cases and bug prevention
+
+### Assembler Tests (`assembler/slasm/`)
+
+Tests for the native ARM64 assembler:
+
+**Lexer Tests** (`lexer_test.go`):
+- **TestLexerDirectives**: Parsing of `.global`, `.align` directives
+- **TestLexerLabels**: Label recognition and parsing
+- **TestLexerInstructions**: Instruction mnemonic recognition
+- **TestLexerRegisters**: Register parsing (x0-x30, sp, lr, xzr)
+- **TestLexerImmediates**: Immediate value parsing (#123, #0x1a)
+
+**Parser Tests** (`parser_test.go`):
+- **TestParserProgram**: Full program parsing
+- **TestParserInstructions**: Instruction operand parsing
+- **TestParserDirectives**: Directive argument parsing
+
+**Symbol Table Tests** (`symbols_test.go`):
+- **TestSymbolDefine**: Symbol definition
+- **TestSymbolLookup**: Symbol lookup
+- **TestSymbolDuplicate**: Duplicate symbol detection
+
+**Layout Tests** (`layout_test.go`):
+- **TestLayoutAddresses**: Address assignment
+- **TestLayoutAlignment**: Alignment handling
+
+**Encoder Tests** (`encoder_test.go`):
+- **TestEncodeAdd**: ADD instruction encoding
+- **TestEncodeSub**: SUB instruction encoding
+- **TestEncodeMul**: MUL instruction encoding
+- **TestEncodeSdiv**: SDIV instruction encoding
+- **TestEncodeMsub**: MSUB instruction encoding
+- **TestEncodeCmp**: CMP instruction encoding
+- **TestEncodeCset**: CSET instruction encoding
+
+**End-to-End Tests** (`e2e_test.go`):
+- **TestEndToEndMinimal**: Minimal program assembly
+- **TestEndToEndArithmetic**: Arithmetic instruction assembly
+- **TestEndToEndSyscall**: System call assembly
 
 ### CLI Tests (`cmd/sl/main_test.go`)
 

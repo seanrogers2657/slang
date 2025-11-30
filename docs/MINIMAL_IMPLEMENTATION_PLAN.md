@@ -171,7 +171,7 @@ We'll use the existing tests but only expect a subset to pass:
 - Layout tests: Simple tests should pass
 - Encoder: We won't have tests, will verify with execution
 
-## Current Status (Updated 2025-11-28)
+## Current Status (Updated 2025-11-29)
 
 ### ✅ What Works
 
@@ -181,26 +181,25 @@ The assembler successfully:
 - Generates valid Mach-O executables with proper structure
 - Passes `codesign --verify` validation
 - All unit tests for encoding pass (ADD, SUB, MUL, SDIV, MSUB, CMP, CSET)
-- **NEW:** Generates LC_DYLD_CHAINED_FIXUPS with correct format
-- **NEW:** Generates LC_SYMTAB and LC_DYSYMTAB with minimal symbol table
+- Generates LC_DYLD_CHAINED_FIXUPS with correct format
+- Generates LC_SYMTAB and LC_DYSYMTAB with minimal symbol table
+- **Generated binaries execute correctly!**
 
 Generated binaries have:
 - Correct instruction encoding (verified with `otool -tV`)
 - Proper Mach-O structure (segments, sections, load commands)
 - Valid code signatures
 - Proper alignment and offsets
-- **NEW:** Modern macOS load commands (chained fixups, symbol tables)
-- **NEW:** Chained fixups data that byte-for-byte matches C binaries
-- **NEW:** Symbol table with _start symbol in nlist_64 format
+- Modern macOS load commands (chained fixups, symbol tables)
+- Chained fixups data that matches C binaries
+- Symbol table with _start symbol in nlist_64 format
 
-### ⚠️ Known Issues
+### ⚠️ Current Limitations
 
-1. **Runtime execution fails** - Generated binaries are killed by the kernel (SIGKILL) before execution
-   - The Mach-O structure is correct and matches working C binaries
-   - Has all major load commands (LC_DYLD_CHAINED_FIXUPS, LC_SYMTAB, LC_DYSYMTAB)
-   - Chained fixups data verified byte-for-byte identical to C binaries
-   - May require additional optional load commands (LC_FUNCTION_STARTS, LC_DATA_IN_CODE, LC_DYLD_EXPORTS_TRIE)
-   - Requires kernel-level debugging to identify exact kill reason
+1. **Limited instruction set** - Only implements instructions needed by Slang compiler
+2. **No data section support** - Cannot handle `.data` sections or data directives
+3. **No branch instructions with label resolution** - Branch encoding exists but label resolution is incomplete
+4. **No relocations** - Cannot handle label references that require relocation
 
 ### Test Results
 
@@ -213,45 +212,34 @@ go test ./assembler/slasm/... -run TestEncode
 go test ./assembler/slasm/... -run TestLayout
 # PASS: All layout tests
 
-# E2E tests generate valid binaries but execution fails
+# E2E tests pass - binaries execute correctly
 go test ./assembler/slasm/... -run TestEndToEnd
-# FAIL: Binaries are killed at runtime (exit code 137 = SIGKILL)
+# PASS: All end-to-end tests
 ```
 
 ## Next Steps
 
-### Immediate Priority
-1. **Debug runtime execution issue** ⚠️
-   - ✅ Added LC_DYLD_CHAINED_FIXUPS - complete
-   - ✅ Added LC_SYMTAB and LC_DYSYMTAB - complete
-   - ✅ Verified chained fixups match C binaries byte-for-byte - complete
-   - 📋 Try adding LC_FUNCTION_STARTS load command
-   - 📋 Try adding LC_DATA_IN_CODE load command
-   - 📋 Try adding LC_DYLD_EXPORTS_TRIE load command
-   - 📋 Use kernel debugging (kdebug/dtrace with sudo) to see exact kill reason
-   - 📋 Test with LC_UNIXTHREAD instead of LC_MAIN
-   - 📋 Compare complete binary hex dumps with working system assembler output
-
-### After Runtime Works
-2. Add more instructions (branches, memory ops)
-3. Add data section support
-4. Add relocations for label references
-5. Generate object files
-6. Implement linker
+### Feature Development
+1. **Add branch instructions** - `b`, `bl`, `b.cond` with label resolution
+2. **Add memory operations** - `ldr`, `str`, `ldp`, `stp`
+3. **Add data section support** - `.data`, `.rodata`, `.asciz`, `.byte`, `.word`
+4. **Add relocations** - Support label references in instructions
+5. **Generate object files** - Implement `Assemble()` for `.o` files
+6. **Implement linker** - Implement `Link()` to combine object files
 
 ## Implementation Progress
 
-### Phase 6: Mach-O Writer - ✅ ENHANCED
+### Phase 6: Mach-O Writer - ✅ COMPLETE
 
-**Recent additions:**
+**All features implemented:**
 - ✅ LC_DYLD_CHAINED_FIXUPS command and data generation
 - ✅ LC_SYMTAB command with symbol table data
 - ✅ LC_DYSYMTAB command with proper indices
 - ✅ Minimal symbol table (_start symbol in nlist_64 format)
 - ✅ String table with proper null-termination
-- ✅ Chained fixups data structure (56 bytes, matches C binaries)
+- ✅ Chained fixups data structure
 
-**What's included:**
+**Mach-O structure:**
 - ✅ Mach header (ARM64, executable, with MH_PIE flag)
 - ✅ __PAGEZERO segment for memory protection
 - ✅ __TEXT segment with __text section
@@ -264,3 +252,4 @@ go test ./assembler/slasm/... -run TestEndToEnd
 - ✅ Proper segment/section alignment (page-aligned)
 - ✅ Space reserved for codesign to add LC_CODE_SIGNATURE
 - ✅ Passes `codesign --verify` validation
+- ✅ **Generated binaries execute correctly!**

@@ -1,43 +1,49 @@
 # slasm Implementation Status
 
-Last updated: 2025-11-29
+Last updated: 2025-11-30
 
-**STATUS: ✅ WORKING** - Generated binaries now execute correctly!
+**STATUS: ✅ FULLY WORKING** - Native ARM64 assembler with comprehensive instruction support!
 
 ## Overview
 
-The slasm assembler is a custom ARM64 assembler that generates Mach-O executables directly without relying on system tools (`as`, `ld`). It is designed to support the Slang compiler.
+The slasm assembler is a custom ARM64 assembler that generates Mach-O executables directly without relying on system tools (`as`, `ld`). It is designed to support the Slang compiler and is now the **default backend** for the `slasm` command-line tool.
 
 ## Implementation Status
 
 ### ✅ Fully Implemented
 
 #### Lexer (`lexer.go`)
-- Directives: `.global`, `.align`
+- Directives: `.global`, `.align`, `.data`, `.text`
+- Data directives: `.byte`, `.word`, `.quad`, `.asciz`, `.ascii`, `.space`, `.zero`, `.hword`, `.2byte`, `.4byte`, `.8byte`
 - Labels: `_start:`, `loop:`
-- Instructions: All needed mnemonics
+- Instructions: All needed mnemonics including branches and memory ops
 - Registers: `x0-x30`, `sp`, `lr`, `xzr`
-- Immediates: `#123`, `#0x1a`
-- Punctuation: `:`, `,`, `#`
+- Immediates: `#123`, `#0x1a` (decimal and hex)
+- Memory operands: `[sp]`, `[sp, #16]`, `[x0, #8]`
+- Punctuation: `:`, `,`, `#`, `[`, `]`
 - Comments: `//` and `;` style
-- Whitespace handling
+- Conditional branches: `b.eq`, `b.ne`, `b.lt`, `b.gt`, `b.le`, `b.ge`, etc.
 
 #### Parser (`parser.go`)
 - Parse `.global` directive
 - Parse label definitions
-- Parse instructions with register and immediate operands
-- Build Program IR with text section
+- Parse instructions with register, immediate, and memory operands
+- Parse data directives into `DataDeclaration` items
+- Build Program IR with multiple sections (`.text`, `.data`)
+- Memory operand parsing with base register and offset
 
 #### Symbol Table (`symbols.go`)
 - Symbol definition with duplicate checking
 - Symbol lookup
 - Address resolution
+- Section tracking
 
 #### Layout (`layout.go`)
-- Single-pass through text section
+- **Two-pass layout** for forward reference resolution
 - Address assignment (4 bytes per instruction)
 - Symbol table construction
 - Alignment directive handling
+- Data section size calculation
 
 #### Encoder (`encoder.go`)
 
@@ -52,17 +58,42 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - `sub Rd, Rn, Rm` → SUB register
 - `mul Rd, Rn, Rm` → MADD with Ra=XZR
 - `sdiv Rd, Rn, Rm` → Signed division
-- `msub Rd, Rn, Rm, Ra` → Multiply-subtract (for modulo: `a - (n * m)`)
+- `msub Rd, Rn, Rm, Ra` → Multiply-subtract (for modulo)
 
 **Comparison:**
 - `cmp Rn, #imm` → SUBS with Rd=XZR
 - `cmp Rn, Rm` → SUBS register with Rd=XZR
 - `cset Rd, cond` → CSINC (conditional set)
-  - Supported conditions: `eq`, `ne`, `lt`, `le`, `gt`, `ge`
+  - Supported conditions: `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `cs`, `cc`, `mi`, `pl`, `vs`, `vc`, `hi`, `ls`
+
+**Branch Instructions:**
+- `b label` → Unconditional branch (PC-relative, ±128MB range)
+- `bl label` → Branch with link (function call)
+- `b.cond label` → Conditional branch (b.eq, b.ne, b.lt, b.gt, b.le, b.ge, etc.)
+- `br Xn` → Branch to register
+- `ret` → Return (BR X30)
+
+**Memory Operations:**
+- `ldr Rt, [Rn]` → Load register (unsigned offset)
+- `ldr Rt, [Rn, #imm]` → Load with immediate offset
+- `str Rt, [Rn]` → Store register (unsigned offset)
+- `str Rt, [Rn, #imm]` → Store with immediate offset
+- `ldp Rt1, Rt2, [Rn]` → Load pair
+- `ldp Rt1, Rt2, [Rn, #imm]` → Load pair with offset
+- `stp Rt1, Rt2, [Rn]` → Store pair
+- `stp Rt1, Rt2, [Rn, #imm]` → Store pair with offset
+
+**Data Encoding:**
+- `.byte` values → 1-byte encoding
+- `.hword`, `.2byte` → 2-byte little-endian
+- `.word`, `.4byte` → 4-byte little-endian
+- `.quad`, `.8byte` → 8-byte little-endian
+- `.asciz`, `.string` → Null-terminated strings with escape sequences
+- `.ascii` → Strings without null terminator
+- `.space`, `.zero` → Zero-filled buffers
 
 **System & Control:**
 - `svc #imm` → Supervisor call (16-bit immediate)
-- `ret` → Return (BR X30)
 
 #### Mach-O Writer (`macho.go`)
 
@@ -73,171 +104,142 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - Flags: `MH_PIE | MH_DYLDLINK | MH_TWOLEVEL | MH_NOUNDEFS`
 
 **Segments:**
-- `__PAGEZERO`: 4GB null pointer protection (vmaddr=0, vmsize=0x100000000)
-- `__TEXT`: Code segment
-  - File offset: 0 (includes header and load commands)
-  - VM address: 0x100000000
-  - VM size: Page-aligned (matches file size)
-  - File size: Page-aligned
-  - Contains `__text` section
-- `__LINKEDIT`: Link-edit data (for code signatures)
-  - Reserves 8KB for codesign data
+- `__PAGEZERO`: 4GB null pointer protection
+- `__TEXT`: Code segment with `__text` section
+- `__LINKEDIT`: Link-edit data (code signatures, symbol table)
 
-**Load Commands (15 total, codesign adds 16th):**
-- `LC_SEGMENT_64`: __PAGEZERO, __TEXT, __LINKEDIT (3 segments)
+**Load Commands (16 total):**
+- `LC_SEGMENT_64`: __PAGEZERO, __TEXT, __LINKEDIT
 - `LC_LOAD_DYLINKER`: `/usr/lib/dyld`
 - `LC_LOAD_DYLIB`: `/usr/lib/libSystem.B.dylib`
-- `LC_MAIN`: Entry point (references __text section offset)
+- `LC_MAIN`: Entry point
 - `LC_UUID`: Binary identifier
 - `LC_BUILD_VERSION`: Platform and SDK versions
 - `LC_SOURCE_VERSION`: Source version info
-- `LC_DYLD_CHAINED_FIXUPS`: Modern dyld fixups (56-byte data structure)
-- `LC_DYLD_EXPORTS_TRIE`: Symbol exports trie (48 bytes)
-- `LC_SYMTAB`: Symbol table with _start symbol
+- `LC_DYLD_CHAINED_FIXUPS`: Modern dyld fixups
+- `LC_DYLD_EXPORTS_TRIE`: Symbol exports
+- `LC_SYMTAB`: Symbol table
 - `LC_DYSYMTAB`: Dynamic symbol table
-- `LC_FUNCTION_STARTS`: Function start addresses
-- `LC_DATA_IN_CODE`: Data embedded in code (empty)
-- `LC_CODE_SIGNATURE`: Added by codesign tool
+- `LC_FUNCTION_STARTS`: Function addresses
+- `LC_DATA_IN_CODE`: Data in code markers
+- `LC_CODE_SIGNATURE`: **Embedded inline** (no external codesign needed!)
 
-**Section Layout:**
-- `__text` section:
-  - VM address: `__TEXT.vmaddr + code_offset` (correctly offset)
-  - File offset: Page-aligned (e.g., 0x1000 = 4096)
-  - Alignment: 4-byte (2^2)
-  - Flags: `S_REGULAR | S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS`
+#### Code Signing (`codesign/`)
+- Native code signature generation
+- Ad-hoc signing embedded during Mach-O generation
+- No external `codesign` tool required
 
 #### Main Assembler (`asm.go`)
 - `New()`: Create assembler instance
 - `Build()`: Full pipeline: Lex → Parse → Layout → Encode → Write Mach-O
 - Error handling and reporting
+- Verbose logging option
 
 ## Test Coverage
 
-### ✅ Passing Tests
-- All lexer unit tests
-- All parser unit tests
-- All symbol table tests
-- All layout tests
-- All encoder unit tests:
-  - `TestEncodeAdd` ✅
-  - `TestEncodeSub` ✅
-  - `TestEncodeMul` ✅
-  - `TestEncodeSdiv` ✅
-  - `TestEncodeMsub` ✅
-  - `TestEncodeCmp` ✅
-  - `TestEncodeCset` ✅
+### Unit Tests
+- All lexer tests ✅
+- All parser tests ✅
+- All symbol table tests ✅
+- All layout tests ✅
+- All encoder tests ✅
+  - Arithmetic: ADD, SUB, MUL, SDIV, MSUB
+  - Comparison: CMP, CSET
+  - Branch: B, BL, BR, B.cond (all condition codes)
+  - Memory: LDR, STR, LDP, STP
+  - Data encoding: byte, word, quad, asciz, space
 
-### ✅ All Tests Passing
-- End-to-end execution tests now work correctly
-- Generated binaries execute and return expected exit codes
+### End-to-End Tests (`e2e_test.go`)
+Table-driven tests covering:
+- Basic exit codes (0, 1, 42, 255)
+- Unconditional branches (forward, backward)
+- Conditional branches (eq, ne, lt, gt, le, ge - taken and not taken)
+- Branch with link and return
+- Nested function calls
+- Memory operations (str/ldr, with offsets, pair operations)
+- Arithmetic operations
+- Comparison operations
+- Complex programs (factorial, fibonacci, sum loops)
 
 ## Key Achievements
 
-1. **Valid Mach-O Generation** ✅
-   - Generates structurally correct Mach-O executables
-   - Proper segment and section layout
-   - Correct alignment and offsets
+1. **Complete Branch Support** ✅
+   - Forward and backward branches with label resolution
+   - Two-pass layout for forward references
+   - All conditional branch types
 
-2. **Code Signature Support** ✅
-   - Binaries pass `codesign --verify` validation
-   - MH_PIE flag correctly set
-   - Space properly reserved for code signatures
+2. **Memory Operations** ✅
+   - Load/store single registers
+   - Load/store pairs (for stack frames)
+   - Scaled immediate offsets
 
-3. **Instruction Encoding** ✅
-   - All required ARM64 instructions encode correctly
-   - Verified with `otool -tV` disassembly
-   - Matches system assembler output
+3. **Data Section Parsing** ✅
+   - Full directive support (.byte, .quad, .asciz, etc.)
+   - Escape sequence handling
+   - Multi-value directives
 
-4. **Slang Compiler Support** ✅
-   - All instructions needed by Slang compiler are implemented
-   - Supports arithmetic, comparison, and system calls
+4. **Inline Code Signing** ✅
+   - No external tools required
+   - Binaries execute immediately after generation
 
-5. **Modern macOS Load Commands** ✅
-   - LC_DYLD_CHAINED_FIXUPS with correct format (matches C binaries)
-   - LC_SYMTAB and LC_DYSYMTAB with minimal symbol table
-   - All required load commands for modern macOS executables
-
-## Resolved Issues
-
-### Runtime Execution ✅ FIXED (2025-11-29)
-
-**Previous Symptom:** Generated binaries were killed by kernel (SIGKILL, exit code 137)
-
-**Root Causes Identified and Fixed:**
-
-1. **Used old `LC_DYLD_INFO_ONLY` instead of modern format**
-   - Fixed: Switched to `LC_DYLD_CHAINED_FIXUPS` + `LC_DYLD_EXPORTS_TRIE`
-   - Modern macOS requires the chained fixups format
-
-2. **Missing load commands**
-   - Fixed: Added `LC_FUNCTION_STARTS` and `LC_DATA_IN_CODE`
-   - These are expected by modern dyld
-
-3. **Incorrect NCmds count**
-   - Fixed: Header declared 16 commands but only 15 were written
-   - Machine code was being interpreted as a load command
-
-4. **LC_CODE_SIGNATURE placement issue**
-   - Fixed: codesign was overwriting machine code when adding signature
-   - Solution: Reserve 16 bytes of space in loadCmdsSize for codesign
-   - Set `NCmds=15` and `SizeofCmds=648` (our commands)
-   - But `codeOffset=32+664=696` to leave room for codesign to insert its command
-
-5. **__TEXT segment size**
-   - Fixed: Changed from 0x1000 to 0x4000 (16KB) to match system linker
-
-**Result:**
-```bash
-$ ./test_slasm_binary
-$ echo $?
-42
-```
-Binary executes correctly and returns expected exit code!
+5. **Default Backend** ✅
+   - slasm is now the default for `cmd/slasm`
+   - System backend available via `--backend system`
 
 ## Not Yet Implemented
 
 ### Instructions
-- Branch instructions: `b`, `bl`, `b.cond`
-- Branch to register: `br Xn`
-- Memory load/store: `ldr`, `str`, `ldp`, `stp`, `ldrb`, `strb`
-- PC-relative addressing: `adr`, `adrp`
+- PC-relative addressing: `adr`, `adrp` (needed for data access)
 - Unsigned division: `udiv`
-- Negate: `neg`
-- Many other ARM64 instructions
+- Logical operations: `and`, `orr`, `eor`, `mvn`
+- Shift operations: `lsl`, `lsr`, `asr`
+- 32-bit register variants: `w0-w30`
+- Byte/half-word loads: `ldrb`, `ldrh`, `strb`, `strh`
 
 ### Features
-- Data section (`.data`, `.rodata`)
-- Data directives (`.byte`, `.word`, `.quad`, `.asciz`, `.space`)
-- Label references in instructions (relocations)
+- `__DATA` segment in Mach-O (data is parsed but not linked)
 - Object file generation (`.o` files)
-- Linker implementation
-- Symbol table in Mach-O output
-- Multi-section support
-- Section alignment directives
+- Multi-file linking
+- Relocations for external symbols
 - BSS section
-
-### Toolchain Integration
-- Integration with Slang compiler as default assembler
-- Flag to switch between system `as` and `slasm`
-- Benchmarking vs system assembler
 
 ## File Structure
 
 ```
 assembler/slasm/
 ├── asm.go           - Main assembler orchestration
-├── lexer.go         - Tokenization
-├── parser.go        - AST construction
+├── lexer.go         - Tokenization (with hex support)
+├── parser.go        - AST construction (with data directives)
 ├── symbols.go       - Symbol table
-├── layout.go        - Address assignment
+├── layout.go        - Two-pass address assignment
 ├── encoder.go       - ARM64 instruction encoding
 ├── macho.go         - Mach-O file generation
-├── e2e_test.go      - End-to-end tests
+├── ir.go            - Intermediate representation types
+├── util.go          - Utility functions
+├── logger.go        - Logging support
+├── codesign/        - Native code signing
+├── e2e_test.go      - End-to-end tests (table-driven)
 ├── encoder_test.go  - Encoding unit tests
-└── README.md        - User-facing documentation
+├── lexer_test.go    - Lexer unit tests
+└── parser_test.go   - Parser unit tests
 ```
 
-## Usage Example
+## Usage
+
+### Command Line (Default Backend)
+
+```bash
+# Build assembly to executable (uses slasm by default)
+slasm build -o output input.s
+
+# Use system assembler instead
+slasm build --backend system -o output input.s
+
+# Verbose output
+slasm build -v -o output input.s
+```
+
+### Go API
 
 ```go
 package main
@@ -252,9 +254,9 @@ func main() {
 
     code := `.global _start
 _start:
-    mov x0, #1      // Exit code
-    mov x16, #1     // Exit syscall
-    svc #0          // Make syscall
+    mov x0, #42
+    mov x16, #1
+    svc #0
 `
 
     err := asm.Build(code, assembler.BuildOptions{
@@ -263,9 +265,7 @@ _start:
     if err != nil {
         panic(err)
     }
-
-    // Sign the binary
-    exec.Command("codesign", "-s", "-", "-f", "output").Run()
+    // Binary is ready to execute - no codesign needed!
 }
 ```
 
@@ -274,12 +274,14 @@ _start:
 | Feature | slasm | System `as` + `ld` |
 |---------|-------|-------------------|
 | Mach-O generation | ✅ Direct | ✅ Via linker |
-| Code signing | ✅ Passes validation | ✅ Full support |
-| Instruction set | ⚠️ Partial (core ops) | ✅ Complete |
+| Code signing | ✅ Inline | ✅ Requires codesign |
+| Branch instructions | ✅ Full support | ✅ Full support |
+| Memory operations | ✅ ldr/str/ldp/stp | ✅ Complete |
+| Data directives | ✅ Parsing/encoding | ✅ Complete |
+| Instruction set | ⚠️ Core subset | ✅ Complete |
 | Execution | ✅ Works | ✅ Works |
 | Object files | ❌ Not implemented | ✅ Supported |
-| Relocations | ❌ Not implemented | ✅ Supported |
-| Speed | ? Not tested | Baseline |
+| External dependencies | ✅ None | ❌ Requires Xcode |
 
 ## References
 
@@ -287,4 +289,3 @@ _start:
 - Mach-O File Format Reference (Apple)
 - Go assembler source: `cmd/internal/obj/arm64/`
 - Go linker source: `cmd/link/internal/ld/`
-- System tools: `as`, `ld`, `otool`, `codesign`

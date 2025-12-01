@@ -718,8 +718,11 @@ func (e *Encoder) encodeStr(inst *Instruction) ([]byte, error) {
 }
 
 func (e *Encoder) encodeLdp(inst *Instruction) ([]byte, error) {
-	// LDP Xt1, Xt2, [Xn, #imm] - Load pair (signed offset)
-	// Encoding: 10 101 0010 1 imm7 Rt2 Rn Rt
+	// LDP Xt1, Xt2, [Xn, #imm] - Load pair
+	// Supports three addressing modes:
+	// - Signed offset: [Xn, #imm]     - base 0xA9400000 (bits [25:23] = 010)
+	// - Pre-indexed:   [Xn, #imm]!    - base 0xA9C00000 (bits [25:23] = 011)
+	// - Post-indexed:  [Xn], #imm     - base 0xA8C00000 (bits [25:23] = 001)
 	// imm7 is signed and scaled by 8 for 64-bit registers
 
 	if len(inst.Operands) != 3 {
@@ -758,13 +761,35 @@ func (e *Encoder) encodeLdp(inst *Instruction) ([]byte, error) {
 		return nil, fmt.Errorf("line %d:%d: ldp base register: %w", inst.Line, inst.Column, err)
 	}
 
-	// Parse offset (default to 0 if not specified)
-	offset := int64(0)
-	if inst.Operands[2].Offset != "" {
-		offset, err = ParseInt64(inst.Operands[2].Offset)
+	// Determine addressing mode and get offset
+	var offset int64
+	var baseEncoding uint32
+
+	if inst.Operands[2].PostIndexOffset != "" {
+		// Post-indexed: [Xn], #imm
+		offset, err = ParseInt64(inst.Operands[2].PostIndexOffset)
 		if err != nil {
-			return nil, fmt.Errorf("line %d:%d: ldp offset: %w", inst.Line, inst.Column, err)
+			return nil, fmt.Errorf("line %d:%d: ldp post-index offset: %w", inst.Line, inst.Column, err)
 		}
+		baseEncoding = 0xA8C00000
+	} else if inst.Operands[2].Writeback {
+		// Pre-indexed: [Xn, #imm]!
+		if inst.Operands[2].Offset != "" {
+			offset, err = ParseInt64(inst.Operands[2].Offset)
+			if err != nil {
+				return nil, fmt.Errorf("line %d:%d: ldp offset: %w", inst.Line, inst.Column, err)
+			}
+		}
+		baseEncoding = 0xA9C00000
+	} else {
+		// Signed offset: [Xn, #imm]
+		if inst.Operands[2].Offset != "" {
+			offset, err = ParseInt64(inst.Operands[2].Offset)
+			if err != nil {
+				return nil, fmt.Errorf("line %d:%d: ldp offset: %w", inst.Line, inst.Column, err)
+			}
+		}
+		baseEncoding = 0xA9400000
 	}
 
 	// For 64-bit LDP, offset must be multiple of 8 and within signed 7-bit range * 8
@@ -776,17 +801,17 @@ func (e *Encoder) encodeLdp(inst *Instruction) ([]byte, error) {
 	// Scale offset for encoding (divide by 8, signed 7-bit)
 	imm7 := uint32(offset/8) & 0x7F
 
-	// LDP (signed offset): 10 101 0010 1 imm7 Rt2 Rn Rt
-	// opc=10 (64-bit), 1010010 (fixed), L=1 (load)
-	// = 0xA9400000 | (imm7 << 15) | (Rt2 << 10) | (Rn << 5) | Rt
-	encoding := uint32(0xA9400000) | (imm7 << 15) | (uint32(rt2) << 10) | (uint32(rn) << 5) | uint32(rt)
+	encoding := baseEncoding | (imm7 << 15) | (uint32(rt2) << 10) | (uint32(rn) << 5) | uint32(rt)
 
 	return EncodeLittleEndian(encoding), nil
 }
 
 func (e *Encoder) encodeStp(inst *Instruction) ([]byte, error) {
-	// STP Xt1, Xt2, [Xn, #imm] - Store pair (signed offset)
-	// Encoding: 10 101 0010 0 imm7 Rt2 Rn Rt
+	// STP Xt1, Xt2, [Xn, #imm] - Store pair
+	// Supports three addressing modes:
+	// - Signed offset: [Xn, #imm]     - base 0xA9000000 (bits [25:23] = 010)
+	// - Pre-indexed:   [Xn, #imm]!    - base 0xA9800000 (bits [25:23] = 011)
+	// - Post-indexed:  [Xn], #imm     - base 0xA8800000 (bits [25:23] = 001)
 	// imm7 is signed and scaled by 8 for 64-bit registers
 
 	if len(inst.Operands) != 3 {
@@ -825,13 +850,35 @@ func (e *Encoder) encodeStp(inst *Instruction) ([]byte, error) {
 		return nil, fmt.Errorf("line %d:%d: stp base register: %w", inst.Line, inst.Column, err)
 	}
 
-	// Parse offset (default to 0 if not specified)
-	offset := int64(0)
-	if inst.Operands[2].Offset != "" {
-		offset, err = ParseInt64(inst.Operands[2].Offset)
+	// Determine addressing mode and get offset
+	var offset int64
+	var baseEncoding uint32
+
+	if inst.Operands[2].PostIndexOffset != "" {
+		// Post-indexed: [Xn], #imm
+		offset, err = ParseInt64(inst.Operands[2].PostIndexOffset)
 		if err != nil {
-			return nil, fmt.Errorf("line %d:%d: stp offset: %w", inst.Line, inst.Column, err)
+			return nil, fmt.Errorf("line %d:%d: stp post-index offset: %w", inst.Line, inst.Column, err)
 		}
+		baseEncoding = 0xA8800000
+	} else if inst.Operands[2].Writeback {
+		// Pre-indexed: [Xn, #imm]!
+		if inst.Operands[2].Offset != "" {
+			offset, err = ParseInt64(inst.Operands[2].Offset)
+			if err != nil {
+				return nil, fmt.Errorf("line %d:%d: stp offset: %w", inst.Line, inst.Column, err)
+			}
+		}
+		baseEncoding = 0xA9800000
+	} else {
+		// Signed offset: [Xn, #imm]
+		if inst.Operands[2].Offset != "" {
+			offset, err = ParseInt64(inst.Operands[2].Offset)
+			if err != nil {
+				return nil, fmt.Errorf("line %d:%d: stp offset: %w", inst.Line, inst.Column, err)
+			}
+		}
+		baseEncoding = 0xA9000000
 	}
 
 	// For 64-bit STP, offset must be multiple of 8 and within signed 7-bit range * 8
@@ -843,10 +890,7 @@ func (e *Encoder) encodeStp(inst *Instruction) ([]byte, error) {
 	// Scale offset for encoding (divide by 8, signed 7-bit)
 	imm7 := uint32(offset/8) & 0x7F
 
-	// STP (signed offset): 10 101 0010 0 imm7 Rt2 Rn Rt
-	// opc=10 (64-bit), 1010010 (fixed), L=0 (store)
-	// = 0xA9000000 | (imm7 << 15) | (Rt2 << 10) | (Rn << 5) | Rt
-	encoding := uint32(0xA9000000) | (imm7 << 15) | (uint32(rt2) << 10) | (uint32(rn) << 5) | uint32(rt)
+	encoding := baseEncoding | (imm7 << 15) | (uint32(rt2) << 10) | (uint32(rn) << 5) | uint32(rt)
 
 	return EncodeLittleEndian(encoding), nil
 }

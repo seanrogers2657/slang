@@ -309,7 +309,7 @@ func (p *Parser) parseOperand() (*Operand, error) {
 		return operand, nil
 
 	case TokenLBracket:
-		// Memory operand: [base, #offset]
+		// Memory operand: [base, #offset], [base, #offset]!, or [base]
 		p.advance() // consume [
 
 		base := p.advance()
@@ -318,7 +318,7 @@ func (p *Parser) parseOperand() (*Operand, error) {
 			Base: base.Value,
 		}
 
-		// Check for offset
+		// Check for offset inside brackets
 		if p.peek().Type == TokenComma {
 			p.advance() // consume comma
 			if p.peek().Type == TokenHash {
@@ -330,6 +330,23 @@ func (p *Parser) parseOperand() (*Operand, error) {
 
 		if p.peek().Type == TokenRBracket {
 			p.advance() // consume ]
+		}
+
+		// Check for pre-indexed writeback: [base, #offset]!
+		if p.peek().Type == TokenExclamation {
+			p.advance() // consume !
+			operand.Writeback = true
+		}
+
+		// Check for post-indexed: [base], #offset
+		// The comma after ] indicates post-indexed mode
+		if p.peek().Type == TokenComma {
+			p.advance() // consume comma
+			if p.peek().Type == TokenHash {
+				p.advance() // consume #
+			}
+			postOffset := p.advance()
+			operand.PostIndexOffset = postOffset.Value
 		}
 
 		return operand, nil

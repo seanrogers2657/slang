@@ -4,7 +4,7 @@ A custom assembler implementation that directly generates ARM64 machine code and
 
 ## Status
 
-**STATUS: FULLY WORKING** (as of 2025-11-30)
+**STATUS: FULLY WORKING** (as of 2025-12-01)
 
 The assembler successfully:
 - Lexes assembly source code
@@ -52,9 +52,13 @@ The assembler successfully:
 - `str Rt, [Rn]` - Store register (unsigned offset)
 - `str Rt, [Rn, #imm]` - Store with immediate offset
 - `ldp Rt1, Rt2, [Rn]` - Load pair
-- `ldp Rt1, Rt2, [Rn, #imm]` - Load pair with offset
+- `ldp Rt1, Rt2, [Rn, #imm]` - Load pair with signed offset
+- `ldp Rt1, Rt2, [Rn, #imm]!` - Load pair with pre-indexed writeback
+- `ldp Rt1, Rt2, [Rn], #imm` - Load pair with post-indexed writeback
 - `stp Rt1, Rt2, [Rn]` - Store pair
-- `stp Rt1, Rt2, [Rn, #imm]` - Store pair with offset
+- `stp Rt1, Rt2, [Rn, #imm]` - Store pair with signed offset
+- `stp Rt1, Rt2, [Rn, #imm]!` - Store pair with pre-indexed writeback
+- `stp Rt1, Rt2, [Rn], #imm` - Store pair with post-indexed writeback
 
 **Data Directives:**
 - `.byte` - 1-byte values
@@ -80,7 +84,14 @@ _start:
     svc #0
 
 add_five:
+    // Proper function prologue with pre-indexed writeback (push)
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+
     add x0, x0, #5
+
+    // Epilogue with post-indexed writeback (pop)
+    ldp x29, x30, [sp], #16
     ret
 ```
 
@@ -135,7 +146,7 @@ _start:
 
 ### Pipeline
 
-1. **Lexer** (`lexer.go`) - Tokenizes assembly source (supports hex numbers)
+1. **Lexer** (`lexer.go`) - Tokenizes assembly source (supports hex numbers, `!` for writeback)
 2. **Parser** (`parser.go`) - Builds IR from tokens, including data directives
 3. **Layout** (`layout.go`) - Two-pass address assignment for forward references
 4. **Encoder** (`encoder.go`) - Generates ARM64 machine code and encodes data
@@ -204,9 +215,10 @@ End-to-end tests (table-driven):
 - Branch with link and return
 - Nested function calls
 - Memory operations (str/ldr, with offsets, pair operations)
+- Writeback addressing modes (pre-indexed and post-indexed for ldp/stp)
 - Arithmetic operations
 - Comparison operations
-- Complex programs (factorial, fibonacci, sum loops)
+- Complex programs (factorial, fibonacci, sum loops, recursive functions)
 
 ### Debug Testing
 
@@ -251,6 +263,7 @@ go test -v ./assembler/slasm -run TestEndToEnd_ComplexPrograms
 | Code signing | Inline | Requires codesign |
 | Branch instructions | Full support | Full support |
 | Memory operations | ldr/str/ldp/stp | Complete |
+| Writeback addressing | Pre/post-indexed | Complete |
 | Data directives | Parsing/encoding | Complete |
 | Instruction set | Core subset | Complete |
 | Execution | Works | Works |

@@ -132,11 +132,12 @@ End-to-end tests for the complete compilation pipeline:
 Tests for the native ARM64 assembler:
 
 **Lexer Tests** (`lexer_test.go`):
-- **TestLexerDirectives**: Parsing of `.global`, `.align` directives
+- **TestLexerDirectives**: Parsing of `.global`, `.align`, data directives
 - **TestLexerLabels**: Label recognition and parsing
 - **TestLexerInstructions**: Instruction mnemonic recognition
 - **TestLexerRegisters**: Register parsing (x0-x30, sp, lr, xzr)
 - **TestLexerImmediates**: Immediate value parsing (#123, #0x1a)
+- **TestLexerMemoryOperands**: Memory operands with writeback (`[sp, #-16]!`, `[sp], #16`)
 
 **Parser Tests** (`parser_test.go`):
 - **TestParserProgram**: Full program parsing
@@ -160,11 +161,25 @@ Tests for the native ARM64 assembler:
 - **TestEncodeMsub**: MSUB instruction encoding
 - **TestEncodeCmp**: CMP instruction encoding
 - **TestEncodeCset**: CSET instruction encoding
+- **TestEncodeLdp**: LDP instruction encoding (signed offset, pre-indexed, post-indexed)
+- **TestEncodeStp**: STP instruction encoding (signed offset, pre-indexed, post-indexed)
+- **TestEncodeBranch**: Branch instructions (B, BL, B.cond, BR)
+- **TestEncodeLdr**: LDR instruction encoding
+- **TestEncodeStr**: STR instruction encoding
+- **TestEncodeData**: Data directive encoding (.byte, .word, .quad, .asciz)
 
 **End-to-End Tests** (`e2e_test.go`):
-- **TestEndToEndMinimal**: Minimal program assembly
-- **TestEndToEndArithmetic**: Arithmetic instruction assembly
-- **TestEndToEndSyscall**: System call assembly
+Table-driven tests that assemble and execute real ARM64 programs:
+- **TestEndToEnd_BasicExitCodes**: Exit codes (0, 1, 42, 255)
+- **TestEndToEnd_Branches**: Unconditional branches (forward, backward)
+- **TestEndToEnd_ConditionalBranches**: Conditional branches (eq, ne, lt, gt, le, ge)
+- **TestEndToEnd_BranchLink**: Branch with link and return
+- **TestEndToEnd_NestedFunctionCalls**: Nested function calls
+- **TestEndToEnd_MemoryOperations**: str/ldr with offsets, pair operations
+- **TestEndToEnd_WritebackAddressing**: Pre-indexed (`[sp, #-16]!`) and post-indexed (`[sp], #16`) modes
+- **TestEndToEnd_Arithmetic**: Arithmetic operations
+- **TestEndToEnd_Comparison**: Comparison operations
+- **TestEndToEnd_ComplexPrograms**: Factorial, fibonacci, sum loops, recursive functions
 
 ### CLI Tests (`cmd/sl/main_test.go`)
 

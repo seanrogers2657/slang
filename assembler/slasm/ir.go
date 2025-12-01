@@ -69,8 +69,10 @@ type Operand struct {
 	Value string // register name, immediate value, or label name
 
 	// For memory operands [base, offset]
-	Base   string // base register
-	Offset string // offset value or register
+	Base            string // base register
+	Offset          string // offset value or register
+	Writeback       bool   // true for pre-indexed [base, #offset]!
+	PostIndexOffset string // for post-indexed [base], #offset
 }
 
 // DataDeclaration represents a data declaration (.byte, .space, .asciz, etc.)

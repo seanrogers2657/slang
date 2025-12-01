@@ -27,9 +27,10 @@ const (
 	TokenComma
 	TokenColon
 	TokenHash      // # for immediates
-	TokenLBracket  // [
-	TokenRBracket  // ]
-	TokenAt        // @ for PAGE/PAGEOFF
+	TokenLBracket    // [
+	TokenRBracket    // ]
+	TokenAt          // @ for PAGE/PAGEOFF
+	TokenExclamation // ! for writeback addressing
 )
 
 // Token represents a single token in assembly source
@@ -133,6 +134,9 @@ func (l *Lexer) NextToken() Token {
 	case '@':
 		l.advance()
 		return Token{Type: TokenAt, Value: "@", Line: line, Column: column}
+	case '!':
+		l.advance()
+		return Token{Type: TokenExclamation, Value: "!", Line: line, Column: column}
 	}
 
 	// Unknown character - return error token

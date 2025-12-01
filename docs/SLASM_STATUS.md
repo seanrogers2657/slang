@@ -1,6 +1,6 @@
 # slasm Implementation Status
 
-Last updated: 2025-11-30
+Last updated: 2025-12-01
 
 **STATUS: ✅ FULLY WORKING** - Native ARM64 assembler with comprehensive instruction support!
 
@@ -20,7 +20,8 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - Registers: `x0-x30`, `sp`, `lr`, `xzr`
 - Immediates: `#123`, `#0x1a` (decimal and hex)
 - Memory operands: `[sp]`, `[sp, #16]`, `[x0, #8]`
-- Punctuation: `:`, `,`, `#`, `[`, `]`
+- Writeback operands: `[sp, #-16]!` (pre-indexed), `[sp], #16` (post-indexed)
+- Punctuation: `:`, `,`, `#`, `[`, `]`, `!`
 - Comments: `//` and `;` style
 - Conditional branches: `b.eq`, `b.ne`, `b.lt`, `b.gt`, `b.le`, `b.ge`, etc.
 
@@ -79,9 +80,13 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - `str Rt, [Rn]` → Store register (unsigned offset)
 - `str Rt, [Rn, #imm]` → Store with immediate offset
 - `ldp Rt1, Rt2, [Rn]` → Load pair
-- `ldp Rt1, Rt2, [Rn, #imm]` → Load pair with offset
+- `ldp Rt1, Rt2, [Rn, #imm]` → Load pair with signed offset
+- `ldp Rt1, Rt2, [Rn, #imm]!` → Load pair with pre-indexed writeback
+- `ldp Rt1, Rt2, [Rn], #imm` → Load pair with post-indexed writeback
 - `stp Rt1, Rt2, [Rn]` → Store pair
-- `stp Rt1, Rt2, [Rn, #imm]` → Store pair with offset
+- `stp Rt1, Rt2, [Rn, #imm]` → Store pair with signed offset
+- `stp Rt1, Rt2, [Rn, #imm]!` → Store pair with pre-indexed writeback
+- `stp Rt1, Rt2, [Rn], #imm` → Store pair with post-indexed writeback
 
 **Data Encoding:**
 - `.byte` values → 1-byte encoding
@@ -157,9 +162,10 @@ Table-driven tests covering:
 - Branch with link and return
 - Nested function calls
 - Memory operations (str/ldr, with offsets, pair operations)
+- Writeback addressing modes (pre-indexed `[sp, #-16]!` and post-indexed `[sp], #16`)
 - Arithmetic operations
 - Comparison operations
-- Complex programs (factorial, fibonacci, sum loops)
+- Complex programs (factorial, fibonacci, sum loops, recursive functions)
 
 ## Key Achievements
 
@@ -172,6 +178,8 @@ Table-driven tests covering:
    - Load/store single registers
    - Load/store pairs (for stack frames)
    - Scaled immediate offsets
+   - **Pre-indexed writeback** (`[sp, #-16]!`) for push operations
+   - **Post-indexed writeback** (`[sp], #16`) for pop operations
 
 3. **Data Section Parsing** ✅
    - Full directive support (.byte, .quad, .asciz, etc.)
@@ -277,6 +285,7 @@ _start:
 | Code signing | ✅ Inline | ✅ Requires codesign |
 | Branch instructions | ✅ Full support | ✅ Full support |
 | Memory operations | ✅ ldr/str/ldp/stp | ✅ Complete |
+| Writeback addressing | ✅ Pre/post-indexed | ✅ Complete |
 | Data directives | ✅ Parsing/encoding | ✅ Complete |
 | Instruction set | ⚠️ Core subset | ✅ Complete |
 | Execution | ✅ Works | ✅ Works |

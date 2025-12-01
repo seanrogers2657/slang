@@ -593,3 +593,180 @@ sum_done:
 	}
 	runE2ETests(t, tests)
 }
+
+func TestEndToEnd_WritebackAddressing(t *testing.T) {
+	tests := []e2eTestCase{
+		{
+			name: "stp_preindex_ldp_postindex",
+			assembly: `.global _start
+_start:
+    // Test pre-indexed STP and post-indexed LDP
+    mov x0, #10
+    mov x1, #20
+
+    // Pre-indexed: sp = sp - 16, then store
+    stp x0, x1, [sp, #-16]!
+
+    // Clear registers to prove we restore from stack
+    mov x0, #0
+    mov x1, #0
+
+    // Post-indexed: load, then sp = sp + 16
+    ldp x0, x1, [sp], #16
+
+    // x0 + x1 should be 30
+    add x0, x0, x1
+    mov x16, #1
+    svc #0
+`,
+			expectedExit: 30,
+		},
+		{
+			name: "nested_preindex_postindex",
+			assembly: `.global _start
+_start:
+    mov x0, #5
+    mov x1, #3
+
+    // Push two pairs using pre-indexed
+    stp x0, x1, [sp, #-16]!
+    mov x2, #7
+    mov x3, #11
+    stp x2, x3, [sp, #-16]!
+
+    // Clear all
+    mov x0, #0
+    mov x1, #0
+    mov x2, #0
+    mov x3, #0
+
+    // Pop in reverse order using post-indexed
+    ldp x2, x3, [sp], #16
+    ldp x0, x1, [sp], #16
+
+    // x0=5, x1=3, x2=7, x3=11
+    // Return x0 + x2 = 12
+    add x0, x0, x2
+    mov x16, #1
+    svc #0
+`,
+			expectedExit: 12,
+		},
+		{
+			name: "function_with_preindex_postindex",
+			assembly: `.global _start
+_start:
+    mov x0, #7
+    bl double_it
+    mov x16, #1
+    svc #0
+
+double_it:
+    // Save link register with pre-indexed
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+
+    add x0, x0, x0
+
+    // Restore with post-indexed
+    ldp x29, x30, [sp], #16
+    ret
+`,
+			expectedExit: 14,
+		},
+		{
+			name: "multiple_callee_saved_registers",
+			assembly: `.global _start
+_start:
+    mov x0, #2
+    bl compute_sum
+    mov x16, #1
+    svc #0
+
+compute_sum:
+    // Save frame pointer and link register
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    // Save callee-saved registers
+    stp x19, x20, [sp, #-16]!
+    stp x21, x22, [sp, #-16]!
+
+    // Use callee-saved registers
+    mov x19, x0       // x19 = 2
+    add x20, x19, #3  // x20 = 5
+    add x21, x20, #7  // x21 = 12
+    add x22, x21, #8  // x22 = 20
+
+    // Result is sum of all
+    add x0, x19, x20
+    add x0, x0, x21
+    add x0, x0, x22   // 2 + 5 + 12 + 20 = 39
+
+    // Restore callee-saved registers (post-indexed)
+    ldp x21, x22, [sp], #16
+    ldp x19, x20, [sp], #16
+    ldp x29, x30, [sp], #16
+    ret
+`,
+			expectedExit: 39,
+		},
+		{
+			name: "preindex_negative_offset",
+			assembly: `.global _start
+_start:
+    mov x0, #42
+    mov x1, #0
+
+    // Pre-indexed with negative offset (push pattern)
+    stp x0, x1, [sp, #-16]!
+
+    // Overwrite x0
+    mov x0, #99
+
+    // Post-indexed restore (pop pattern)
+    ldp x0, x1, [sp], #16
+
+    // x0 should be restored to 42
+    mov x16, #1
+    svc #0
+`,
+			expectedExit: 42,
+		},
+		{
+			name: "recursive_function_with_writeback",
+			assembly: `.global _start
+_start:
+    mov x0, #4
+    bl countdown
+    mov x16, #1
+    svc #0
+
+// countdown: returns sum of n + (n-1) + ... + 1
+countdown:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    stp x19, x20, [sp, #-16]!
+
+    mov x19, x0           // save n
+
+    cmp x0, #1
+    b.le base_case
+
+    sub x0, x0, #1        // n - 1
+    bl countdown          // recursive call
+    add x0, x0, x19       // result + n
+    b epilogue
+
+base_case:
+    mov x0, #1
+
+epilogue:
+    ldp x19, x20, [sp], #16
+    ldp x29, x30, [sp], #16
+    ret
+`,
+			expectedExit: 10, // 4 + 3 + 2 + 1 = 10
+		},
+	}
+	runE2ETests(t, tests)
+}

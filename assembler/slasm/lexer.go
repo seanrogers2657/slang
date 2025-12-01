@@ -242,12 +242,35 @@ func (l *Lexer) readNumber(line, column int) Token {
 		l.advance()
 	}
 
-	// Read digits
+	// Check for hex prefix (0x or 0X)
+	if l.current == '0' && l.pos+1 < len(l.source) {
+		next := rune(l.source[l.pos+1])
+		if next == 'x' || next == 'X' {
+			value += string(l.current) // '0'
+			l.advance()
+			value += string(l.current) // 'x' or 'X'
+			l.advance()
+			// Read hex digits
+			for l.pos < len(l.source) && l.isHexDigit(l.current) {
+				value += string(l.current)
+				l.advance()
+			}
+			return Token{Type: TokenInteger, Value: value, Line: line, Column: column}
+		}
+	}
+
+	// Read decimal digits
 	for l.pos < len(l.source) && l.current >= '0' && l.current <= '9' {
 		value += string(l.current)
 		l.advance()
 	}
 	return Token{Type: TokenInteger, Value: value, Line: line, Column: column}
+}
+
+func (l *Lexer) isHexDigit(ch rune) bool {
+	return (ch >= '0' && ch <= '9') ||
+		(ch >= 'a' && ch <= 'f') ||
+		(ch >= 'A' && ch <= 'F')
 }
 
 func (l *Lexer) readString(line, column int) Token {
@@ -293,10 +316,36 @@ func (l *Lexer) readIdentifier(line, column int) Token {
 		l.advance()
 	}
 
+	// Check for conditional branch: b.cond (e.g., b.eq, b.ne, b.lt, b.gt, etc.)
+	if value == "b" && l.current == '.' {
+		l.advance() // consume the '.'
+		cond := ""
+		for l.pos < len(l.source) && l.isIdentifierChar(l.current) {
+			cond += string(l.current)
+			l.advance()
+		}
+		if isConditionCode(cond) {
+			return Token{Type: TokenIdentifier, Value: "b." + cond, Line: line, Column: column}
+		}
+		// If not a valid condition code, put it back by returning what we have
+		// This case shouldn't happen in well-formed assembly
+		return Token{Type: TokenIdentifier, Value: "b." + cond, Line: line, Column: column}
+	}
+
 	// Check if it's a register using shared utility
 	if IsRegister(value) {
 		return Token{Type: TokenRegister, Value: value, Line: line, Column: column}
 	}
 
 	return Token{Type: TokenIdentifier, Value: value, Line: line, Column: column}
+}
+
+// isConditionCode checks if the string is a valid ARM64 condition code
+func isConditionCode(s string) bool {
+	switch s {
+	case "eq", "ne", "cs", "hs", "cc", "lo", "mi", "pl",
+		"vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "al":
+		return true
+	}
+	return false
 }

@@ -53,8 +53,8 @@ func main() {
 					&cli.StringFlag{
 						Name:    "backend",
 						Aliases: []string{"b"},
-						Value:   "system",
-						Usage:   "Assembler backend to use (system or slasm)",
+						Value:   "slasm",
+						Usage:   "Assembler backend to use (slasm or system)",
 					},
 					&cli.BoolFlag{
 						Name:    "verbose",
@@ -130,8 +130,8 @@ func main() {
 					&cli.StringFlag{
 						Name:    "backend",
 						Aliases: []string{"b"},
-						Value:   "system",
-						Usage:   "Assembler backend to use (system or slasm)",
+						Value:   "slasm",
+						Usage:   "Assembler backend to use (slasm or system)",
 					},
 					&cli.BoolFlag{
 						Name:    "verbose",
@@ -218,8 +218,8 @@ func main() {
 					&cli.StringFlag{
 						Name:    "backend",
 						Aliases: []string{"be"},
-						Value:   "system",
-						Usage:   "Assembler backend to use (system or slasm)",
+						Value:   "slasm",
+						Usage:   "Assembler backend to use (slasm or system)",
 					},
 					&cli.BoolFlag{
 						Name:    "verbose",

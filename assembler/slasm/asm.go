@@ -157,11 +157,13 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 
 	// Step 4: Encode instructions to machine code
 	a.Logger.Section("STEP 4: INSTRUCTION ENCODING")
-	
+
 
 	encoder := NewEncoder(layout.GetSymbolTable())
 	var codeBytes []byte
+	var dataBytes []byte
 	instructionCount := 0
+	dataItemCount := 0
 
 	for _, section := range program.Sections {
 		if section.Type == SectionText {
@@ -192,10 +194,29 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 					instructionCount++
 				}
 			}
+		} else if section.Type == SectionData {
+			for _, item := range section.Items {
+				if data, ok := item.(*DataDeclaration); ok {
+					currentAddr := uint64(len(dataBytes))
+					bytes, err := encoder.EncodeData(data)
+					if err != nil {
+						return fmt.Errorf("encoding error for data '.%s': %w", data.Type, err)
+					}
+
+					a.Logger.Printf("  [0x%04x] .%-10s %-20s -> %d bytes\n",
+						currentAddr, data.Type, truncateValue(data.Value, 20), len(bytes))
+
+					dataBytes = append(dataBytes, bytes...)
+					dataItemCount++
+				}
+			}
 		}
 	}
 
-	a.Logger.Printf("\nEncoded %d instructions (%d bytes total)\n", instructionCount, len(codeBytes))
+	a.Logger.Printf("\nEncoded %d instructions (%d bytes)\n", instructionCount, len(codeBytes))
+	if dataItemCount > 0 {
+		a.Logger.Printf("Encoded %d data items (%d bytes)\n", dataItemCount, len(dataBytes))
+	}
 	a.Logger.Printf("Complete machine code: %x\n\n", codeBytes)
 
 	// Step 5: Generate Mach-O executable
@@ -203,7 +224,7 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 
 
 	writer := NewMachOWriter(a.Arch, a.Logger)
-	err = writer.WriteExecutable(opts.OutputPath, codeBytes, nil, layout.GetSymbolTable(), a.EntryPoint)
+	err = writer.WriteExecutable(opts.OutputPath, codeBytes, dataBytes, layout.GetSymbolTable(), a.EntryPoint)
 	if err != nil {
 		return fmt.Errorf("mach-o generation error: %w", err)
 	}
@@ -237,4 +258,12 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 // makeExecutable sets the executable permission on a file
 func makeExecutable(path string) error {
 	return os.Chmod(path, 0755)
+}
+
+// truncateValue truncates a string to maxLen characters, adding "..." if truncated
+func truncateValue(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }

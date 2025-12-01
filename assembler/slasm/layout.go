@@ -94,8 +94,15 @@ func instructionSize(inst *Instruction) int {
 func dataSize(data *DataDeclaration) int {
 	switch data.Type {
 	case "byte":
-		return 1
-	case "space":
+		// Count comma-separated values
+		return countValues(data.Value)
+	case "2byte", "hword":
+		return countValues(data.Value) * 2
+	case "4byte", "word":
+		return countValues(data.Value) * 4
+	case "8byte", "quad":
+		return countValues(data.Value) * 8
+	case "space", "zero":
 		// Parse the size from Value (simple decimal parsing)
 		size := 0
 		for _, ch := range data.Value {
@@ -104,12 +111,60 @@ func dataSize(data *DataDeclaration) int {
 			}
 		}
 		return size
-	case "asciz":
+	case "asciz", "string":
 		// String length + 1 for null terminator
-		return len(data.Value) + 1
+		return len(unescapeString(data.Value)) + 1
+	case "ascii":
+		// String length without null terminator
+		return len(unescapeString(data.Value))
 	default:
 		return 0
 	}
+}
+
+// countValues counts comma-separated values in a string
+func countValues(s string) int {
+	if s == "" {
+		return 0
+	}
+	count := 1
+	for _, ch := range s {
+		if ch == ',' {
+			count++
+		}
+	}
+	return count
+}
+
+// unescapeString converts escape sequences in a string
+func unescapeString(s string) string {
+	result := ""
+	i := 0
+	for i < len(s) {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case 'n':
+				result += "\n"
+			case 't':
+				result += "\t"
+			case 'r':
+				result += "\r"
+			case '\\':
+				result += "\\"
+			case '"':
+				result += "\""
+			case '0':
+				result += "\x00"
+			default:
+				result += string(s[i+1])
+			}
+			i += 2
+		} else {
+			result += string(s[i])
+			i++
+		}
+	}
+	return result
 }
 
 // parseAlignment parses an alignment value

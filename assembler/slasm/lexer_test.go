@@ -342,6 +342,55 @@ func TestLexer_WhitespaceHandling(t *testing.T) {
 	}
 }
 
+func TestLexer_ConditionalBranch(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		expectedValue string
+	}{
+		{"b.eq", "b.eq target", "b.eq"},
+		{"b.ne", "b.ne target", "b.ne"},
+		{"b.cs", "b.cs target", "b.cs"},
+		{"b.hs", "b.hs target", "b.hs"},
+		{"b.cc", "b.cc target", "b.cc"},
+		{"b.lo", "b.lo target", "b.lo"},
+		{"b.mi", "b.mi target", "b.mi"},
+		{"b.pl", "b.pl target", "b.pl"},
+		{"b.vs", "b.vs target", "b.vs"},
+		{"b.vc", "b.vc target", "b.vc"},
+		{"b.hi", "b.hi target", "b.hi"},
+		{"b.ls", "b.ls target", "b.ls"},
+		{"b.ge", "b.ge target", "b.ge"},
+		{"b.lt", "b.lt target", "b.lt"},
+		{"b.gt", "b.gt target", "b.gt"},
+		{"b.le", "b.le target", "b.le"},
+		{"b.al", "b.al target", "b.al"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lexer := NewLexer(tt.input)
+			tokens, err := lexer.Tokenize()
+
+			if err != nil {
+				t.Fatalf("lexer error: %v", err)
+			}
+
+			if len(tokens) < 1 {
+				t.Fatal("expected at least one token")
+			}
+
+			if tokens[0].Type != TokenIdentifier {
+				t.Errorf("expected TokenIdentifier, got %v", tokens[0].Type)
+			}
+
+			if tokens[0].Value != tt.expectedValue {
+				t.Errorf("expected value %q, got %q", tt.expectedValue, tokens[0].Value)
+			}
+		})
+	}
+}
+
 func TestLexer_RegisterRecognition(t *testing.T) {
 	tests := []struct {
 		name       string

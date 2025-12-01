@@ -115,6 +115,49 @@ func EncodeLittleEndian(value uint32) []byte {
 	}
 }
 
+// ParseInt64 parses a string to an int64, supporting decimal and hexadecimal formats.
+// Supports negative numbers and 0x prefix for hex.
+func ParseInt64(s string) (int64, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty string")
+	}
+
+	s = strings.TrimSpace(s)
+	negative := false
+
+	// Handle negative sign
+	if s[0] == '-' {
+		negative = true
+		s = s[1:]
+		if s == "" {
+			return 0, fmt.Errorf("invalid number: just '-'")
+		}
+	}
+
+	var result int64
+	var err error
+
+	// Handle hex numbers (0x prefix)
+	if len(s) > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+		result, err = strconv.ParseInt(s[2:], 16, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid hex number: %s (%w)", s, err)
+		}
+	} else {
+		// Decimal
+		result, err = strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid decimal number: %s (%w)", s, err)
+		}
+	}
+
+	if negative {
+		result = -result
+	}
+
+	return result, nil
+}
+
 // IsRegister checks if a string is a valid ARM64 register name
 func IsRegister(name string) bool {
 	_, err := ParseRegister(name)

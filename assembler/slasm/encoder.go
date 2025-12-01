@@ -1,6 +1,10 @@
 package slasm
 
-import "fmt"
+import (
+	"encoding/binary"
+	"fmt"
+	"strings"
+)
 
 // Encoder encodes ARM64 instructions to machine code
 type Encoder struct {
@@ -46,6 +50,9 @@ func (e *Encoder) Encode(inst *Instruction, address uint64) ([]byte, error) {
 		return e.encodeBranchLink(inst, address)
 	case "br":
 		return e.encodeBranchRegister(inst)
+	case "b.eq", "b.ne", "b.cs", "b.hs", "b.cc", "b.lo", "b.mi", "b.pl",
+		"b.vs", "b.vc", "b.hi", "b.ls", "b.ge", "b.lt", "b.gt", "b.le", "b.al":
+		return e.encodeBranchConditional(inst, address)
 	case "ret":
 		return e.encodeRet(inst)
 	case "ldr":
@@ -202,8 +209,10 @@ func (e *Encoder) encodeSub(inst *Instruction) ([]byte, error) {
                 inst.Line, inst.Column, imm)
         }
 
-        sf := uint32(1)
-        encoding := (sf << 31) | (0b01010001 << 23) | (imm << 10) | (uint32(rn) << 5) | uint32(rd)
+        // SUB (immediate): sf 1 0 1 0 0 0 1 sh imm12 Rn Rd
+        // sf=1 for 64-bit, op=1 (SUB), S=0 (no flags), 10001, shift=00
+        // Fixed bits for SUB without flags: 0xD1000000
+        encoding := uint32(0xD1000000) | (imm << 10) | (uint32(rn) << 5) | uint32(rd)
         return EncodeLittleEndian(encoding), nil
     }
 
@@ -451,13 +460,137 @@ func (e *Encoder) encodeBranch(inst *Instruction, address uint64) ([]byte, error
 }
 
 func (e *Encoder) encodeBranchLink(inst *Instruction, address uint64) ([]byte, error) {
-	// TODO: Implement branch with link encoding
-	return make([]byte, 4), nil
+	// BL label (branch with link)
+	// Encoding: 1 00101 imm26
+	// imm26 is a signed offset in instructions (not bytes) from PC
+
+	if len(inst.Operands) != 1 {
+		return nil, fmt.Errorf("line %d:%d: bl requires 1 operand, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	if inst.Operands[0].Type != OperandLabel {
+		return nil, fmt.Errorf("line %d:%d: bl requires a label operand",
+			inst.Line, inst.Column)
+	}
+
+	labelName := inst.Operands[0].Value
+	symbol, found := e.symbolTable.Lookup(labelName)
+	if !found {
+		return nil, fmt.Errorf("line %d:%d: undefined label '%s'",
+			inst.Line, inst.Column, labelName)
+	}
+
+	// Calculate offset in instructions (each instruction is 4 bytes)
+	targetAddr := symbol.Address
+	offset := (int64(targetAddr) - int64(address)) / 4
+
+	// Check if offset fits in 26 bits (signed)
+	if offset < -0x2000000 || offset > 0x1FFFFFF {
+		return nil, fmt.Errorf("line %d:%d: branch target '%s' is too far away (offset %d)",
+			inst.Line, inst.Column, labelName, offset)
+	}
+
+	// Encode: 100101 followed by 26-bit signed offset
+	imm26 := uint32(offset) & 0x03FFFFFF
+	encoding := (0b100101 << 26) | imm26
+
+	return EncodeLittleEndian(encoding), nil
 }
 
 func (e *Encoder) encodeBranchRegister(inst *Instruction) ([]byte, error) {
-	// TODO: Implement branch to register encoding
-	return make([]byte, 4), nil
+	// BR Xn (branch to register)
+	// Encoding: 1101011 0000 11111 000000 Rn 00000
+	// 0xD61F0000 | (Rn << 5)
+
+	if len(inst.Operands) != 1 {
+		return nil, fmt.Errorf("line %d:%d: br requires 1 operand, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	if inst.Operands[0].Type != OperandRegister {
+		return nil, fmt.Errorf("line %d:%d: br requires a register operand",
+			inst.Line, inst.Column)
+	}
+
+	rn, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: br register: %w", inst.Line, inst.Column, err)
+	}
+
+	// BR Xn encoding: 1101011 0000 11111 000000 Rn 00000
+	encoding := uint32(0xD61F0000) | (uint32(rn) << 5)
+
+	return EncodeLittleEndian(encoding), nil
+}
+
+func (e *Encoder) encodeBranchConditional(inst *Instruction, address uint64) ([]byte, error) {
+	// B.cond label (conditional branch)
+	// Encoding: 0101010 0 imm19 0 cond
+	// imm19 is a signed offset in instructions (not bytes) from PC
+
+	if len(inst.Operands) != 1 {
+		return nil, fmt.Errorf("line %d:%d: %s requires 1 operand, got %d",
+			inst.Line, inst.Column, inst.Mnemonic, len(inst.Operands))
+	}
+
+	if inst.Operands[0].Type != OperandLabel {
+		return nil, fmt.Errorf("line %d:%d: %s requires a label operand",
+			inst.Line, inst.Column, inst.Mnemonic)
+	}
+
+	// Extract condition code from mnemonic (e.g., "b.eq" -> "eq")
+	cond := inst.Mnemonic[2:] // skip "b."
+
+	// Map condition codes to their 4-bit encoding
+	condMap := map[string]uint32{
+		"eq": 0b0000, // Equal
+		"ne": 0b0001, // Not equal
+		"cs": 0b0010, // Carry set / unsigned higher or same
+		"hs": 0b0010, // (alias for cs)
+		"cc": 0b0011, // Carry clear / unsigned lower
+		"lo": 0b0011, // (alias for cc)
+		"mi": 0b0100, // Minus / negative
+		"pl": 0b0101, // Plus / positive or zero
+		"vs": 0b0110, // Overflow
+		"vc": 0b0111, // No overflow
+		"hi": 0b1000, // Unsigned higher
+		"ls": 0b1001, // Unsigned lower or same
+		"ge": 0b1010, // Signed greater than or equal
+		"lt": 0b1011, // Signed less than
+		"gt": 0b1100, // Signed greater than
+		"le": 0b1101, // Signed less than or equal
+		"al": 0b1110, // Always (unconditional)
+	}
+
+	condCode, ok := condMap[cond]
+	if !ok {
+		return nil, fmt.Errorf("line %d:%d: unknown condition code '%s'",
+			inst.Line, inst.Column, cond)
+	}
+
+	labelName := inst.Operands[0].Value
+	symbol, found := e.symbolTable.Lookup(labelName)
+	if !found {
+		return nil, fmt.Errorf("line %d:%d: undefined label '%s'",
+			inst.Line, inst.Column, labelName)
+	}
+
+	// Calculate offset in instructions (each instruction is 4 bytes)
+	targetAddr := symbol.Address
+	offset := (int64(targetAddr) - int64(address)) / 4
+
+	// Check if offset fits in 19 bits (signed)
+	if offset < -0x40000 || offset > 0x3FFFF {
+		return nil, fmt.Errorf("line %d:%d: branch target '%s' is too far away (offset %d)",
+			inst.Line, inst.Column, labelName, offset)
+	}
+
+	// Encode: 01010100 imm19 0 cond
+	imm19 := uint32(offset) & 0x7FFFF
+	encoding := (0b01010100 << 24) | (imm19 << 5) | condCode
+
+	return EncodeLittleEndian(encoding), nil
 }
 
 func (e *Encoder) encodeRet(inst *Instruction) ([]byte, error) {
@@ -467,23 +600,255 @@ func (e *Encoder) encodeRet(inst *Instruction) ([]byte, error) {
 }
 
 func (e *Encoder) encodeLdr(inst *Instruction) ([]byte, error) {
-	// TODO: Implement ldr encoding (load register)
-	return make([]byte, 4), nil
+	// LDR Xt, [Xn, #imm] - Load register (unsigned offset)
+	// Encoding: 11 111 00100 01 imm12 Rn Rt
+	// imm12 is scaled by 8 for 64-bit registers
+
+	if len(inst.Operands) != 2 {
+		return nil, fmt.Errorf("line %d:%d: ldr requires 2 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	// First operand: destination register
+	if inst.Operands[0].Type != OperandRegister {
+		return nil, fmt.Errorf("line %d:%d: ldr destination must be a register",
+			inst.Line, inst.Column)
+	}
+	rt, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: ldr destination: %w", inst.Line, inst.Column, err)
+	}
+
+	// Second operand: memory operand [base, #offset]
+	if inst.Operands[1].Type != OperandMemory {
+		return nil, fmt.Errorf("line %d:%d: ldr source must be a memory operand",
+			inst.Line, inst.Column)
+	}
+
+	rn, err := ParseRegister(inst.Operands[1].Base)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: ldr base register: %w", inst.Line, inst.Column, err)
+	}
+
+	// Parse offset (default to 0 if not specified)
+	offset := int64(0)
+	if inst.Operands[1].Offset != "" {
+		offset, err = ParseInt64(inst.Operands[1].Offset)
+		if err != nil {
+			return nil, fmt.Errorf("line %d:%d: ldr offset: %w", inst.Line, inst.Column, err)
+		}
+	}
+
+	// For 64-bit LDR, offset must be multiple of 8 and within range
+	if offset < 0 || offset > 32760 || offset%8 != 0 {
+		return nil, fmt.Errorf("line %d:%d: ldr offset must be 0-32760 and multiple of 8, got %d",
+			inst.Line, inst.Column, offset)
+	}
+
+	// Scale offset for encoding (divide by 8)
+	imm12 := uint32(offset / 8)
+
+	// LDR (unsigned offset): 11 111 00100 01 imm12 Rn Rt
+	// Bits 31-30: 11 (size for 64-bit)
+	// Bits 29-27: 111
+	// Bits 26-24: 001
+	// Bits 23-22: 00 (V=0 for GPR, not SIMD)
+	// Bits 21-10: 01 imm12
+	// Bits 9-5: Rn
+	// Bits 4-0: Rt
+	encoding := uint32(0xF9400000) | (imm12 << 10) | (uint32(rn) << 5) | uint32(rt)
+
+	return EncodeLittleEndian(encoding), nil
 }
 
 func (e *Encoder) encodeStr(inst *Instruction) ([]byte, error) {
-	// TODO: Implement str encoding (store register)
-	return make([]byte, 4), nil
+	// STR Xt, [Xn, #imm] - Store register (unsigned offset)
+	// Encoding: 11 111 00100 00 imm12 Rn Rt
+	// imm12 is scaled by 8 for 64-bit registers
+
+	if len(inst.Operands) != 2 {
+		return nil, fmt.Errorf("line %d:%d: str requires 2 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	// First operand: source register
+	if inst.Operands[0].Type != OperandRegister {
+		return nil, fmt.Errorf("line %d:%d: str source must be a register",
+			inst.Line, inst.Column)
+	}
+	rt, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: str source: %w", inst.Line, inst.Column, err)
+	}
+
+	// Second operand: memory operand [base, #offset]
+	if inst.Operands[1].Type != OperandMemory {
+		return nil, fmt.Errorf("line %d:%d: str destination must be a memory operand",
+			inst.Line, inst.Column)
+	}
+
+	rn, err := ParseRegister(inst.Operands[1].Base)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: str base register: %w", inst.Line, inst.Column, err)
+	}
+
+	// Parse offset (default to 0 if not specified)
+	offset := int64(0)
+	if inst.Operands[1].Offset != "" {
+		offset, err = ParseInt64(inst.Operands[1].Offset)
+		if err != nil {
+			return nil, fmt.Errorf("line %d:%d: str offset: %w", inst.Line, inst.Column, err)
+		}
+	}
+
+	// For 64-bit STR, offset must be multiple of 8 and within range
+	if offset < 0 || offset > 32760 || offset%8 != 0 {
+		return nil, fmt.Errorf("line %d:%d: str offset must be 0-32760 and multiple of 8, got %d",
+			inst.Line, inst.Column, offset)
+	}
+
+	// Scale offset for encoding (divide by 8)
+	imm12 := uint32(offset / 8)
+
+	// STR (unsigned offset): 11 111 00100 00 imm12 Rn Rt
+	// = 0xF9000000 | (imm12 << 10) | (Rn << 5) | Rt
+	encoding := uint32(0xF9000000) | (imm12 << 10) | (uint32(rn) << 5) | uint32(rt)
+
+	return EncodeLittleEndian(encoding), nil
 }
 
 func (e *Encoder) encodeLdp(inst *Instruction) ([]byte, error) {
-	// TODO: Implement ldp encoding (load pair)
-	return make([]byte, 4), nil
+	// LDP Xt1, Xt2, [Xn, #imm] - Load pair (signed offset)
+	// Encoding: 10 101 0010 1 imm7 Rt2 Rn Rt
+	// imm7 is signed and scaled by 8 for 64-bit registers
+
+	if len(inst.Operands) != 3 {
+		return nil, fmt.Errorf("line %d:%d: ldp requires 3 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	// First operand: first destination register
+	if inst.Operands[0].Type != OperandRegister {
+		return nil, fmt.Errorf("line %d:%d: ldp first operand must be a register",
+			inst.Line, inst.Column)
+	}
+	rt, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: ldp first register: %w", inst.Line, inst.Column, err)
+	}
+
+	// Second operand: second destination register
+	if inst.Operands[1].Type != OperandRegister {
+		return nil, fmt.Errorf("line %d:%d: ldp second operand must be a register",
+			inst.Line, inst.Column)
+	}
+	rt2, err := ParseRegister(inst.Operands[1].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: ldp second register: %w", inst.Line, inst.Column, err)
+	}
+
+	// Third operand: memory operand [base, #offset]
+	if inst.Operands[2].Type != OperandMemory {
+		return nil, fmt.Errorf("line %d:%d: ldp third operand must be a memory operand",
+			inst.Line, inst.Column)
+	}
+
+	rn, err := ParseRegister(inst.Operands[2].Base)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: ldp base register: %w", inst.Line, inst.Column, err)
+	}
+
+	// Parse offset (default to 0 if not specified)
+	offset := int64(0)
+	if inst.Operands[2].Offset != "" {
+		offset, err = ParseInt64(inst.Operands[2].Offset)
+		if err != nil {
+			return nil, fmt.Errorf("line %d:%d: ldp offset: %w", inst.Line, inst.Column, err)
+		}
+	}
+
+	// For 64-bit LDP, offset must be multiple of 8 and within signed 7-bit range * 8
+	if offset < -512 || offset > 504 || offset%8 != 0 {
+		return nil, fmt.Errorf("line %d:%d: ldp offset must be -512 to 504 and multiple of 8, got %d",
+			inst.Line, inst.Column, offset)
+	}
+
+	// Scale offset for encoding (divide by 8, signed 7-bit)
+	imm7 := uint32(offset/8) & 0x7F
+
+	// LDP (signed offset): 10 101 0010 1 imm7 Rt2 Rn Rt
+	// opc=10 (64-bit), 1010010 (fixed), L=1 (load)
+	// = 0xA9400000 | (imm7 << 15) | (Rt2 << 10) | (Rn << 5) | Rt
+	encoding := uint32(0xA9400000) | (imm7 << 15) | (uint32(rt2) << 10) | (uint32(rn) << 5) | uint32(rt)
+
+	return EncodeLittleEndian(encoding), nil
 }
 
 func (e *Encoder) encodeStp(inst *Instruction) ([]byte, error) {
-	// TODO: Implement stp encoding (store pair)
-	return make([]byte, 4), nil
+	// STP Xt1, Xt2, [Xn, #imm] - Store pair (signed offset)
+	// Encoding: 10 101 0010 0 imm7 Rt2 Rn Rt
+	// imm7 is signed and scaled by 8 for 64-bit registers
+
+	if len(inst.Operands) != 3 {
+		return nil, fmt.Errorf("line %d:%d: stp requires 3 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	// First operand: first source register
+	if inst.Operands[0].Type != OperandRegister {
+		return nil, fmt.Errorf("line %d:%d: stp first operand must be a register",
+			inst.Line, inst.Column)
+	}
+	rt, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: stp first register: %w", inst.Line, inst.Column, err)
+	}
+
+	// Second operand: second source register
+	if inst.Operands[1].Type != OperandRegister {
+		return nil, fmt.Errorf("line %d:%d: stp second operand must be a register",
+			inst.Line, inst.Column)
+	}
+	rt2, err := ParseRegister(inst.Operands[1].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: stp second register: %w", inst.Line, inst.Column, err)
+	}
+
+	// Third operand: memory operand [base, #offset]
+	if inst.Operands[2].Type != OperandMemory {
+		return nil, fmt.Errorf("line %d:%d: stp third operand must be a memory operand",
+			inst.Line, inst.Column)
+	}
+
+	rn, err := ParseRegister(inst.Operands[2].Base)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: stp base register: %w", inst.Line, inst.Column, err)
+	}
+
+	// Parse offset (default to 0 if not specified)
+	offset := int64(0)
+	if inst.Operands[2].Offset != "" {
+		offset, err = ParseInt64(inst.Operands[2].Offset)
+		if err != nil {
+			return nil, fmt.Errorf("line %d:%d: stp offset: %w", inst.Line, inst.Column, err)
+		}
+	}
+
+	// For 64-bit STP, offset must be multiple of 8 and within signed 7-bit range * 8
+	if offset < -512 || offset > 504 || offset%8 != 0 {
+		return nil, fmt.Errorf("line %d:%d: stp offset must be -512 to 504 and multiple of 8, got %d",
+			inst.Line, inst.Column, offset)
+	}
+
+	// Scale offset for encoding (divide by 8, signed 7-bit)
+	imm7 := uint32(offset/8) & 0x7F
+
+	// STP (signed offset): 10 101 0010 0 imm7 Rt2 Rn Rt
+	// opc=10 (64-bit), 1010010 (fixed), L=0 (store)
+	// = 0xA9000000 | (imm7 << 15) | (Rt2 << 10) | (Rn << 5) | Rt
+	encoding := uint32(0xA9000000) | (imm7 << 15) | (uint32(rt2) << 10) | (uint32(rn) << 5) | uint32(rt)
+
+	return EncodeLittleEndian(encoding), nil
 }
 
 func (e *Encoder) encodeLdrb(inst *Instruction) ([]byte, error) {
@@ -533,5 +898,102 @@ func (e *Encoder) encodeSvc(inst *Instruction) ([]byte, error) {
 	encoding |= (imm & 0xFFFF) << 5  // Insert imm16
 
 	return EncodeLittleEndian(encoding), nil
+}
+
+// EncodeData encodes a data declaration to bytes
+func (e *Encoder) EncodeData(data *DataDeclaration) ([]byte, error) {
+	switch data.Type {
+	case "byte":
+		return e.encodeByteValues(data.Value, 1)
+	case "2byte", "hword":
+		return e.encodeByteValues(data.Value, 2)
+	case "4byte", "word":
+		return e.encodeByteValues(data.Value, 4)
+	case "8byte", "quad":
+		return e.encodeByteValues(data.Value, 8)
+	case "space", "zero":
+		size, err := ParseInt(data.Value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid size for .%s: %w", data.Type, err)
+		}
+		return make([]byte, size), nil
+	case "asciz", "string":
+		// Null-terminated string
+		s := unescapeDataString(data.Value)
+		result := make([]byte, len(s)+1)
+		copy(result, s)
+		result[len(s)] = 0 // null terminator
+		return result, nil
+	case "ascii":
+		// String without null terminator
+		s := unescapeDataString(data.Value)
+		return []byte(s), nil
+	default:
+		return nil, fmt.Errorf("unsupported data directive: .%s", data.Type)
+	}
+}
+
+// encodeByteValues encodes comma-separated integer values to bytes
+func (e *Encoder) encodeByteValues(value string, size int) ([]byte, error) {
+	if value == "" {
+		return nil, nil
+	}
+
+	parts := strings.Split(value, ",")
+	result := make([]byte, 0, len(parts)*size)
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		val, err := ParseInt64(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid value '%s': %w", part, err)
+		}
+
+		bytes := make([]byte, size)
+		switch size {
+		case 1:
+			bytes[0] = byte(val)
+		case 2:
+			binary.LittleEndian.PutUint16(bytes, uint16(val))
+		case 4:
+			binary.LittleEndian.PutUint32(bytes, uint32(val))
+		case 8:
+			binary.LittleEndian.PutUint64(bytes, uint64(val))
+		}
+		result = append(result, bytes...)
+	}
+
+	return result, nil
+}
+
+// unescapeDataString converts escape sequences in a string (same as in layout.go)
+func unescapeDataString(s string) string {
+	result := ""
+	i := 0
+	for i < len(s) {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case 'n':
+				result += "\n"
+			case 't':
+				result += "\t"
+			case 'r':
+				result += "\r"
+			case '\\':
+				result += "\\"
+			case '"':
+				result += "\""
+			case '0':
+				result += "\x00"
+			default:
+				result += string(s[i+1])
+			}
+			i += 2
+		} else {
+			result += string(s[i])
+			i++
+		}
+	}
+	return result
 }
 

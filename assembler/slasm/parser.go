@@ -37,19 +37,22 @@ func (p *Parser) Parse() (*Program, error) {
 
 		// Parse directives
 		if p.peek().Type == TokenDirective {
-			directive, err := p.parseDirective()
-			if err != nil {
-				return nil, err
+			// Check if it's a data directive
+			directiveName := p.peek().Value
+			if len(directiveName) > 0 && directiveName[0] == '.' {
+				directiveName = directiveName[1:]
 			}
 
-			// Section switching directives
-			if directive.Name == "text" {
+			// Section switching directives (peek without consuming)
+			if directiveName == "text" {
+				p.advance() // consume the directive
 				if len(currentSection.Items) > 0 {
 					program.Sections = append(program.Sections, currentSection)
 				}
 				currentSection = &Section{Type: SectionText, Items: []Item{}}
 				continue
-			} else if directive.Name == "data" {
+			} else if directiveName == "data" {
+				p.advance() // consume the directive
 				if len(currentSection.Items) > 0 {
 					program.Sections = append(program.Sections, currentSection)
 				}
@@ -57,7 +60,21 @@ func (p *Parser) Parse() (*Program, error) {
 				continue
 			}
 
+			// Data declaration directives
+			if isDataDirective(directiveName) {
+				dataDecl, err := p.parseDataDirective()
+				if err != nil {
+					return nil, err
+				}
+				currentSection.Items = append(currentSection.Items, dataDecl)
+				continue
+			}
+
 			// Other directives (like .global, .align)
+			directive, err := p.parseDirective()
+			if err != nil {
+				return nil, err
+			}
 			currentSection.Items = append(currentSection.Items, directive)
 			continue
 		}
@@ -149,6 +166,69 @@ func (p *Parser) parseDirective() (*Directive, error) {
 	}
 
 	return directive, nil
+}
+
+// isDataDirective returns true if the directive name is a data declaration directive
+func isDataDirective(name string) bool {
+	switch name {
+	case "byte", "2byte", "4byte", "8byte", "quad", "word", "hword", "space", "zero", "asciz", "ascii", "string":
+		return true
+	}
+	return false
+}
+
+// parseDataDirective parses a data directive and returns a DataDeclaration
+func (p *Parser) parseDataDirective() (*DataDeclaration, error) {
+	tok := p.advance() // consume directive token
+
+	// Remove the leading .
+	name := tok.Value
+	if len(name) > 0 && name[0] == '.' {
+		name = name[1:]
+	}
+
+	decl := &DataDeclaration{
+		Type: name,
+	}
+
+	// Parse the value based on directive type
+	switch name {
+	case "asciz", "ascii", "string":
+		// String literal - expect a quoted string
+		if p.peek().Type == TokenString {
+			decl.Value = p.advance().Value
+		} else {
+			return nil, fmt.Errorf("expected string literal after .%s", name)
+		}
+
+	case "byte", "2byte", "4byte", "8byte", "quad", "word", "hword":
+		// Integer values - can be comma-separated
+		var values []string
+		for p.peek().Type != TokenNewline && p.peek().Type != TokenEOF && p.peek().Type != TokenComment {
+			if p.peek().Type == TokenComma {
+				p.advance()
+				continue
+			}
+			values = append(values, p.advance().Value)
+		}
+		// Store all values, comma-separated for multiple values
+		if len(values) > 0 {
+			decl.Value = values[0]
+			for i := 1; i < len(values); i++ {
+				decl.Value += "," + values[i]
+			}
+		}
+
+	case "space", "zero":
+		// Size in bytes
+		if p.peek().Type == TokenInteger {
+			decl.Value = p.advance().Value
+		} else {
+			return nil, fmt.Errorf("expected integer after .%s", name)
+		}
+	}
+
+	return decl, nil
 }
 
 func (p *Parser) parseLabel() *Label {

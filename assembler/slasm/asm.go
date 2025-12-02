@@ -145,13 +145,81 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	}
 
 	symbolTable := layout.GetSymbolTable()
-	a.Logger.Printf("Symbol table:\n")
+	a.Logger.Printf("Symbol table (before adjustment):\n")
 	for name, sym := range symbolTable.symbols {
 		globalFlag := ""
 		if sym.Global {
 			globalFlag = " [GLOBAL]"
 		}
 		a.Logger.Printf("  %-15s: addr=0x%04x section=%v%s\n", name, sym.Address, sym.Section, globalFlag)
+	}
+
+	// Calculate base VM addresses for symbol adjustment
+	// These must match the values used in WriteExecutable
+	vmAddr := uint64(0x100000000) // Standard base for ARM64 executables
+	headerSize := uint64(32)
+	segmentCmdSize := uint64(72)
+	sectionHeaderSize := uint64(80)
+	pagezeroSize := uint64(72)
+	linkeditSegmentSize := uint64(72)
+	dylinkerCmdSize := uint64(32) // Aligned size for /usr/lib/dyld
+	dylibCmdSize := uint64(56)    // Aligned size for /usr/lib/libSystem.B.dylib
+	entryPointCmdSize := uint64(24)
+	uuidCmdSize := uint64(24)
+	buildVersionCmdSize := uint64(32)
+	sourceVersionCmdSize := uint64(16)
+	chainedFixupsCmdSize := uint64(16)
+	exportsTrieCmdSize := uint64(16)
+	symtabCmdSize := uint64(24)
+	dysymtabCmdSize := uint64(80)
+	functionStartsCmdSize := uint64(16)
+	dataInCodeCmdSize := uint64(16)
+	codeSignatureCmdSize := uint64(16)
+
+	// Check if we have data
+	hasData := false
+	for _, section := range program.Sections {
+		if section.Type == SectionData && len(section.Items) > 0 {
+			hasData = true
+			break
+		}
+	}
+
+	// Calculate load commands size
+	loadCmdsSize := pagezeroSize + segmentCmdSize + sectionHeaderSize + linkeditSegmentSize +
+		dylinkerCmdSize + dylibCmdSize + entryPointCmdSize + uuidCmdSize +
+		buildVersionCmdSize + sourceVersionCmdSize +
+		chainedFixupsCmdSize + exportsTrieCmdSize +
+		symtabCmdSize + dysymtabCmdSize +
+		functionStartsCmdSize + dataInCodeCmdSize +
+		codeSignatureCmdSize
+
+	if hasData {
+		dataSegmentCmdSize := uint64(72)
+		dataSectionSize := uint64(80)
+		loadCmdsSize += dataSegmentCmdSize + dataSectionSize
+	}
+
+	// Calculate code offset and base addresses
+	codeOffset := ((headerSize + loadCmdsSize + 7) / 8) * 8 // Align to 8 bytes
+	textBase := vmAddr + codeOffset
+
+	// Calculate text segment size for data base calculation
+	textSegmentFileSize := uint64(0x4000) // 16KB minimum
+
+	// Calculate data base address
+	dataBase := vmAddr + textSegmentFileSize // Data comes after TEXT segment
+
+	// Adjust symbol addresses to actual VM addresses
+	symbolTable.AdjustAddresses(textBase, dataBase)
+
+	a.Logger.Printf("\nSymbol table (after adjustment):\n")
+	for name, sym := range symbolTable.symbols {
+		globalFlag := ""
+		if sym.Global {
+			globalFlag = " [GLOBAL]"
+		}
+		a.Logger.Printf("  %-15s: addr=0x%08x section=%v%s\n", name, sym.Address, sym.Section, globalFlag)
 	}
 	a.Logger.Printf("\n")
 
@@ -168,16 +236,20 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	for _, section := range program.Sections {
 		if section.Type == SectionText {
 			for _, item := range section.Items {
-				if inst, ok := item.(*Instruction); ok {
-					currentAddr := uint64(len(codeBytes))
-					machineCode, err := encoder.Encode(inst, currentAddr)
+				switch v := item.(type) {
+				case *Instruction:
+					relativeAddr := uint64(len(codeBytes))
+					// Use absolute VM address for encoding (needed for branch offset calculations
+					// since symbol addresses have been adjusted to absolute)
+					currentAddr := textBase + relativeAddr
+					machineCode, err := encoder.Encode(v, currentAddr)
 					if err != nil {
-						return fmt.Errorf("encoding error for instruction '%s': %w", inst.Mnemonic, err)
+						return fmt.Errorf("encoding error for instruction '%s': %w", v.Mnemonic, err)
 					}
 
 					// Format operands for display
 					operands := ""
-					for k, op := range inst.Operands {
+					for k, op := range v.Operands {
 						if k > 0 {
 							operands += ", "
 						}
@@ -186,12 +258,32 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 
 					a.Logger.Printf("  [0x%04x] %-20s -> %02x %02x %02x %02x (0x%08x)\n",
 						currentAddr,
-						fmt.Sprintf("%s %s", inst.Mnemonic, operands),
+						fmt.Sprintf("%s %s", v.Mnemonic, operands),
 						machineCode[0], machineCode[1], machineCode[2], machineCode[3],
 						uint32(machineCode[0]) | uint32(machineCode[1])<<8 | uint32(machineCode[2])<<16 | uint32(machineCode[3])<<24)
 
 					codeBytes = append(codeBytes, machineCode...)
 					instructionCount++
+
+				case *Directive:
+					// Handle alignment directives by emitting NOP padding
+					if v.Name == "align" && len(v.Args) > 0 {
+						alignValue := parseAlignment(v.Args[0])
+						if alignValue > 0 {
+							alignment := uint64(1 << alignValue) // 2^n
+							relativeAddr := uint64(len(codeBytes))
+							padding := alignmentPadding(relativeAddr, alignment)
+							if padding > 0 {
+								// Emit NOPs (0x1f2003d5 = ARM64 NOP)
+								nopCount := padding / 4
+								a.Logger.Printf("  [0x%04x] .align %d -> %d NOP(s)\n",
+									textBase+relativeAddr, alignValue, nopCount)
+								for i := uint64(0); i < nopCount; i++ {
+									codeBytes = append(codeBytes, 0x1f, 0x20, 0x03, 0xd5) // NOP in little endian
+								}
+							}
+						}
+					}
 				}
 			}
 		} else if section.Type == SectionData {

@@ -43,7 +43,7 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - **Two-pass layout** for forward reference resolution
 - Address assignment (4 bytes per instruction)
 - Symbol table construction
-- Alignment directive handling
+- Alignment directive handling (`.align` with NOP padding in code sections)
 - Data section size calculation
 
 #### Encoder (`encoder.go`)
@@ -57,8 +57,10 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - `add Rd, Rn, Rm` → ADD register
 - `sub Rd, Rn, #imm` → SUB immediate (12-bit)
 - `sub Rd, Rn, Rm` → SUB register
+- `neg Rd, Rm` → Negate (SUB with Rn=XZR)
 - `mul Rd, Rn, Rm` → MADD with Ra=XZR
 - `sdiv Rd, Rn, Rm` → Signed division
+- `udiv Rd, Rn, Rm` → Unsigned division
 - `msub Rd, Rn, Rm, Ra` → Multiply-subtract (for modulo)
 
 **Comparison:**
@@ -77,8 +79,12 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 **Memory Operations:**
 - `ldr Rt, [Rn]` → Load register (unsigned offset)
 - `ldr Rt, [Rn, #imm]` → Load with immediate offset
+- `ldr Rt, [Rn, #imm]!` → Load with pre-indexed writeback
+- `ldr Rt, [Rn], #imm` → Load with post-indexed writeback
 - `str Rt, [Rn]` → Store register (unsigned offset)
 - `str Rt, [Rn, #imm]` → Store with immediate offset
+- `str Rt, [Rn, #imm]!` → Store with pre-indexed writeback
+- `str Rt, [Rn], #imm` → Store with post-indexed writeback
 - `ldp Rt1, Rt2, [Rn]` → Load pair
 - `ldp Rt1, Rt2, [Rn, #imm]` → Load pair with signed offset
 - `ldp Rt1, Rt2, [Rn, #imm]!` → Load pair with pre-indexed writeback
@@ -148,10 +154,10 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - All symbol table tests ✅
 - All layout tests ✅
 - All encoder tests ✅
-  - Arithmetic: ADD, SUB, MUL, SDIV, MSUB
+  - Arithmetic: ADD, SUB, NEG, MUL, SDIV, UDIV, MSUB
   - Comparison: CMP, CSET
   - Branch: B, BL, BR, B.cond (all condition codes)
-  - Memory: LDR, STR, LDP, STP
+  - Memory: LDR, STR, LDP, STP (including pre/post-indexed writeback)
   - Data encoding: byte, word, quad, asciz, space
 
 ### End-to-End Tests (`e2e_test.go`)
@@ -163,7 +169,9 @@ Table-driven tests covering:
 - Nested function calls
 - Memory operations (str/ldr, with offsets, pair operations)
 - Writeback addressing modes (pre-indexed `[sp, #-16]!` and post-indexed `[sp], #16`)
+- Single-register indexed addressing (str/ldr with pre/post-indexed writeback)
 - Arithmetic operations
+- Division operations (udiv, sdiv, modulo using msub)
 - Comparison operations
 - Complex programs (factorial, fibonacci, sum loops, recursive functions)
 
@@ -175,22 +183,27 @@ Table-driven tests covering:
    - All conditional branch types
 
 2. **Memory Operations** ✅
-   - Load/store single registers
+   - Load/store single registers (with pre/post-indexed writeback)
    - Load/store pairs (for stack frames)
    - Scaled immediate offsets
    - **Pre-indexed writeback** (`[sp, #-16]!`) for push operations
    - **Post-indexed writeback** (`[sp], #16`) for pop operations
 
-3. **Data Section Parsing** ✅
+3. **Division Operations** ✅
+   - Signed division (`sdiv`)
+   - Unsigned division (`udiv`)
+   - Modulo via multiply-subtract (`msub`)
+
+4. **Data Section Parsing** ✅
    - Full directive support (.byte, .quad, .asciz, etc.)
    - Escape sequence handling
    - Multi-value directives
 
-4. **Inline Code Signing** ✅
+5. **Inline Code Signing** ✅
    - No external tools required
    - Binaries execute immediately after generation
 
-5. **Default Backend** ✅
+6. **Default Backend** ✅
    - slasm is now the default for `cmd/slasm`
    - System backend available via `--backend system`
 
@@ -198,7 +211,6 @@ Table-driven tests covering:
 
 ### Instructions
 - PC-relative addressing: `adr`, `adrp` (needed for data access)
-- Unsigned division: `udiv`
 - Logical operations: `and`, `orr`, `eor`, `mvn`
 - Shift operations: `lsl`, `lsr`, `asr`
 - 32-bit register variants: `w0-w30`

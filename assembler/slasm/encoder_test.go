@@ -201,6 +201,65 @@ func TestEncodeMsub(t *testing.T) {
 	}
 }
 
+func TestEncodeUdiv(t *testing.T) {
+	tests := []struct {
+		name        string
+		rd          string
+		rn          string
+		rm          string
+		expectedHex string
+	}{
+		{
+			name:        "udiv x2, x0, x1",
+			rd:          "x2",
+			rn:          "x0",
+			rm:          "x1",
+			expectedHex: "0208c19a", // 0x9AC10802
+		},
+		{
+			name:        "udiv x11, x20, x10",
+			rd:          "x11",
+			rn:          "x20",
+			rm:          "x10",
+			expectedHex: "8b0aca9a", // 0x9ACA0A8B
+		},
+		{
+			name:        "udiv x0, x1, x2",
+			rd:          "x0",
+			rn:          "x1",
+			rm:          "x2",
+			expectedHex: "2008c29a", // 0x9AC20820
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable())
+
+			inst := &Instruction{
+				Mnemonic: "udiv",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: tt.rd},
+					{Type: OperandRegister, Value: tt.rn},
+					{Type: OperandRegister, Value: tt.rm},
+				},
+				Line:   1,
+				Column: 1,
+			}
+
+			bytes, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(bytes)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
 func TestEncodeCmp(t *testing.T) {
 	encoder := NewEncoder(NewSymbolTable())
 
@@ -977,6 +1036,210 @@ func TestEncodeStr(t *testing.T) {
 				Operands: []*Operand{
 					{Type: OperandRegister, Value: tt.rt},
 					{Type: OperandMemory, Base: tt.base, Offset: tt.offset},
+				},
+				Line:   1,
+				Column: 1,
+			}
+
+			bytes, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(bytes)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeLdrPreIndexed(t *testing.T) {
+	tests := []struct {
+		name        string
+		rt          string
+		base        string
+		offset      string
+		expectedHex string
+	}{
+		{
+			name:        "ldr x0, [sp, #-16]!",
+			rt:          "x0",
+			base:        "sp",
+			offset:      "-16",
+			expectedHex: "e00f5ff8", // LDR pre-indexed: 0xF85F0FE0
+		},
+		{
+			name:        "ldr x1, [x2, #-8]!",
+			rt:          "x1",
+			base:        "x2",
+			offset:      "-8",
+			expectedHex: "418c5ff8", // LDR pre-indexed: 0xF85F8C41
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable())
+
+			inst := &Instruction{
+				Mnemonic: "ldr",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: tt.rt},
+					{Type: OperandMemory, Base: tt.base, Offset: tt.offset, Writeback: true},
+				},
+				Line:   1,
+				Column: 1,
+			}
+
+			bytes, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(bytes)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeLdrPostIndexed(t *testing.T) {
+	tests := []struct {
+		name            string
+		rt              string
+		base            string
+		postIndexOffset string
+		expectedHex     string
+	}{
+		{
+			name:            "ldr x0, [sp], #16",
+			rt:              "x0",
+			base:            "sp",
+			postIndexOffset: "16",
+			expectedHex:     "e00741f8", // LDR post-indexed: 0xF84107E0
+		},
+		{
+			name:            "ldr x1, [x2], #8",
+			rt:              "x1",
+			base:            "x2",
+			postIndexOffset: "8",
+			expectedHex:     "418440f8", // LDR post-indexed: 0xF8408441
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable())
+
+			inst := &Instruction{
+				Mnemonic: "ldr",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: tt.rt},
+					{Type: OperandMemory, Base: tt.base, PostIndexOffset: tt.postIndexOffset},
+				},
+				Line:   1,
+				Column: 1,
+			}
+
+			bytes, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(bytes)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeStrPreIndexed(t *testing.T) {
+	tests := []struct {
+		name        string
+		rt          string
+		base        string
+		offset      string
+		expectedHex string
+	}{
+		{
+			name:        "str x0, [sp, #-16]!",
+			rt:          "x0",
+			base:        "sp",
+			offset:      "-16",
+			expectedHex: "e00f1ff8", // STR pre-indexed: 0xF81F0FE0
+		},
+		{
+			name:        "str x2, [sp, #-16]!",
+			rt:          "x2",
+			base:        "sp",
+			offset:      "-16",
+			expectedHex: "e20f1ff8", // STR pre-indexed: 0xF81F0FE2
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable())
+
+			inst := &Instruction{
+				Mnemonic: "str",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: tt.rt},
+					{Type: OperandMemory, Base: tt.base, Offset: tt.offset, Writeback: true},
+				},
+				Line:   1,
+				Column: 1,
+			}
+
+			bytes, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(bytes)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeStrPostIndexed(t *testing.T) {
+	tests := []struct {
+		name            string
+		rt              string
+		base            string
+		postIndexOffset string
+		expectedHex     string
+	}{
+		{
+			name:            "str x0, [sp], #16",
+			rt:              "x0",
+			base:            "sp",
+			postIndexOffset: "16",
+			expectedHex:     "e00701f8", // STR post-indexed: 0xF80107E0
+		},
+		{
+			name:            "str x1, [x2], #-8",
+			rt:              "x1",
+			base:            "x2",
+			postIndexOffset: "-8",
+			expectedHex:     "41841ff8", // STR post-indexed: 0xF81F8441
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable())
+
+			inst := &Instruction{
+				Mnemonic: "str",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: tt.rt},
+					{Type: OperandMemory, Base: tt.base, PostIndexOffset: tt.postIndexOffset},
 				},
 				Line:   1,
 				Column: 1,

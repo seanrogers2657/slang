@@ -32,6 +32,7 @@ The assembler successfully:
 - `sub Rd, Rn, Rm` - Subtract registers
 - `mul Rd, Rn, Rm` - Multiply
 - `sdiv Rd, Rn, Rm` - Signed division
+- `udiv Rd, Rn, Rm` - Unsigned division
 - `msub Rd, Rn, Rm, Ra` - Multiply-subtract (for modulo)
 
 **Comparison:**
@@ -49,8 +50,12 @@ The assembler successfully:
 **Memory Operations:**
 - `ldr Rt, [Rn]` - Load register (unsigned offset)
 - `ldr Rt, [Rn, #imm]` - Load with immediate offset
+- `ldr Rt, [Rn, #imm]!` - Load with pre-indexed writeback
+- `ldr Rt, [Rn], #imm` - Load with post-indexed writeback
 - `str Rt, [Rn]` - Store register (unsigned offset)
 - `str Rt, [Rn, #imm]` - Store with immediate offset
+- `str Rt, [Rn, #imm]!` - Store with pre-indexed writeback
+- `str Rt, [Rn], #imm` - Store with post-indexed writeback
 - `ldp Rt1, Rt2, [Rn]` - Load pair
 - `ldp Rt1, Rt2, [Rn, #imm]` - Load pair with signed offset
 - `ldp Rt1, Rt2, [Rn, #imm]!` - Load pair with pre-indexed writeback
@@ -202,10 +207,10 @@ All unit tests pass:
 - Symbol table tests (100% pass rate)
 - Layout tests (100% pass rate)
 - Encoder tests (100% pass rate)
-  - Arithmetic: ADD, SUB, MUL, SDIV, MSUB
+  - Arithmetic: ADD, SUB, MUL, SDIV, UDIV, MSUB
   - Comparison: CMP, CSET
   - Branch: B, BL, BR, B.cond (all condition codes)
-  - Memory: LDR, STR, LDP, STP
+  - Memory: LDR, STR, LDP, STP (including pre/post-indexed writeback)
   - Data encoding: byte, word, quad, asciz, space
 
 End-to-end tests (table-driven):
@@ -215,7 +220,8 @@ End-to-end tests (table-driven):
 - Branch with link and return
 - Nested function calls
 - Memory operations (str/ldr, with offsets, pair operations)
-- Writeback addressing modes (pre-indexed and post-indexed for ldp/stp)
+- Writeback addressing modes (pre-indexed and post-indexed for ldr/str/ldp/stp)
+- Division operations (udiv, sdiv, modulo using msub)
 - Arithmetic operations
 - Comparison operations
 - Complex programs (factorial, fibonacci, sum loops, recursive functions)
@@ -242,7 +248,6 @@ go test -v ./assembler/slasm -run TestEndToEnd_ComplexPrograms
 
 ### Instructions
 - PC-relative addressing: `adr`, `adrp` (needed for data access)
-- Unsigned division: `udiv`
 - Logical operations: `and`, `orr`, `eor`, `mvn`
 - Shift operations: `lsl`, `lsr`, `asr`
 - 32-bit register variants: `w0-w30`

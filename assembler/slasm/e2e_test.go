@@ -770,3 +770,144 @@ epilogue:
 	}
 	runE2ETests(t, tests)
 }
+
+func TestEndToEnd_Division(t *testing.T) {
+	tests := []e2eTestCase{
+		{
+			name: "udiv_simple",
+			assembly: `.global _start
+_start:
+    mov x0, #100
+    mov x1, #20
+    udiv x2, x0, x1     // x2 = 100 / 20 = 5
+    mov x0, x2
+    mov x16, #1
+    svc #0
+`,
+			expectedExit: 5,
+		},
+		{
+			name: "udiv_with_remainder",
+			assembly: `.global _start
+_start:
+    mov x0, #47
+    mov x1, #10
+    udiv x2, x0, x1     // x2 = 47 / 10 = 4
+    mov x0, x2
+    mov x16, #1
+    svc #0
+`,
+			expectedExit: 4,
+		},
+		{
+			name: "modulo_using_msub",
+			assembly: `.global _start
+_start:
+    // Compute 47 % 10 = 7
+    mov x0, #47         // dividend
+    mov x1, #10         // divisor
+    udiv x2, x0, x1     // x2 = 47 / 10 = 4
+    msub x3, x2, x1, x0 // x3 = x0 - (x2 * x1) = 47 - 40 = 7
+    mov x0, x3
+    mov x16, #1
+    svc #0
+`,
+			expectedExit: 7,
+		},
+		{
+			name: "sdiv_positive",
+			assembly: `.global _start
+_start:
+    mov x0, #42
+    mov x1, #6
+    sdiv x2, x0, x1     // x2 = 42 / 6 = 7
+    mov x0, x2
+    mov x16, #1
+    svc #0
+`,
+			expectedExit: 7,
+		},
+	}
+	runE2ETests(t, tests)
+}
+
+func TestEndToEnd_SingleRegisterIndexed(t *testing.T) {
+	tests := []e2eTestCase{
+		{
+			name: "str_ldr_preindex",
+			assembly: `.global _start
+_start:
+    mov x0, #42
+
+    // Pre-indexed store: decrement sp, then store
+    str x0, [sp, #-16]!
+
+    // Overwrite x0
+    mov x0, #99
+
+    // Pre-indexed load: load, then increment sp
+    ldr x0, [sp], #16
+
+    // x0 should be restored to 42
+    mov x16, #1
+    svc #0
+`,
+			expectedExit: 42,
+		},
+		{
+			name: "str_ldr_postindex",
+			assembly: `.global _start
+_start:
+    // Allocate stack space
+    sub sp, sp, #16
+    mov x0, #55
+
+    // Store at current sp
+    str x0, [sp]
+
+    // Overwrite x0
+    mov x0, #0
+
+    // Load from sp, then deallocate
+    ldr x0, [sp], #16
+
+    // x0 should be 55
+    mov x16, #1
+    svc #0
+`,
+			expectedExit: 55,
+		},
+		{
+			name: "multiple_push_pop_pattern",
+			assembly: `.global _start
+_start:
+    mov x0, #10
+    mov x1, #20
+    mov x2, #30
+
+    // Push all three values using pre-indexed str
+    str x0, [sp, #-16]!
+    str x1, [sp, #-16]!
+    str x2, [sp, #-16]!
+
+    // Clear registers
+    mov x0, #0
+    mov x1, #0
+    mov x2, #0
+
+    // Pop in reverse order using post-indexed ldr
+    ldr x2, [sp], #16   // x2 = 30
+    ldr x1, [sp], #16   // x1 = 20
+    ldr x0, [sp], #16   // x0 = 10
+
+    // Return x0 + x1 + x2 = 60
+    add x0, x0, x1
+    add x0, x0, x2
+    mov x16, #1
+    svc #0
+`,
+			expectedExit: 60,
+		},
+	}
+	runE2ETests(t, tests)
+}

@@ -26,6 +26,8 @@ const (
 	TokenTypeNewline
 	TokenTypePrint
 	TokenTypeFn
+	TokenTypeVal
+	TokenTypeAssign
 	TokenTypeLParen
 	TokenTypeRParen
 	TokenTypeLBrace
@@ -68,6 +70,10 @@ func (t TokenType) String() string {
 		return "PRINT"
 	case TokenTypeFn:
 		return "FN"
+	case TokenTypeVal:
+		return "VAL"
+	case TokenTypeAssign:
+		return "ASSIGN"
 	case TokenTypeLParen:
 		return "LPAREN"
 	case TokenTypeRParen:
@@ -212,9 +218,17 @@ func (p *lexer) ParseIdentifierOrKeyword() {
 	for p.Index < len(p.Source) {
 		currentChar := p.Source[p.Index]
 
-		// Identifiers are alphabetic characters
-		if !unicode.IsLetter(rune(currentChar)) {
-			break
+		// Identifiers start with a letter, then can contain letters, digits, or underscores
+		if len(ident) == 0 {
+			// First character must be a letter
+			if !unicode.IsLetter(rune(currentChar)) {
+				break
+			}
+		} else {
+			// Subsequent characters can be letters, digits, or underscores
+			if !unicode.IsLetter(rune(currentChar)) && !unicode.IsDigit(rune(currentChar)) && currentChar != '_' {
+				break
+			}
 		}
 
 		ident += string(currentChar)
@@ -232,6 +246,12 @@ func (p *lexer) ParseIdentifierOrKeyword() {
 	case "fn":
 		p.Tokens = append(p.Tokens, Token{
 			Type:  TokenTypeFn,
+			Value: ident,
+			Pos:   startPos,
+		})
+	case "val":
+		p.Tokens = append(p.Tokens, Token{
+			Type:  TokenTypeVal,
 			Value: ident,
 			Pos:   startPos,
 		})
@@ -301,15 +321,16 @@ func (p *lexer) Parse() {
 			p.Tokens = append(p.Tokens, Token{Type: TokenTypeModulo, Value: "%", Pos: pos})
 			p.advance()
 		} else if b == '=' {
-			// Check for ==
 			pos := p.currentPos()
 			if p.Index+1 < len(p.Source) && p.Source[p.Index+1] == '=' {
+				// ==
 				p.Tokens = append(p.Tokens, Token{Type: TokenTypeEqual, Value: "==", Pos: pos})
 				p.advance()
 				p.advance()
 			} else {
-				p.Errors = append(p.Errors, fmt.Errorf("unexpected character: %q (did you mean '=='?)", b))
-				return
+				// Single = (assignment)
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeAssign, Value: "=", Pos: pos})
+				p.advance()
 			}
 		} else if b == '!' {
 			// Check for !=

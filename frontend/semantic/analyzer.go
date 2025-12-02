@@ -12,17 +12,67 @@ func toErrorPos(p ast.Position) errors.Position {
 	return errors.Position{Line: p.Line, Column: p.Column, Offset: p.Offset}
 }
 
+// Scope represents a lexical scope for variable lookup
+type Scope struct {
+	parent    *Scope
+	variables map[string]Type
+}
+
+// newScope creates a new scope with an optional parent
+func newScope(parent *Scope) *Scope {
+	return &Scope{
+		parent:    parent,
+		variables: make(map[string]Type),
+	}
+}
+
+// declare adds a variable to the current scope
+// Returns false if the variable is already declared in this scope
+func (s *Scope) declare(name string, typ Type) bool {
+	if _, exists := s.variables[name]; exists {
+		return false
+	}
+	s.variables[name] = typ
+	return true
+}
+
+// lookup finds a variable in this scope or any parent scope
+// Returns the type and true if found, or nil and false if not found
+func (s *Scope) lookup(name string) (Type, bool) {
+	if typ, exists := s.variables[name]; exists {
+		return typ, true
+	}
+	if s.parent != nil {
+		return s.parent.lookup(name)
+	}
+	return nil, false
+}
+
 // Analyzer performs semantic analysis on the AST
 type Analyzer struct {
-	filename string
-	errors   []*errors.CompilerError
+	filename     string
+	errors       []*errors.CompilerError
+	currentScope *Scope
 }
 
 // NewAnalyzer creates a new semantic analyzer
 func NewAnalyzer(filename string) *Analyzer {
 	return &Analyzer{
-		filename: filename,
-		errors:   make([]*errors.CompilerError, 0),
+		filename:     filename,
+		errors:       make([]*errors.CompilerError, 0),
+		currentScope: newScope(nil), // global scope
+	}
+}
+
+// enterScope creates a new nested scope
+func (a *Analyzer) enterScope() {
+	a.currentScope = newScope(a.currentScope)
+}
+
+// exitScope returns to the parent scope
+func (a *Analyzer) exitScope() {
+	if a.currentScope.parent != nil {
+		a.currentScope = a.currentScope.parent
 	}
 }
 
@@ -90,8 +140,14 @@ func (a *Analyzer) analyzeDeclaration(decl ast.Declaration) TypedDeclaration {
 
 // analyzeFunctionDecl analyzes a function declaration
 func (a *Analyzer) analyzeFunctionDecl(fn *ast.FunctionDecl) TypedDeclaration {
+	// Enter a new scope for the function body
+	a.enterScope()
+
 	// Analyze the function body
 	typedBody := a.analyzeBlockStmt(fn.Body)
+
+	// Exit the function scope
+	a.exitScope()
 
 	return &TypedFunctionDecl{
 		FnKeyword:  fn.FnKeyword,
@@ -128,6 +184,8 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 		return a.analyzePrintStatement(s)
 	case *ast.BlockStmt:
 		return a.analyzeBlockStmt(s)
+	case *ast.VarDeclStmt:
+		return a.analyzeVarDeclStatement(s)
 	default:
 		a.addError("unknown statement type", stmt.Pos(), stmt.End())
 		return &TypedExprStmt{
@@ -139,6 +197,29 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 				EndPos:   stmt.End(),
 			},
 		}
+	}
+}
+
+// analyzeVarDeclStatement analyzes a variable declaration statement
+func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement {
+	// Analyze the initializer expression
+	typedInit := a.analyzeExpression(stmt.Initializer)
+	initType := typedInit.GetType()
+
+	// Check for duplicate declaration in the current scope
+	if !a.currentScope.declare(stmt.Name, initType) {
+		a.addError(
+			fmt.Sprintf("variable '%s' is already declared in this scope", stmt.Name),
+			stmt.NamePos, stmt.NamePos,
+		)
+	}
+
+	return &TypedVarDeclStmt{
+		ValKeyword:  stmt.ValKeyword,
+		Name:        stmt.Name,
+		NamePos:     stmt.NamePos,
+		Equals:      stmt.Equals,
+		Initializer: typedInit,
 	}
 }
 
@@ -168,6 +249,8 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 		return a.analyzeLiteral(e)
 	case *ast.BinaryExpr:
 		return a.analyzeBinaryExpression(e)
+	case *ast.IdentifierExpr:
+		return a.analyzeIdentifier(e)
 	default:
 		a.addError("unknown expression type", expr.Pos(), expr.End())
 		return &TypedLiteralExpr{
@@ -177,6 +260,26 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 			StartPos: expr.Pos(),
 			EndPos:   expr.End(),
 		}
+	}
+}
+
+// analyzeIdentifier analyzes an identifier (variable reference)
+func (a *Analyzer) analyzeIdentifier(ident *ast.IdentifierExpr) TypedExpression {
+	// Look up the variable in the current scope
+	typ, found := a.currentScope.lookup(ident.Name)
+	if !found {
+		a.addError(
+			fmt.Sprintf("undefined variable '%s'", ident.Name),
+			ident.StartPos, ident.EndPos,
+		).WithHint("did you forget to declare it with 'val'?")
+		typ = TypeError
+	}
+
+	return &TypedIdentifierExpr{
+		Type:     typ,
+		Name:     ident.Name,
+		StartPos: ident.StartPos,
+		EndPos:   ident.EndPos,
 	}
 }
 

@@ -82,6 +82,17 @@ func (g *GroupingExpr) Pos() Position { return g.LeftParen }
 func (g *GroupingExpr) End() Position { return g.RightParen }
 func (g *GroupingExpr) exprNode()     {}
 
+// IdentifierExpr represents a variable reference (e.g., x, myVar)
+type IdentifierExpr struct {
+	Name     string
+	StartPos Position
+	EndPos   Position
+}
+
+func (i *IdentifierExpr) Pos() Position { return i.StartPos }
+func (i *IdentifierExpr) End() Position { return i.EndPos }
+func (i *IdentifierExpr) exprNode()     {}
+
 // ============================================================================
 // Statements
 // ============================================================================
@@ -121,6 +132,19 @@ type BlockStmt struct {
 func (b *BlockStmt) Pos() Position { return b.LeftBrace }
 func (b *BlockStmt) End() Position { return b.RightBrace }
 func (b *BlockStmt) stmtNode()     {}
+
+// VarDeclStmt represents a variable declaration (e.g., val x = 5)
+type VarDeclStmt struct {
+	ValKeyword  Position   // position of 'val' keyword
+	Name        string     // variable name
+	NamePos     Position   // position of variable name
+	Equals      Position   // position of '='
+	Initializer Expression // initializer expression
+}
+
+func (v *VarDeclStmt) Pos() Position { return v.ValKeyword }
+func (v *VarDeclStmt) End() Position { return v.Initializer.End() }
+func (v *VarDeclStmt) stmtNode()     {}
 
 // ============================================================================
 // Declarations

@@ -824,3 +824,193 @@ func TestParserFunctionDeclaration(t *testing.T) {
 		})
 	}
 }
+
+func TestParserVariableDeclaration(t *testing.T) {
+	tests := []struct {
+		name        string
+		source      string
+		varName     string
+		expectError bool
+	}{
+		{
+			name:    "simple variable declaration",
+			source:  "fn main() {\n    val x = 5\n}",
+			varName: "x",
+		},
+		{
+			name:    "variable with expression",
+			source:  "fn main() {\n    val result = 10 + 20\n}",
+			varName: "result",
+		},
+		{
+			name:    "variable with underscore name",
+			source:  "fn main() {\n    val my_var = 42\n}",
+			varName: "my_var",
+		},
+		{
+			name:    "variable with digits in name",
+			source:  "fn main() {\n    val x1 = 100\n}",
+			varName: "x1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if tt.expectError {
+				if len(p.Errors) == 0 {
+					t.Fatal("expected parser error, got none")
+				}
+				return
+			}
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			if len(program.Declarations) != 1 {
+				t.Fatalf("expected 1 declaration, got %d", len(program.Declarations))
+			}
+
+			fnDecl := program.Declarations[0].(*ast.FunctionDecl)
+			if len(fnDecl.Body.Statements) != 1 {
+				t.Fatalf("expected 1 statement, got %d", len(fnDecl.Body.Statements))
+			}
+
+			varDecl, ok := fnDecl.Body.Statements[0].(*ast.VarDeclStmt)
+			if !ok {
+				t.Fatalf("expected VarDeclStmt, got %T", fnDecl.Body.Statements[0])
+			}
+
+			if varDecl.Name != tt.varName {
+				t.Errorf("expected variable name %q, got %q", tt.varName, varDecl.Name)
+			}
+
+			if varDecl.Initializer == nil {
+				t.Error("expected initializer expression, got nil")
+			}
+		})
+	}
+}
+
+func TestParserIdentifierExpression(t *testing.T) {
+	tests := []struct {
+		name         string
+		source       string
+		expectedName string
+	}{
+		{
+			name:         "simple identifier",
+			source:       "fn main() {\n    print x\n}",
+			expectedName: "x",
+		},
+		{
+			name:         "identifier with underscore",
+			source:       "fn main() {\n    print my_var\n}",
+			expectedName: "my_var",
+		},
+		{
+			name:         "identifier in binary expression",
+			source:       "fn main() {\n    val x = 5\n    print x + 10\n}",
+			expectedName: "x",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			// Find the identifier in the AST
+			fnDecl := program.Declarations[0].(*ast.FunctionDecl)
+
+			var foundIdent bool
+			for _, stmt := range fnDecl.Body.Statements {
+				if printStmt, ok := stmt.(*ast.PrintStmt); ok {
+					// Check if the print expression contains an identifier
+					switch e := printStmt.Expr.(type) {
+					case *ast.IdentifierExpr:
+						if e.Name == tt.expectedName {
+							foundIdent = true
+						}
+					case *ast.BinaryExpr:
+						if left, ok := e.Left.(*ast.IdentifierExpr); ok && left.Name == tt.expectedName {
+							foundIdent = true
+						}
+					}
+				}
+			}
+
+			if !foundIdent {
+				t.Errorf("expected to find identifier %q", tt.expectedName)
+			}
+		})
+	}
+}
+
+func TestParserMultipleVariables(t *testing.T) {
+	source := `fn main() {
+    val x = 5
+    val y = 10
+    val z = x + y
+    print z
+}`
+
+	l := lexer.NewLexer([]byte(source))
+	l.Parse()
+
+	if len(l.Errors) > 0 {
+		t.Fatalf("lexer errors: %v", l.Errors)
+	}
+
+	p := NewParser(l.Tokens)
+	program := p.Parse()
+
+	if len(p.Errors) > 0 {
+		t.Fatalf("parser errors: %v", p.Errors)
+	}
+
+	fnDecl := program.Declarations[0].(*ast.FunctionDecl)
+
+	if len(fnDecl.Body.Statements) != 4 {
+		t.Fatalf("expected 4 statements, got %d", len(fnDecl.Body.Statements))
+	}
+
+	// Check first three are variable declarations
+	expectedNames := []string{"x", "y", "z"}
+	for i, name := range expectedNames {
+		varDecl, ok := fnDecl.Body.Statements[i].(*ast.VarDeclStmt)
+		if !ok {
+			t.Fatalf("statement %d: expected VarDeclStmt, got %T", i, fnDecl.Body.Statements[i])
+		}
+		if varDecl.Name != name {
+			t.Errorf("statement %d: expected name %q, got %q", i, name, varDecl.Name)
+		}
+	}
+
+	// Check last is print statement
+	_, ok := fnDecl.Body.Statements[3].(*ast.PrintStmt)
+	if !ok {
+		t.Fatalf("expected PrintStmt for statement 3, got %T", fnDecl.Body.Statements[3])
+	}
+}

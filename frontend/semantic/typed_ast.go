@@ -49,6 +49,19 @@ func (e *TypedLiteralExpr) End() ast.Position { return e.EndPos }
 func (e *TypedLiteralExpr) GetType() Type     { return e.Type }
 func (e *TypedLiteralExpr) typedExprNode()    {}
 
+// TypedIdentifierExpr represents a typed identifier (variable reference)
+type TypedIdentifierExpr struct {
+	Type     Type
+	Name     string
+	StartPos ast.Position
+	EndPos   ast.Position
+}
+
+func (e *TypedIdentifierExpr) Pos() ast.Position { return e.StartPos }
+func (e *TypedIdentifierExpr) End() ast.Position { return e.EndPos }
+func (e *TypedIdentifierExpr) GetType() Type     { return e.Type }
+func (e *TypedIdentifierExpr) typedExprNode()    {}
+
 // ============================================================================
 // Typed Statements
 // ============================================================================
@@ -91,6 +104,20 @@ func (s *TypedBlockStmt) Pos() ast.Position { return s.LeftBrace }
 func (s *TypedBlockStmt) End() ast.Position { return s.RightBrace }
 func (s *TypedBlockStmt) GetType() Type     { return TypeVoid }
 func (s *TypedBlockStmt) typedStmtNode()    {}
+
+// TypedVarDeclStmt represents a typed variable declaration
+type TypedVarDeclStmt struct {
+	ValKeyword  ast.Position
+	Name        string
+	NamePos     ast.Position
+	Equals      ast.Position
+	Initializer TypedExpression
+}
+
+func (s *TypedVarDeclStmt) Pos() ast.Position { return s.ValKeyword }
+func (s *TypedVarDeclStmt) End() ast.Position { return s.Initializer.End() }
+func (s *TypedVarDeclStmt) GetType() Type     { return TypeVoid }
+func (s *TypedVarDeclStmt) typedStmtNode()    {}
 
 // ============================================================================
 // Typed Declarations

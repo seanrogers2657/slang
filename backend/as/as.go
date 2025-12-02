@@ -7,6 +7,35 @@ import (
 	"github.com/seanrogers2657/slang/frontend/ast"
 )
 
+// CodeGenContext tracks state during code generation
+type CodeGenContext struct {
+	variables   map[string]int // variable name → stack offset (negative from frame pointer)
+	stackOffset int            // current stack position (starts at -16, decrements by 16)
+	stringMap   map[*ast.LiteralExpr]string
+}
+
+// newCodeGenContext creates a new code generation context
+func newCodeGenContext(stringMap map[*ast.LiteralExpr]string) *CodeGenContext {
+	return &CodeGenContext{
+		variables:   make(map[string]int),
+		stackOffset: 0, // We'll reserve stack space as we go
+		stringMap:   stringMap,
+	}
+}
+
+// declareVariable allocates stack space for a variable
+func (ctx *CodeGenContext) declareVariable(name string) int {
+	ctx.stackOffset += 16 // 16-byte aligned for ARM64
+	ctx.variables[name] = ctx.stackOffset
+	return ctx.stackOffset
+}
+
+// getVariableOffset returns the stack offset for a variable
+func (ctx *CodeGenContext) getVariableOffset(name string) (int, bool) {
+	offset, ok := ctx.variables[name]
+	return offset, ok
+}
+
 type AsGenerator interface {
 	Generate() (string, error)
 }
@@ -126,6 +155,23 @@ func GenerateProgram(program *ast.Program) (string, error) {
 
 	builder.WriteString("main:\n")
 
+	// Create code generation context
+	ctx := newCodeGenContext(stringMap)
+
+	// Count variables to determine stack frame size
+	varCount := countVariables(statementsToProcess)
+
+	// Generate function prologue if we have variables
+	if varCount > 0 {
+		// Save frame pointer and link register
+		builder.WriteString("    stp x29, x30, [sp, #-16]!\n")
+		builder.WriteString("    mov x29, sp\n")
+
+		// Allocate stack space for variables (16-byte aligned)
+		stackSize := varCount * 16
+		builder.WriteString(fmt.Sprintf("    sub sp, sp, #%d\n", stackSize))
+	}
+
 	// Generate code for each statement
 	for _, stmt := range statementsToProcess {
 		var code string
@@ -133,11 +179,13 @@ func GenerateProgram(program *ast.Program) (string, error) {
 
 		switch s := stmt.(type) {
 		case *ast.ExprStmt:
-			code, err = GenerateExprInline(s.Expr, stringMap)
+			code, err = GenerateExprWithContext(s.Expr, ctx)
 		case *ast.PrintStmt:
-			code, err = GeneratePrintStmt(s, stringMap)
+			code, err = GeneratePrintStmtWithContext(s, ctx)
+		case *ast.VarDeclStmt:
+			code, err = GenerateVarDecl(s, ctx)
 		default:
-			return "", fmt.Errorf("unknown statement type")
+			return "", fmt.Errorf("unknown statement type: %T", s)
 		}
 
 		if err != nil {
@@ -146,10 +194,251 @@ func GenerateProgram(program *ast.Program) (string, error) {
 		builder.WriteString(code)
 	}
 
+	// Generate function epilogue if we have variables
+	if varCount > 0 {
+		builder.WriteString("    mov sp, x29\n")
+		builder.WriteString("    ldp x29, x30, [sp], #16\n")
+	}
+
 	// Exit syscall (only at the end)
 	builder.WriteString("    mov x0, #0\n")
 	builder.WriteString("    mov x16, #1\n")
 	builder.WriteString("    svc #0\n")
+
+	return builder.String(), nil
+}
+
+// countVariables counts the number of variable declarations in statements
+func countVariables(stmts []ast.Statement) int {
+	count := 0
+	for _, stmt := range stmts {
+		if _, ok := stmt.(*ast.VarDeclStmt); ok {
+			count++
+		}
+	}
+	return count
+}
+
+// GenerateVarDecl generates code for a variable declaration
+func GenerateVarDecl(stmt *ast.VarDeclStmt, ctx *CodeGenContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Generate code to evaluate the initializer (result in x2)
+	code, err := GenerateExprWithContext(stmt.Initializer, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(code)
+
+	// Allocate stack slot for this variable
+	offset := ctx.declareVariable(stmt.Name)
+
+	// Store the value to stack (relative to frame pointer x29)
+	builder.WriteString(fmt.Sprintf("    str x2, [x29, #-%d]\n", offset))
+
+	return builder.String(), nil
+}
+
+// GenerateExprWithContext generates code for an expression with variable support
+func GenerateExprWithContext(expr ast.Expression, ctx *CodeGenContext) (string, error) {
+	builder := strings.Builder{}
+
+	switch e := expr.(type) {
+	case *ast.LiteralExpr:
+		// Single literal - just load into x2
+		if e.Kind == ast.LiteralTypeString {
+			label := ctx.stringMap[e]
+			builder.WriteString(fmt.Sprintf("    adrp x2, %s@PAGE\n", label))
+			builder.WriteString(fmt.Sprintf("    add x2, x2, %s@PAGEOFF\n", label))
+		} else {
+			builder.WriteString(fmt.Sprintf("    mov x2, #%s\n", e.Value))
+		}
+		return builder.String(), nil
+
+	case *ast.IdentifierExpr:
+		// Load variable from stack
+		offset, ok := ctx.getVariableOffset(e.Name)
+		if !ok {
+			return "", fmt.Errorf("undefined variable: %s", e.Name)
+		}
+		builder.WriteString(fmt.Sprintf("    ldr x2, [x29, #-%d]\n", offset))
+		return builder.String(), nil
+
+	case *ast.BinaryExpr:
+		// Check if operands are complex expressions (binary expressions that could clobber registers)
+		_, leftIsBinary := e.Left.(*ast.BinaryExpr)
+		_, rightIsBinary := e.Right.(*ast.BinaryExpr)
+
+		if leftIsBinary && rightIsBinary {
+			// Both are complex: evaluate left first, save it, evaluate right, then combine
+			leftCode, err := GenerateExprWithContext(e.Left, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(leftCode)
+			builder.WriteString("    str x2, [sp, #-16]!  // Save left operand\n")
+
+			rightCode, err := GenerateExprWithContext(e.Right, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(rightCode)
+			builder.WriteString("    mov x1, x2           // Move right to x1\n")
+			builder.WriteString("    ldr x0, [sp], #16    // Restore left operand\n")
+
+		} else if rightIsBinary {
+			// Right is complex: evaluate right first, save it, then evaluate left
+			rightCode, err := GenerateExprWithContext(e.Right, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(rightCode)
+			builder.WriteString("    str x2, [sp, #-16]!  // Save right operand\n")
+
+			leftCode, err := generateOperandToReg(e.Left, "x0", ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(leftCode)
+			builder.WriteString("    ldr x1, [sp], #16    // Restore right operand\n")
+
+		} else if leftIsBinary {
+			// Left is complex: evaluate left first, save it, then evaluate right
+			leftCode, err := GenerateExprWithContext(e.Left, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(leftCode)
+			builder.WriteString("    str x2, [sp, #-16]!  // Save left operand\n")
+
+			rightCode, err := generateOperandToReg(e.Right, "x1", ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(rightCode)
+			builder.WriteString("    ldr x0, [sp], #16    // Restore left operand\n")
+
+		} else {
+			// Simple case: both operands are simple (literals or identifiers)
+			leftCode, err := generateOperandToReg(e.Left, "x0", ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(leftCode)
+
+			rightCode, err := generateOperandToReg(e.Right, "x1", ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(rightCode)
+		}
+
+		// Generate operation
+		switch e.Op {
+		case "+":
+			builder.WriteString("    add x2, x0, x1\n")
+		case "-":
+			builder.WriteString("    sub x2, x0, x1\n")
+		case "*":
+			builder.WriteString("    mul x2, x0, x1\n")
+		case "/":
+			builder.WriteString("    sdiv x2, x0, x1\n")
+		case "%":
+			// Modulo: x2 = x0 - (x0 / x1) * x1
+			builder.WriteString("    sdiv x3, x0, x1\n")
+			builder.WriteString("    msub x2, x3, x1, x0\n")
+		case "==":
+			builder.WriteString("    cmp x0, x1\n")
+			builder.WriteString("    cset x2, eq\n")
+		case "!=":
+			builder.WriteString("    cmp x0, x1\n")
+			builder.WriteString("    cset x2, ne\n")
+		case "<":
+			builder.WriteString("    cmp x0, x1\n")
+			builder.WriteString("    cset x2, lt\n")
+		case ">":
+			builder.WriteString("    cmp x0, x1\n")
+			builder.WriteString("    cset x2, gt\n")
+		case "<=":
+			builder.WriteString("    cmp x0, x1\n")
+			builder.WriteString("    cset x2, le\n")
+		case ">=":
+			builder.WriteString("    cmp x0, x1\n")
+			builder.WriteString("    cset x2, ge\n")
+		default:
+			return "", fmt.Errorf("unsupported operation %s when generating code", e.Op)
+		}
+
+		return builder.String(), nil
+
+	default:
+		return "", fmt.Errorf("unsupported expression type: %T", expr)
+	}
+}
+
+// generateOperandToReg generates code to load an operand into a register
+func generateOperandToReg(expr ast.Expression, reg string, ctx *CodeGenContext) (string, error) {
+	builder := strings.Builder{}
+
+	switch e := expr.(type) {
+	case *ast.LiteralExpr:
+		if e.Kind == ast.LiteralTypeString {
+			label := ctx.stringMap[e]
+			builder.WriteString(fmt.Sprintf("    adrp %s, %s@PAGE\n", reg, label))
+			builder.WriteString(fmt.Sprintf("    add %s, %s, %s@PAGEOFF\n", reg, reg, label))
+		} else {
+			builder.WriteString(fmt.Sprintf("    mov %s, #%s\n", reg, e.Value))
+		}
+
+	case *ast.IdentifierExpr:
+		offset, ok := ctx.getVariableOffset(e.Name)
+		if !ok {
+			return "", fmt.Errorf("undefined variable: %s", e.Name)
+		}
+		builder.WriteString(fmt.Sprintf("    ldr %s, [x29, #-%d]\n", reg, offset))
+
+	case *ast.BinaryExpr:
+		// For nested binary expressions, we need to evaluate and store in temp
+		// First, evaluate the nested expression (result in x2)
+		code, err := GenerateExprWithContext(e, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+		// Move from x2 to target register
+		if reg != "x2" {
+			builder.WriteString(fmt.Sprintf("    mov %s, x2\n", reg))
+		}
+
+	default:
+		return "", fmt.Errorf("unsupported operand type: %T", expr)
+	}
+
+	return builder.String(), nil
+}
+
+// GeneratePrintStmtWithContext generates code for a print statement with variable support
+func GeneratePrintStmtWithContext(stmt *ast.PrintStmt, ctx *CodeGenContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Step 1: Evaluate the expression (result goes into x2)
+	code, err := GenerateExprWithContext(stmt.Expr, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(code)
+
+	// Step 2: Convert integer to string
+	builder.WriteString("    mov x0, x2              // Pass value to convert\n")
+	builder.WriteString("    bl int_to_string        // Returns buffer in x0, length in x1\n")
+	builder.WriteString("\n")
+
+	// Step 3: Write the string to stdout
+	builder.WriteString(generateWriteSyscall("x0", "x1"))
+	builder.WriteString("\n")
+
+	// Step 4: Write a newline character
+	builder.WriteString(generateNewline())
 
 	return builder.String(), nil
 }

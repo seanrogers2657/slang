@@ -341,11 +341,6 @@ func TestLexerErrors(t *testing.T) {
 		expectedError string
 	}{
 		{
-			name:          "single equals sign",
-			input:         "5 = 5",
-			expectedError: "unexpected character: '=' (did you mean '=='?)",
-		},
-		{
 			name:          "exclamation without equals",
 			input:         "!5",
 			expectedError: "unexpected character: '!'",
@@ -586,5 +581,106 @@ func TestLexerFunctionDeclaration(t *testing.T) {
 		if token.Value != expected[i].Value {
 			t.Errorf("token %d: expected value %q, got %q", i, expected[i].Value, token.Value)
 		}
+	}
+}
+
+func TestLexerVariableDeclaration(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []Token
+	}{
+		{
+			name:  "val keyword",
+			input: "val",
+			expected: []Token{
+				{Type: TokenTypeVal, Value: "val"},
+			},
+		},
+		{
+			name:  "assignment operator",
+			input: "=",
+			expected: []Token{
+				{Type: TokenTypeAssign, Value: "="},
+			},
+		},
+		{
+			name:  "simple variable declaration",
+			input: "val x = 5",
+			expected: []Token{
+				{Type: TokenTypeVal, Value: "val"},
+				{Type: TokenTypeIdentifier, Value: "x"},
+				{Type: TokenTypeAssign, Value: "="},
+				{Type: TokenTypeInteger, Value: "5"},
+			},
+		},
+		{
+			name:  "variable declaration with expression",
+			input: "val result = 10 + 20",
+			expected: []Token{
+				{Type: TokenTypeVal, Value: "val"},
+				{Type: TokenTypeIdentifier, Value: "result"},
+				{Type: TokenTypeAssign, Value: "="},
+				{Type: TokenTypeInteger, Value: "10"},
+				{Type: TokenTypePlus, Value: "+"},
+				{Type: TokenTypeInteger, Value: "20"},
+			},
+		},
+		{
+			name:  "identifier with underscore",
+			input: "my_var",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "my_var"},
+			},
+		},
+		{
+			name:  "identifier with digits",
+			input: "var123",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "var123"},
+			},
+		},
+		{
+			name:  "identifier with mixed",
+			input: "my_var_123",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "my_var_123"},
+			},
+		},
+		{
+			name:  "equality vs assignment",
+			input: "x = 5 == 5",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "x"},
+				{Type: TokenTypeAssign, Value: "="},
+				{Type: TokenTypeInteger, Value: "5"},
+				{Type: TokenTypeEqual, Value: "=="},
+				{Type: TokenTypeInteger, Value: "5"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("unexpected errors: %v", l.Errors)
+			}
+
+			if len(l.Tokens) != len(tt.expected) {
+				t.Fatalf("expected %d tokens, got %d: %v", len(tt.expected), len(l.Tokens), l.Tokens)
+			}
+
+			for i, token := range l.Tokens {
+				if token.Type != tt.expected[i].Type {
+					t.Errorf("token %d: expected type %v, got %v", i, tt.expected[i].Type, token.Type)
+				}
+				if token.Value != tt.expected[i].Value {
+					t.Errorf("token %d: expected value %q, got %q", i, tt.expected[i].Value, token.Value)
+				}
+			}
+		})
 	}
 }

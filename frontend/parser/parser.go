@@ -202,6 +202,11 @@ func (p *parser) ParseStatement() ast.Statement {
 		return p.ParsePrintStatement()
 	}
 
+	// Check if it's a variable declaration
+	if p.CurrentToken().Type == lexer.TokenTypeVal {
+		return p.ParseVarDecl()
+	}
+
 	// Otherwise, it's an expression statement
 	expr := p.parseExpression(precedenceLowest)
 	if expr != nil {
@@ -209,6 +214,47 @@ func (p *parser) ParseStatement() ast.Statement {
 	}
 
 	return nil
+}
+
+// ParseVarDecl parses a variable declaration: val <name> = <expr>
+func (p *parser) ParseVarDecl() ast.Statement {
+	// Get position of 'val' keyword
+	valKeyword := p.CurrentToken().Pos
+	p.advance() // consume 'val'
+
+	// Expect identifier
+	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+		p.Errors = append(p.Errors, fmt.Errorf("expected identifier after 'val', got %s", p.CurrentToken().Value))
+		return nil
+	}
+
+	name := p.CurrentToken().Value
+	namePos := p.CurrentToken().Pos
+	p.advance() // consume identifier
+
+	// Expect '='
+	if p.CurrentToken().Type != lexer.TokenTypeAssign {
+		p.Errors = append(p.Errors, fmt.Errorf("expected '=' after variable name, got %s", p.CurrentToken().Value))
+		return nil
+	}
+
+	equalsPos := p.CurrentToken().Pos
+	p.advance() // consume '='
+
+	// Parse the initializer expression
+	initializer := p.parseExpression(precedenceLowest)
+	if initializer == nil {
+		p.Errors = append(p.Errors, fmt.Errorf("expected expression after '='"))
+		return nil
+	}
+
+	return &ast.VarDeclStmt{
+		ValKeyword:  valKeyword,
+		Name:        name,
+		NamePos:     namePos,
+		Equals:      equalsPos,
+		Initializer: initializer,
+	}
 }
 
 func (p *parser) ParsePrintStatement() ast.Statement {
@@ -308,8 +354,20 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 	return left
 }
 
-// parsePrimary parses primary expressions (literals, grouping, etc.)
+// parsePrimary parses primary expressions (literals, identifiers, grouping, etc.)
 func (p *parser) parsePrimary() ast.Expression {
+	// Check for identifier
+	if p.CurrentToken().Type == lexer.TokenTypeIdentifier {
+		token := p.CurrentToken()
+		ident := &ast.IdentifierExpr{
+			Name:     token.Value,
+			StartPos: token.Pos,
+			EndPos:   ast.Position{Line: token.Pos.Line, Column: token.Pos.Column + len(token.Value), Offset: token.Pos.Offset + len(token.Value)},
+		}
+		p.Index++
+		return ident
+	}
+
 	return p.ParseLiteral()
 }
 

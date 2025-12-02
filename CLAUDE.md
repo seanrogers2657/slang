@@ -29,9 +29,14 @@ This repository follows strict organizational rules:
 3. **Semantic Analyzer** (`frontend/semantic`) - Performs type checking and semantic analysis
 4. **Code Generator** (`backend/as`) - Generates ARM64 assembly from the AST
 
-The compiler currently supports binary expressions with integers and the following operators:
-- Arithmetic: `+`, `-`, `*`, `/`, `%`
-- Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
+The compiler currently supports:
+- **Variables**: Immutable variables with `val` keyword (e.g., `val x = 5`)
+- **Expressions**: Binary expressions with integers
+- **Operators**:
+  - Arithmetic: `+`, `-`, `*`, `/`, `%`
+  - Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
+- **Statements**: Print statements, expression statements, variable declarations
+- **Functions**: Function declarations with `fn` keyword (e.g., `fn main() { ... }`)
 
 ## Development Commands
 
@@ -174,15 +179,24 @@ Linker (ld) → Executable binary
 - Outputs: `[]Token` and `[]error`
 
 **Parser** (`frontend/parser/parser.go`):
-- `Literal` - Represents number literals with type and value
-- `Expr` - Binary expression with `Left`, `Op`, and `Right` fields
-- Currently only supports binary expressions (no operator precedence or parentheses)
+- Uses Pratt parsing for proper operator precedence
+- `LiteralExpr` - Represents number/string literals
+- `IdentifierExpr` - Represents variable references (e.g., `x`, `myVar`)
+- `BinaryExpr` - Binary expression with `Left`, `Op`, and `Right` fields
+- `VarDeclStmt` - Variable declaration (e.g., `val x = 5`)
+- `FunctionDecl` - Function declaration with name and body
 - Outputs: `*Program` and `[]error`
 
 **Semantic Analyzer** (`frontend/semantic/analyzer.go`):
 - `Analyzer` - Performs type checking and semantic validation
+- `Scope` - Lexical scope with parent pointer for variable lookup
 - `Type` interface - Represents types in the type system (IntegerType, StringType, etc.)
 - `TypedProgram` - AST annotated with type information
+- Variable handling:
+  - Tracks variable declarations in symbol table
+  - Detects undefined variable references
+  - Detects duplicate declarations in same scope
+  - Type inference from initializer expression
 - Type checking rules:
   - Arithmetic operators (`+`, `-`, `*`, `/`, `%`) require integer operands
   - Comparison operators (`==`, `!=`, `<`, `>`, `<=`, `>=`) require integer operands
@@ -202,9 +216,14 @@ Linker (ld) → Executable binary
 
 **Code Generator** (`backend/as/as.go`):
 - `AsGenerator` interface with `Generate() (string, error)`
+- `CodeGenContext` - Tracks variable stack offsets during code generation
 - Generates ARM64 assembly targeting macOS
+- Variable storage:
+  - Variables stored on stack relative to frame pointer (x29)
+  - 16-byte aligned stack slots
+  - Proper handling of nested expressions with register spilling
 - All operations store result in register `x2`
-- Uses ARM64 instructions: `add`, `sub`, `mul`, `sdiv`, `cmp`, `cset`, `msub`
+- Uses ARM64 instructions: `add`, `sub`, `mul`, `sdiv`, `cmp`, `cset`, `msub`, `str`, `ldr`, `stp`, `ldp`
 
 ### ARM64 Assembly Details
 
@@ -290,13 +309,43 @@ When adding a new operator, you must update three files:
 
 4. **Tests**: Update test files for all three components
 
+### Variable Syntax
+
+Variables are declared using the `val` keyword (Kotlin-style, immutable):
+
+```slang
+fn main() {
+    val x = 42           // declare x with value 42
+    val y = 10           // declare y with value 10
+    val sum = x + y      // use variables in expressions
+    print sum            // prints 52
+
+    val result = x * 2 + y   // complex expressions work correctly
+    print result             // prints 94
+}
+```
+
+**Variable rules:**
+- Variables must be declared before use
+- Variables cannot be reassigned (immutable)
+- Variable names start with a letter, followed by letters, digits, or underscores
+- Type is inferred from the initializer expression
+
+**Error examples:**
+```slang
+print x        // Error: undefined variable 'x'
+val x = 5
+val x = 10     // Error: variable 'x' is already declared in this scope
+```
+
 ### Current Limitations
 
-- Only supports binary expressions (no complex expressions or operator precedence)
-- No parentheses support
-- No variables, functions, or control flow
+- Variables are immutable (no reassignment after declaration)
+- No parentheses support in expressions
+- No control flow (if/else, loops)
+- No function parameters or return values
 - Hardcoded exit syscall in generated assembly
-- Assembly is not executed in tests (only structure is verified)
+- Print statements require system assembler (`--assembler system`)
 
 ## Module Information
 
@@ -305,3 +354,4 @@ When adding a new operator, you must update three files:
 - **Dependencies**:
   - `github.com/davecgh/go-spew` - Debug printing
   - `github.com/urfave/cli/v2` - CLI framework
+- when committing, don't include claude's signature

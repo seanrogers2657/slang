@@ -21,17 +21,20 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - Immediates: `#123`, `#0x1a` (decimal and hex)
 - Memory operands: `[sp]`, `[sp, #16]`, `[x0, #8]`
 - Writeback operands: `[sp, #-16]!` (pre-indexed), `[sp], #16` (post-indexed)
-- Punctuation: `:`, `,`, `#`, `[`, `]`, `!`
+- Punctuation: `:`, `,`, `#`, `[`, `]`, `!`, `=`
 - Comments: `//` and `;` style
 - Conditional branches: `b.eq`, `b.ne`, `b.lt`, `b.gt`, `b.le`, `b.ge`, etc.
+- Constant definitions: `NAME = value` (assembly-time constants)
 
 #### Parser (`parser.go`)
 - Parse `.global` directive
 - Parse label definitions
+- Parse constant definitions (`name = value`)
 - Parse instructions with register, immediate, and memory operands
 - Parse data directives into `DataDeclaration` items
 - Build Program IR with multiple sections (`.text`, `.data`)
 - Memory operand parsing with base register and offset
+- Constants resolved during encoding (can use `#CONST_NAME` in immediates)
 
 #### Symbol Table (`symbols.go`)
 - Symbol definition with duplicate checking
@@ -62,6 +65,14 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - `sdiv Rd, Rn, Rm` → Signed division
 - `udiv Rd, Rn, Rm` → Unsigned division
 - `msub Rd, Rn, Rm, Ra` → Multiply-subtract (for modulo)
+
+**Shift Operations:**
+- `lsl Rd, Rn, #shift` → Logical shift left (immediate, 0-63)
+- `lsl Rd, Rn, Rm` → Logical shift left (register)
+- `lsr Rd, Rn, #shift` → Logical shift right (immediate, 0-63)
+- `lsr Rd, Rn, Rm` → Logical shift right (register)
+- `asr Rd, Rn, #shift` → Arithmetic shift right (immediate, 0-63)
+- `asr Rd, Rn, Rm` → Arithmetic shift right (register)
 
 **Comparison:**
 - `cmp Rn, #imm` → SUBS with Rd=XZR
@@ -102,6 +113,10 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - `.asciz`, `.string` → Null-terminated strings with escape sequences
 - `.ascii` → Strings without null terminator
 - `.space`, `.zero` → Zero-filled buffers
+
+**Address Generation:**
+- `adr Rd, label` → PC-relative address (±1MB range)
+- `adrp Rd, label@PAGE` → Page address (4KB aligned, PC-relative)
 
 **System & Control:**
 - `svc #imm` → Supervisor call (16-bit immediate)
@@ -156,10 +171,13 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - All layout tests ✅
 - All encoder tests ✅
   - Arithmetic: ADD, SUB, NEG, MUL, SDIV, UDIV, MSUB
+  - Shift: LSL, LSR, ASR (immediate and register forms)
   - Comparison: CMP, CSET
   - Branch: B, BL, BR, B.cond (all condition codes)
+  - Address: ADR, ADRP
   - Memory: LDR, STR, LDP, STP (including pre/post-indexed writeback)
   - Data encoding: byte, word, quad, asciz, space
+  - Constants: Resolution of assembly-time constants in immediates
 
 ### End-to-End Tests (`e2e_test.go`)
 Table-driven tests covering:
@@ -174,6 +192,9 @@ Table-driven tests covering:
 - Arithmetic operations
 - Division operations (udiv, sdiv, modulo using msub)
 - Comparison operations
+- Shift operations (lsl, lsr, asr)
+- Address generation (adr, adrp for data access)
+- Assembly-time constants (`name = value` definitions)
 - Complex programs (factorial, fibonacci, sum loops, recursive functions)
 
 ## Key Achievements
@@ -208,17 +229,25 @@ Table-driven tests covering:
    - slasm is now the default for `cmd/slasm`
    - System backend available via `--backend system`
 
+7. **Shift Instructions** ✅
+   - LSL, LSR, ASR (immediate and register forms)
+   - Encoded as UBFM/SBFM for immediate, variable shifts for register
+
+8. **Assembly-Time Constants** ✅
+   - Define with `NAME = value`
+   - Use with `#NAME` in immediate positions
+   - Resolved during encoding phase
+
 ## Not Yet Implemented
 
 ### Instructions
-- PC-relative addressing: `adr`, `adrp` (needed for data access)
 - Logical operations: `and`, `orr`, `eor`, `mvn`
-- Shift operations: `lsl`, `lsr`, `asr`
-- 32-bit register variants: `w0-w30`
-- Byte/half-word loads: `ldrb`, `ldrh`, `strb`, `strh`
+- Test bit and branch: `tbz`, `tbnz`
+- Compare and branch: `cbz`, `cbnz`
+- Sign-extending loads: `ldrsh`, `ldrsw`
+- 32-bit register variants for some operations
 
 ### Features
-- PC-relative data access (requires `adr`/`adrp` to address data symbols)
 - Object file generation (`.o` files)
 - Multi-file linking
 - Relocations for external symbols

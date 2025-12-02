@@ -375,3 +375,129 @@ func TestParser_CompleteProgram(t *testing.T) {
 		t.Error("expected at least one section in program")
 	}
 }
+
+func TestParser_ConstantDefinition(t *testing.T) {
+	tests := []struct {
+		name          string
+		tokens        []Token
+		expectedName  string
+		expectedValue int64
+	}{
+		{
+			name: "simple constant",
+			tokens: []Token{
+				{Type: TokenIdentifier, Value: "MY_CONST"},
+				{Type: TokenEquals, Value: "="},
+				{Type: TokenInteger, Value: "42"},
+				{Type: TokenEOF},
+			},
+			expectedName:  "MY_CONST",
+			expectedValue: 42,
+		},
+		{
+			name: "hex constant",
+			tokens: []Token{
+				{Type: TokenIdentifier, Value: "BUF_SIZE"},
+				{Type: TokenEquals, Value: "="},
+				{Type: TokenInteger, Value: "0x100"},
+				{Type: TokenEOF},
+			},
+			expectedName:  "BUF_SIZE",
+			expectedValue: 256,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := NewParser(tt.tokens)
+			program, err := parser.Parse()
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if program == nil {
+				t.Fatal("expected program but got nil")
+			}
+
+			// Should have one section with one constant definition
+			if len(program.Sections) == 0 {
+				t.Fatal("expected at least one section")
+			}
+
+			if len(program.Sections[0].Items) == 0 {
+				t.Fatal("expected at least one item in section")
+			}
+
+			constDef, ok := program.Sections[0].Items[0].(*ConstantDef)
+			if !ok {
+				t.Fatalf("expected ConstantDef, got %T", program.Sections[0].Items[0])
+			}
+
+			if constDef.Name != tt.expectedName {
+				t.Errorf("expected name %s, got %s", tt.expectedName, constDef.Name)
+			}
+
+			if constDef.Value != tt.expectedValue {
+				t.Errorf("expected value %d, got %d", tt.expectedValue, constDef.Value)
+			}
+		})
+	}
+}
+
+func TestParser_ConstantWithInstructions(t *testing.T) {
+	// Test constant definition followed by instruction that uses it
+	tokens := []Token{
+		// message_len = 14
+		{Type: TokenIdentifier, Value: "message_len"},
+		{Type: TokenEquals, Value: "="},
+		{Type: TokenInteger, Value: "14"},
+		{Type: TokenNewline},
+
+		// mov x2, #message_len
+		{Type: TokenIdentifier, Value: "mov"},
+		{Type: TokenRegister, Value: "x2"},
+		{Type: TokenComma, Value: ","},
+		{Type: TokenHash, Value: "#"},
+		{Type: TokenIdentifier, Value: "message_len"},
+		{Type: TokenEOF},
+	}
+
+	parser := NewParser(tokens)
+	program, err := parser.Parse()
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if program == nil {
+		t.Fatal("expected program but got nil")
+	}
+
+	// Should have one section with two items
+	if len(program.Sections) == 0 {
+		t.Fatal("expected at least one section")
+	}
+
+	if len(program.Sections[0].Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(program.Sections[0].Items))
+	}
+
+	// First item should be constant
+	constDef, ok := program.Sections[0].Items[0].(*ConstantDef)
+	if !ok {
+		t.Fatalf("expected ConstantDef, got %T", program.Sections[0].Items[0])
+	}
+	if constDef.Name != "message_len" || constDef.Value != 14 {
+		t.Errorf("unexpected constant: %+v", constDef)
+	}
+
+	// Second item should be instruction
+	inst, ok := program.Sections[0].Items[1].(*Instruction)
+	if !ok {
+		t.Fatalf("expected Instruction, got %T", program.Sections[0].Items[1])
+	}
+	if inst.Mnemonic != "mov" {
+		t.Errorf("expected mov instruction, got %s", inst.Mnemonic)
+	}
+}

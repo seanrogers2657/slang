@@ -82,3 +82,13 @@ type DataDeclaration struct {
 }
 
 func (d *DataDeclaration) isItem() {}
+
+// ConstantDef represents a constant definition (name = value)
+type ConstantDef struct {
+	Name   string
+	Value  int64
+	Line   int
+	Column int
+}
+
+func (c *ConstantDef) isItem() {}

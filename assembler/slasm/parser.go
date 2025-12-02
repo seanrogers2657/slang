@@ -86,6 +86,16 @@ func (p *Parser) Parse() (*Program, error) {
 			continue
 		}
 
+		// Parse constant assignments: identifier = value
+		if p.peek().Type == TokenIdentifier && p.peekAhead(1).Type == TokenEquals {
+			constDef, err := p.parseConstantDef()
+			if err != nil {
+				return nil, err
+			}
+			currentSection.Items = append(currentSection.Items, constDef)
+			continue
+		}
+
 		// Parse instructions
 		if p.peek().Type == TokenIdentifier {
 			inst, err := p.parseInstruction()
@@ -240,6 +250,30 @@ func (p *Parser) parseLabel() *Label {
 		Line:   tok.Line,
 		Column: tok.Column,
 	}
+}
+
+func (p *Parser) parseConstantDef() (*ConstantDef, error) {
+	nameTok := p.advance() // consume identifier
+	p.advance()            // consume =
+
+	if p.peek().Type != TokenInteger {
+		return nil, fmt.Errorf("line %d:%d: expected integer value after '='",
+			nameTok.Line, nameTok.Column)
+	}
+
+	valueTok := p.advance()
+	value, err := ParseInt64(valueTok.Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: invalid constant value: %w",
+			valueTok.Line, valueTok.Column, err)
+	}
+
+	return &ConstantDef{
+		Name:   nameTok.Value,
+		Value:  value,
+		Line:   nameTok.Line,
+		Column: nameTok.Column,
+	}, nil
 }
 
 func (p *Parser) parseInstruction() (*Instruction, error) {

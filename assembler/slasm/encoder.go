@@ -9,13 +9,32 @@ import (
 // Encoder encodes ARM64 instructions to machine code
 type Encoder struct {
 	symbolTable *SymbolTable
+	constants   map[string]int64
 }
 
 // NewEncoder creates a new instruction encoder
-func NewEncoder(symbolTable *SymbolTable) *Encoder {
+func NewEncoder(symbolTable *SymbolTable, constants map[string]int64) *Encoder {
 	return &Encoder{
 		symbolTable: symbolTable,
+		constants:   constants,
 	}
+}
+
+// ResolveImmediate resolves an immediate value, which may be a constant name
+func (e *Encoder) ResolveImmediate(value string) (int64, error) {
+	// First try to parse as integer
+	if val, err := ParseInt64(value); err == nil {
+		return val, nil
+	}
+
+	// Try to look up as a constant
+	if e.constants != nil {
+		if constVal, found := e.constants[value]; found {
+			return constVal, nil
+		}
+	}
+
+	return 0, fmt.Errorf("unknown constant or invalid integer: %s", value)
 }
 
 // Encode encodes an instruction to machine code (4 bytes for ARM64)
@@ -75,6 +94,12 @@ func (e *Encoder) Encode(inst *Instruction, address uint64) ([]byte, error) {
 		return e.encodeAdrp(inst, address)
 	case "svc":
 		return e.encodeSvc(inst)
+	case "lsl":
+		return e.encodeLsl(inst)
+	case "lsr":
+		return e.encodeLsr(inst)
+	case "asr":
+		return e.encodeAsr(inst)
 	default:
 		return nil, fmt.Errorf("unsupported instruction: %s", inst.Mnemonic)
 	}
@@ -99,7 +124,7 @@ func (e *Encoder) encodeMov(inst *Instruction) ([]byte, error) {
 	}
 
 	if inst.Operands[1].Type == OperandImmediate {
-		immVal, err := ParseInt(inst.Operands[1].Value)
+		immVal, err := e.ResolveImmediate(inst.Operands[1].Value)
 		if err != nil {
 			return nil, fmt.Errorf("line %d:%d: mov immediate: %w", inst.Line, inst.Column, err)
 		}
@@ -443,7 +468,7 @@ func (e *Encoder) encodeCmp(inst *Instruction) ([]byte, error) {
     rd := uint32(31) // XZR
 
     if inst.Operands[1].Type == OperandImmediate {
-        immVal, err := ParseInt(inst.Operands[1].Value)
+        immVal, err := e.ResolveImmediate(inst.Operands[1].Value)
         if err != nil {
             return nil, fmt.Errorf("line %d:%d: cmp immediate: %w", inst.Line, inst.Column, err)
         }
@@ -1193,8 +1218,57 @@ func (e *Encoder) encodeStrb(inst *Instruction) ([]byte, error) {
 }
 
 func (e *Encoder) encodeAdr(inst *Instruction, address uint64) ([]byte, error) {
-	// TODO: Implement adr encoding (address to register, PC-relative)
-	return make([]byte, 4), nil
+	// ADR Xd, label - Form PC-relative address (±1MB range)
+	// Encoding: 0 immlo 10000 immhi Rd
+	// immlo (2 bits), immhi (19 bits) = 21-bit signed byte offset from PC
+
+	if len(inst.Operands) != 2 {
+		return nil, fmt.Errorf("line %d:%d: adr requires 2 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	// First operand: destination register
+	if inst.Operands[0].Type != OperandRegister {
+		return nil, fmt.Errorf("line %d:%d: adr destination must be a register",
+			inst.Line, inst.Column)
+	}
+	rd, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: adr destination: %w", inst.Line, inst.Column, err)
+	}
+
+	// Second operand: label
+	if inst.Operands[1].Type != OperandLabel {
+		return nil, fmt.Errorf("line %d:%d: adr requires a label operand",
+			inst.Line, inst.Column)
+	}
+
+	labelName := inst.Operands[1].Value
+	symbol, found := e.symbolTable.Lookup(labelName)
+	if !found {
+		return nil, fmt.Errorf("line %d:%d: undefined label '%s'",
+			inst.Line, inst.Column, labelName)
+	}
+
+	// Calculate byte offset from PC to target
+	targetAddr := symbol.Address
+	offset := int64(targetAddr) - int64(address)
+
+	// Check if offset fits in 21 bits (signed, byte offset)
+	// Range: ±1MB = ±2^20 bytes
+	if offset < -0x100000 || offset > 0xFFFFF {
+		return nil, fmt.Errorf("line %d:%d: adr target '%s' is too far away (offset %d bytes, max ±1MB)",
+			inst.Line, inst.Column, labelName, offset)
+	}
+
+	// ADR encoding: 0 immlo[1:0] 10000 immhi[18:0] Rd[4:0]
+	// op=0 for ADR (vs op=1 for ADRP)
+	immlo := uint32(offset) & 0x3            // bits 1:0
+	immhi := (uint32(offset) >> 2) & 0x7FFFF // bits 20:2
+
+	encoding := (immlo << 29) | (0b10000 << 24) | (immhi << 5) | uint32(rd)
+
+	return EncodeLittleEndian(encoding), nil
 }
 
 func (e *Encoder) encodeAdrp(inst *Instruction, address uint64) ([]byte, error) {
@@ -1283,6 +1357,172 @@ func (e *Encoder) encodeSvc(inst *Instruction) ([]byte, error) {
 	encoding := uint32(0xD4000001) // Base SVC #0 encoding
 	encoding |= (imm & 0xFFFF) << 5  // Insert imm16
 
+	return EncodeLittleEndian(encoding), nil
+}
+
+func (e *Encoder) encodeLsl(inst *Instruction) ([]byte, error) {
+	// LSL Xd, Xn, #shift (immediate) or LSL Xd, Xn, Xm (register)
+	// Immediate form is encoded as UBFM Xd, Xn, #(-shift MOD 64), #(63-shift)
+	// Register form is encoded as LSLV Xd, Xn, Xm
+
+	if len(inst.Operands) != 3 {
+		return nil, fmt.Errorf("line %d:%d: lsl requires 3 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	rd, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: lsl destination: %w", inst.Line, inst.Column, err)
+	}
+
+	rn, err := ParseRegister(inst.Operands[1].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: lsl operand 1: %w", inst.Line, inst.Column, err)
+	}
+
+	if inst.Operands[2].Type == OperandImmediate {
+		// Immediate form: LSL Xd, Xn, #shift
+		// Encoded as UBFM Xd, Xn, #(-shift MOD 64), #(63-shift)
+		shiftVal, err := ParseInt(inst.Operands[2].Value)
+		if err != nil {
+			return nil, fmt.Errorf("line %d:%d: lsl shift amount: %w", inst.Line, inst.Column, err)
+		}
+		shift := uint32(shiftVal)
+
+		if shift > 63 {
+			return nil, fmt.Errorf("line %d:%d: lsl shift amount must be 0-63, got %d",
+				inst.Line, inst.Column, shift)
+		}
+
+		// UBFM encoding for 64-bit: sf=1, opc=10, N=1
+		// immr = (-shift) mod 64 = (64 - shift) & 0x3F
+		// imms = 63 - shift
+		immr := (64 - shift) & 0x3F
+		imms := 63 - shift
+
+		// UBFM: 1 1 0 100110 1 immr imms Rn Rd = 0xD3400000
+		encoding := uint32(0xD3400000) | (immr << 16) | (imms << 10) | (uint32(rn) << 5) | uint32(rd)
+		return EncodeLittleEndian(encoding), nil
+	}
+
+	// Register form: LSL Xd, Xn, Xm (LSLV)
+	rm, err := ParseRegister(inst.Operands[2].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: lsl operand 2: %w", inst.Line, inst.Column, err)
+	}
+
+	// LSLV: sf=1, 0 0 11010110 Rm 0010 00 Rn Rd = 0x9AC02000
+	encoding := uint32(0x9AC02000) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	return EncodeLittleEndian(encoding), nil
+}
+
+func (e *Encoder) encodeLsr(inst *Instruction) ([]byte, error) {
+	// LSR Xd, Xn, #shift (immediate) or LSR Xd, Xn, Xm (register)
+	// Immediate form is encoded as UBFM Xd, Xn, #shift, #63
+	// Register form is encoded as LSRV Xd, Xn, Xm
+
+	if len(inst.Operands) != 3 {
+		return nil, fmt.Errorf("line %d:%d: lsr requires 3 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	rd, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: lsr destination: %w", inst.Line, inst.Column, err)
+	}
+
+	rn, err := ParseRegister(inst.Operands[1].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: lsr operand 1: %w", inst.Line, inst.Column, err)
+	}
+
+	if inst.Operands[2].Type == OperandImmediate {
+		// Immediate form: LSR Xd, Xn, #shift
+		// Encoded as UBFM Xd, Xn, #shift, #63
+		shiftVal, err := ParseInt(inst.Operands[2].Value)
+		if err != nil {
+			return nil, fmt.Errorf("line %d:%d: lsr shift amount: %w", inst.Line, inst.Column, err)
+		}
+		shift := uint32(shiftVal)
+
+		if shift > 63 {
+			return nil, fmt.Errorf("line %d:%d: lsr shift amount must be 0-63, got %d",
+				inst.Line, inst.Column, shift)
+		}
+
+		// UBFM encoding for 64-bit: sf=1, opc=10, N=1
+		// immr = shift, imms = 63
+		immr := shift
+		imms := uint32(63)
+
+		// UBFM: 1 1 0 100110 1 immr imms Rn Rd = 0xD3400000
+		encoding := uint32(0xD3400000) | (immr << 16) | (imms << 10) | (uint32(rn) << 5) | uint32(rd)
+		return EncodeLittleEndian(encoding), nil
+	}
+
+	// Register form: LSR Xd, Xn, Xm (LSRV)
+	rm, err := ParseRegister(inst.Operands[2].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: lsr operand 2: %w", inst.Line, inst.Column, err)
+	}
+
+	// LSRV: sf=1, 0 0 11010110 Rm 0010 01 Rn Rd = 0x9AC02400
+	encoding := uint32(0x9AC02400) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	return EncodeLittleEndian(encoding), nil
+}
+
+func (e *Encoder) encodeAsr(inst *Instruction) ([]byte, error) {
+	// ASR Xd, Xn, #shift (immediate) or ASR Xd, Xn, Xm (register)
+	// Immediate form is encoded as SBFM Xd, Xn, #shift, #63
+	// Register form is encoded as ASRV Xd, Xn, Xm
+
+	if len(inst.Operands) != 3 {
+		return nil, fmt.Errorf("line %d:%d: asr requires 3 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	rd, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: asr destination: %w", inst.Line, inst.Column, err)
+	}
+
+	rn, err := ParseRegister(inst.Operands[1].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: asr operand 1: %w", inst.Line, inst.Column, err)
+	}
+
+	if inst.Operands[2].Type == OperandImmediate {
+		// Immediate form: ASR Xd, Xn, #shift
+		// Encoded as SBFM Xd, Xn, #shift, #63
+		shiftVal, err := ParseInt(inst.Operands[2].Value)
+		if err != nil {
+			return nil, fmt.Errorf("line %d:%d: asr shift amount: %w", inst.Line, inst.Column, err)
+		}
+		shift := uint32(shiftVal)
+
+		if shift > 63 {
+			return nil, fmt.Errorf("line %d:%d: asr shift amount must be 0-63, got %d",
+				inst.Line, inst.Column, shift)
+		}
+
+		// SBFM encoding for 64-bit: sf=1, opc=00, N=1
+		// immr = shift, imms = 63
+		immr := shift
+		imms := uint32(63)
+
+		// SBFM: 1 0 0 100110 1 immr imms Rn Rd = 0x9340FC00
+		encoding := uint32(0x93400000) | (immr << 16) | (imms << 10) | (uint32(rn) << 5) | uint32(rd)
+		return EncodeLittleEndian(encoding), nil
+	}
+
+	// Register form: ASR Xd, Xn, Xm (ASRV)
+	rm, err := ParseRegister(inst.Operands[2].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: asr operand 2: %w", inst.Line, inst.Column, err)
+	}
+
+	// ASRV: sf=1, 0 0 11010110 Rm 0010 10 Rn Rd = 0x9AC02800
+	encoding := uint32(0x9AC02800) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 

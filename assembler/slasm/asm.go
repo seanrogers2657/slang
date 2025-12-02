@@ -227,7 +227,7 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	a.Logger.Section("STEP 4: INSTRUCTION ENCODING")
 
 
-	encoder := NewEncoder(layout.GetSymbolTable())
+	encoder := NewEncoder(layout.GetSymbolTable(), layout.GetConstants())
 	var codeBytes []byte
 	var dataBytes []byte
 	instructionCount := 0

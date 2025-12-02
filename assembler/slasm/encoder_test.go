@@ -7,7 +7,7 @@ import (
 )
 
 func TestEncodeAdd(t *testing.T) {
-	encoder := NewEncoder(NewSymbolTable())
+	encoder := NewEncoder(NewSymbolTable(), nil)
 
 	// add x2, x0, x1
 	inst := &Instruction{
@@ -34,7 +34,7 @@ func TestEncodeAdd(t *testing.T) {
 }
 
 func TestEncodeSub(t *testing.T) {
-	encoder := NewEncoder(NewSymbolTable())
+	encoder := NewEncoder(NewSymbolTable(), nil)
 
 	// sub x2, x0, x1
 	inst := &Instruction{
@@ -93,7 +93,7 @@ func TestEncodeSubImmediate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 
 			inst := &Instruction{
 				Mnemonic: "sub",
@@ -120,7 +120,7 @@ func TestEncodeSubImmediate(t *testing.T) {
 }
 
 func TestEncodeMul(t *testing.T) {
-	encoder := NewEncoder(NewSymbolTable())
+	encoder := NewEncoder(NewSymbolTable(), nil)
 
 	// mul x2, x0, x1
 	inst := &Instruction{
@@ -147,7 +147,7 @@ func TestEncodeMul(t *testing.T) {
 }
 
 func TestEncodeSdiv(t *testing.T) {
-	encoder := NewEncoder(NewSymbolTable())
+	encoder := NewEncoder(NewSymbolTable(), nil)
 
 	// sdiv x2, x0, x1
 	inst := &Instruction{
@@ -174,7 +174,7 @@ func TestEncodeSdiv(t *testing.T) {
 }
 
 func TestEncodeMsub(t *testing.T) {
-	encoder := NewEncoder(NewSymbolTable())
+	encoder := NewEncoder(NewSymbolTable(), nil)
 
 	// msub x3, x2, x0, x1
 	inst := &Instruction{
@@ -202,7 +202,7 @@ func TestEncodeMsub(t *testing.T) {
 }
 
 func TestEncodeNeg(t *testing.T) {
-	encoder := NewEncoder(NewSymbolTable())
+	encoder := NewEncoder(NewSymbolTable(), nil)
 
 	tests := []struct {
 		name     string
@@ -283,7 +283,7 @@ func TestEncodeUdiv(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 
 			inst := &Instruction{
 				Mnemonic: "udiv",
@@ -310,7 +310,7 @@ func TestEncodeUdiv(t *testing.T) {
 }
 
 func TestEncodeCmp(t *testing.T) {
-	encoder := NewEncoder(NewSymbolTable())
+	encoder := NewEncoder(NewSymbolTable(), nil)
 
 	// cmp x0, x1
 	inst := &Instruction{
@@ -336,7 +336,7 @@ func TestEncodeCmp(t *testing.T) {
 }
 
 func TestEncodeCset(t *testing.T) {
-	encoder := NewEncoder(NewSymbolTable())
+	encoder := NewEncoder(NewSymbolTable(), nil)
 
 	// cset x0, eq
 	inst := &Instruction{
@@ -412,7 +412,7 @@ func TestEncodeBranch(t *testing.T) {
 			symbolTable := NewSymbolTable()
 			symbolTable.Define("target", tt.targetAddr, SectionText, 1, 1)
 
-			encoder := NewEncoder(symbolTable)
+			encoder := NewEncoder(symbolTable, nil)
 
 			inst := &Instruction{
 				Mnemonic: "b",
@@ -481,7 +481,7 @@ func TestEncodeBranch_Errors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			symbolTable := NewSymbolTable()
-			encoder := NewEncoder(symbolTable)
+			encoder := NewEncoder(symbolTable, nil)
 
 			_, err := encoder.Encode(tt.inst, 0)
 			if err == nil {
@@ -548,7 +548,7 @@ func TestEncodeBranchLink(t *testing.T) {
 			symbolTable := NewSymbolTable()
 			symbolTable.Define("target", tt.targetAddr, SectionText, 1, 1)
 
-			encoder := NewEncoder(symbolTable)
+			encoder := NewEncoder(symbolTable, nil)
 
 			inst := &Instruction{
 				Mnemonic: "bl",
@@ -617,7 +617,7 @@ func TestEncodeBranchLink_Errors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			symbolTable := NewSymbolTable()
-			encoder := NewEncoder(symbolTable)
+			encoder := NewEncoder(symbolTable, nil)
 
 			_, err := encoder.Encode(tt.inst, 0)
 			if err == nil {
@@ -661,7 +661,7 @@ func TestEncodeBranchRegister(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 
 			inst := &Instruction{
 				Mnemonic: "br",
@@ -729,7 +729,7 @@ func TestEncodeBranchRegister_Errors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 
 			_, err := encoder.Encode(tt.inst, 0)
 			if err == nil {
@@ -873,7 +873,7 @@ func TestEncodeBranchConditional(t *testing.T) {
 			symbolTable := NewSymbolTable()
 			symbolTable.Define("target", tt.targetAddr, SectionText, 1, 1)
 
-			encoder := NewEncoder(symbolTable)
+			encoder := NewEncoder(symbolTable, nil)
 
 			inst := &Instruction{
 				Mnemonic: tt.mnemonic,
@@ -942,7 +942,7 @@ func TestEncodeBranchConditional_Errors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			symbolTable := NewSymbolTable()
-			encoder := NewEncoder(symbolTable)
+			encoder := NewEncoder(symbolTable, nil)
 
 			_, err := encoder.Encode(tt.inst, 0)
 			if err == nil {
@@ -957,7 +957,7 @@ func TestEncodeBranchConditional_Errors(t *testing.T) {
 }
 
 func TestEncodeRet(t *testing.T) {
-	encoder := NewEncoder(NewSymbolTable())
+	encoder := NewEncoder(NewSymbolTable(), nil)
 
 	inst := &Instruction{
 		Mnemonic: "ret",
@@ -1020,7 +1020,7 @@ func TestEncodeLdr(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 
 			inst := &Instruction{
 				Mnemonic: "ldr",
@@ -1078,7 +1078,7 @@ func TestEncodeStr(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 
 			inst := &Instruction{
 				Mnemonic: "str",
@@ -1129,7 +1129,7 @@ func TestEncodeLdrPreIndexed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 
 			inst := &Instruction{
 				Mnemonic: "ldr",
@@ -1180,7 +1180,7 @@ func TestEncodeLdrPostIndexed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 
 			inst := &Instruction{
 				Mnemonic: "ldr",
@@ -1231,7 +1231,7 @@ func TestEncodeStrPreIndexed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 
 			inst := &Instruction{
 				Mnemonic: "str",
@@ -1282,7 +1282,7 @@ func TestEncodeStrPostIndexed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 
 			inst := &Instruction{
 				Mnemonic: "str",
@@ -1336,7 +1336,7 @@ func TestEncodeLdp(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 
 			inst := &Instruction{
 				Mnemonic: "ldp",
@@ -1391,7 +1391,7 @@ func TestEncodeStp(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 
 			inst := &Instruction{
 				Mnemonic: "stp",
@@ -1444,7 +1444,7 @@ func TestEncodeDataByte(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 			data := &DataDeclaration{Type: "byte", Value: tt.value}
 
 			result, err := encoder.EncodeData(data)
@@ -1479,7 +1479,7 @@ func TestEncodeDataQuad(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 			data := &DataDeclaration{Type: "quad", Value: tt.value}
 
 			result, err := encoder.EncodeData(data)
@@ -1514,7 +1514,7 @@ func TestEncodeDataWord(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 			data := &DataDeclaration{Type: "word", Value: tt.value}
 
 			result, err := encoder.EncodeData(data)
@@ -1554,7 +1554,7 @@ func TestEncodeDataAsciz(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 			data := &DataDeclaration{Type: "asciz", Value: tt.value}
 
 			result, err := encoder.EncodeData(data)
@@ -1584,7 +1584,7 @@ func TestEncodeDataAscii(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 			data := &DataDeclaration{Type: "ascii", Value: tt.value}
 
 			result, err := encoder.EncodeData(data)
@@ -1619,7 +1619,7 @@ func TestEncodeDataSpace(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoder := NewEncoder(NewSymbolTable())
+			encoder := NewEncoder(NewSymbolTable(), nil)
 			data := &DataDeclaration{Type: "space", Value: tt.value}
 
 			result, err := encoder.EncodeData(data)
@@ -1636,6 +1636,326 @@ func TestEncodeDataSpace(t *testing.T) {
 				if b != 0 {
 					t.Errorf("Expected byte %d to be 0, got %d", i, b)
 				}
+			}
+		})
+	}
+}
+
+func TestEncodeLsl(t *testing.T) {
+	tests := []struct {
+		name        string
+		rd          string
+		rn          string
+		shift       string
+		isImmediate bool
+		expectedHex string
+	}{
+		{
+			name:        "lsl x0, x0, #1",
+			rd:          "x0",
+			rn:          "x0",
+			shift:       "1",
+			isImmediate: true,
+			// LSL #1 = UBFM x0, x0, #63, #62
+			// immr = (64-1) & 0x3F = 63 = 0x3F
+			// imms = 63-1 = 62 = 0x3E
+			// Encoding: 0xD3400000 | (63 << 16) | (62 << 10) | (0 << 5) | 0
+			// = 0xD3400000 | 0x3F0000 | 0xF800 | 0 | 0 = 0xD37FF800
+			expectedHex: "00f87fd3",
+		},
+		{
+			name:        "lsl x1, x2, #4",
+			rd:          "x1",
+			rn:          "x2",
+			shift:       "4",
+			isImmediate: true,
+			// LSL #4 = UBFM x1, x2, #60, #59
+			// immr = (64-4) & 0x3F = 60 = 0x3C
+			// imms = 63-4 = 59 = 0x3B
+			expectedHex: "41ec7cd3",
+		},
+		{
+			name:        "lsl x0, x1, x2 (register)",
+			rd:          "x0",
+			rn:          "x1",
+			shift:       "x2",
+			isImmediate: false,
+			// LSLV: 0x9AC02000 | (2 << 16) | (1 << 5) | 0
+			expectedHex: "2020c29a",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable(), nil)
+
+			operands := []*Operand{
+				{Type: OperandRegister, Value: tt.rd},
+				{Type: OperandRegister, Value: tt.rn},
+			}
+			if tt.isImmediate {
+				operands = append(operands, &Operand{Type: OperandImmediate, Value: tt.shift})
+			} else {
+				operands = append(operands, &Operand{Type: OperandRegister, Value: tt.shift})
+			}
+
+			inst := &Instruction{
+				Mnemonic: "lsl",
+				Operands: operands,
+			}
+
+			result, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(result)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeLsr(t *testing.T) {
+	tests := []struct {
+		name        string
+		rd          string
+		rn          string
+		shift       string
+		isImmediate bool
+		expectedHex string
+	}{
+		{
+			name:        "lsr x0, x0, #1",
+			rd:          "x0",
+			rn:          "x0",
+			shift:       "1",
+			isImmediate: true,
+			// LSR #1 = UBFM x0, x0, #1, #63
+			// immr = 1, imms = 63
+			// Encoding: 0xD3400000 | (1 << 16) | (63 << 10) | (0 << 5) | 0
+			expectedHex: "00fc41d3",
+		},
+		{
+			name:        "lsr x0, x1, x2 (register)",
+			rd:          "x0",
+			rn:          "x1",
+			shift:       "x2",
+			isImmediate: false,
+			// LSRV: 0x9AC02400 | (2 << 16) | (1 << 5) | 0
+			expectedHex: "2024c29a",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable(), nil)
+
+			operands := []*Operand{
+				{Type: OperandRegister, Value: tt.rd},
+				{Type: OperandRegister, Value: tt.rn},
+			}
+			if tt.isImmediate {
+				operands = append(operands, &Operand{Type: OperandImmediate, Value: tt.shift})
+			} else {
+				operands = append(operands, &Operand{Type: OperandRegister, Value: tt.shift})
+			}
+
+			inst := &Instruction{
+				Mnemonic: "lsr",
+				Operands: operands,
+			}
+
+			result, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(result)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeAsr(t *testing.T) {
+	tests := []struct {
+		name        string
+		rd          string
+		rn          string
+		shift       string
+		isImmediate bool
+		expectedHex string
+	}{
+		{
+			name:        "asr x0, x0, #1",
+			rd:          "x0",
+			rn:          "x0",
+			shift:       "1",
+			isImmediate: true,
+			// ASR #1 = SBFM x0, x0, #1, #63
+			// immr = 1, imms = 63
+			// Encoding: 0x93400000 | (1 << 16) | (63 << 10) | (0 << 5) | 0
+			expectedHex: "00fc4193",
+		},
+		{
+			name:        "asr x0, x1, x2 (register)",
+			rd:          "x0",
+			rn:          "x1",
+			shift:       "x2",
+			isImmediate: false,
+			// ASRV: 0x9AC02800 | (2 << 16) | (1 << 5) | 0
+			expectedHex: "2028c29a",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable(), nil)
+
+			operands := []*Operand{
+				{Type: OperandRegister, Value: tt.rd},
+				{Type: OperandRegister, Value: tt.rn},
+			}
+			if tt.isImmediate {
+				operands = append(operands, &Operand{Type: OperandImmediate, Value: tt.shift})
+			} else {
+				operands = append(operands, &Operand{Type: OperandRegister, Value: tt.shift})
+			}
+
+			inst := &Instruction{
+				Mnemonic: "asr",
+				Operands: operands,
+			}
+
+			result, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(result)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeAdr(t *testing.T) {
+	tests := []struct {
+		name        string
+		rd          string
+		label       string
+		labelAddr   uint64
+		instAddr    uint64
+		expectedHex string
+	}{
+		{
+			name:      "adr x0, label (forward, +8)",
+			rd:        "x0",
+			label:     "test",
+			labelAddr: 8,
+			instAddr:  0,
+			// offset = 8, immlo = 0, immhi = 2
+			// Encoding: (0 << 29) | (0b10000 << 24) | (2 << 5) | 0
+			expectedHex: "40000010",
+		},
+		{
+			name:      "adr x1, label (backward, -4)",
+			rd:        "x1",
+			label:     "test",
+			labelAddr: 0,
+			instAddr:  4,
+			// offset = -4 = 0xFFFFFFFC (21-bit: 0x1FFFFC)
+			// immlo = 0, immhi = 0x7FFFF (all 1s except sign in 21-bit)
+			expectedHex: "e1ffff10",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			symbolTable := NewSymbolTable()
+			symbolTable.Define(tt.label, tt.labelAddr, SectionText, 1, 1)
+
+			encoder := NewEncoder(symbolTable, nil)
+
+			inst := &Instruction{
+				Mnemonic: "adr",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: tt.rd},
+					{Type: OperandLabel, Value: tt.label},
+				},
+			}
+
+			result, err := encoder.Encode(inst, tt.instAddr)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(result)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestResolveImmediate(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		constants map[string]int64
+		expected  int64
+		wantErr   bool
+	}{
+		{
+			name:      "integer value",
+			value:     "42",
+			constants: nil,
+			expected:  42,
+			wantErr:   false,
+		},
+		{
+			name:      "hex value",
+			value:     "0xFF",
+			constants: nil,
+			expected:  255,
+			wantErr:   false,
+		},
+		{
+			name:      "constant lookup",
+			value:     "MY_CONST",
+			constants: map[string]int64{"MY_CONST": 100},
+			expected:  100,
+			wantErr:   false,
+		},
+		{
+			name:      "undefined constant",
+			value:     "UNKNOWN",
+			constants: map[string]int64{},
+			expected:  0,
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable(), tt.constants)
+
+			result, err := encoder.ResolveImmediate(tt.value)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("Expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("Expected %d, got %d", tt.expected, result)
 			}
 		})
 	}

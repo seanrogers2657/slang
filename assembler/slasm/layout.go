@@ -4,6 +4,7 @@ package slasm
 type Layout struct {
 	program     *Program
 	symbolTable *SymbolTable
+	constants   map[string]int64
 }
 
 // NewLayout creates a new layout calculator
@@ -11,6 +12,7 @@ func NewLayout(program *Program) *Layout {
 	return &Layout{
 		program:     program,
 		symbolTable: NewSymbolTable(),
+		constants:   make(map[string]int64),
 	}
 }
 
@@ -70,6 +72,10 @@ func (l *Layout) Calculate() error {
 			case *DataDeclaration:
 				// Add size of data
 				*currentAddr += uint64(dataSize(v))
+
+			case *ConstantDef:
+				// Store constant value (doesn't take address space)
+				l.constants[v.Name] = v.Value
 			}
 		}
 	}
@@ -80,6 +86,11 @@ func (l *Layout) Calculate() error {
 // GetSymbolTable returns the populated symbol table
 func (l *Layout) GetSymbolTable() *SymbolTable {
 	return l.symbolTable
+}
+
+// GetConstants returns the constants map
+func (l *Layout) GetConstants() map[string]int64 {
+	return l.constants
 }
 
 // Helper functions

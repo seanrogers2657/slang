@@ -481,6 +481,18 @@ _start:
 `,
 			expectedExit: 10,
 		},
+		{
+			name: "neg_register",
+			assembly: `.global _start
+_start:
+    mov x0, #42
+    neg x1, x0       // x1 = -42
+    neg x0, x1       // x0 = 42 (negate again)
+    mov x16, #1
+    svc #0
+`,
+			expectedExit: 42,
+		},
 	}
 	runE2ETests(t, tests)
 }

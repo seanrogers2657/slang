@@ -80,6 +80,11 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	// Add __PAGEZERO segment (important for memory protection)
 	pagezeroSize := uint64(72) // segment_command_64 without sections
 
+	// Add __DATA segment (for writable data like buffers)
+	dataSegmentCmdSize := uint64(72) // segment_command_64
+	dataSectionSize := uint64(80)    // section_64 for __data
+	hasDataSection := len(data) > 0
+
 	// Add __LINKEDIT segment (required for code signatures)
 	linkeditSegmentSize := uint64(72) // segment_command_64 without sections
 
@@ -93,6 +98,11 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 		symtabCmdSize + dysymtabCmdSize +
 		functionStartsCmdSize + dataInCodeCmdSize +
 		codeSignatureCmdSize
+
+	// Add __DATA segment size if we have data
+	if hasDataSection {
+		loadCmdsSize += dataSegmentCmdSize + dataSectionSize
+	}
 
 	// Place code right after load commands, aligned to 8 bytes
 	// (like the system linker does - no page alignment for code offset)
@@ -112,12 +122,28 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	if (codeOffset + machineCodeSize) > textSegmentFileSize {
 		textSegmentFileSize = ((codeOffset + machineCodeSize + 0xFFF) / 0x1000) * 0x1000
 	}
-	vmSize := textSegmentFileSize // VM size matches file size
+	textVMSize := textSegmentFileSize // VM size matches file size
+
+	// Calculate __DATA segment location (if we have data)
+	dataSize := uint64(len(data))
+	dataOffset := textSegmentFileSize // Right after __TEXT in file
+	dataVMAddr := vmAddr + textVMSize // Right after __TEXT in VM
+	dataSegmentFileSize := uint64(0)
+	dataVMSize := uint64(0)
+	if hasDataSection {
+		// Use 16KB minimum for data segment to match macOS ARM64 page size
+		// and match system linker behavior
+		dataSegmentFileSize = uint64(0x4000) // 16KB minimum like system linker
+		if dataSize > dataSegmentFileSize {
+			dataSegmentFileSize = ((dataSize + 0x3FFF) / 0x4000) * 0x4000
+		}
+		dataVMSize = dataSegmentFileSize
+	}
 
 	// Calculate __LINKEDIT segment location
-	// It comes right after the __TEXT segment in both file and VM
-	linkeditOffset := textSegmentFileSize                   // Right after __TEXT in file
-	linkeditVMAddr := vmAddr + vmSize                       // Right after __TEXT in VM
+	// It comes right after the __DATA segment (or __TEXT if no data)
+	linkeditOffset := textSegmentFileSize + dataSegmentFileSize
+	linkeditVMAddr := vmAddr + textVMSize + dataVMSize
 
 	// Calculate __LINKEDIT content sizes (before signature)
 	chainedFixupsDataSize := uint64(56)
@@ -148,20 +174,24 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	}
 
 	// Build Mach-O header
-	// Load commands: __PAGEZERO, __TEXT, __LINKEDIT (3 segments)
+	// Load commands: __PAGEZERO, __TEXT, [__DATA], __LINKEDIT
 	// + LC_LOAD_DYLINKER, LC_LOAD_DYLIB, LC_MAIN, LC_UUID
 	// + LC_BUILD_VERSION, LC_SOURCE_VERSION
 	// + LC_DYLD_CHAINED_FIXUPS, LC_DYLD_EXPORTS_TRIE
 	// + LC_SYMTAB, LC_DYSYMTAB
 	// + LC_FUNCTION_STARTS, LC_DATA_IN_CODE
 	// + LC_CODE_SIGNATURE
-	// Total: 16 load commands
+	// Total: 16 load commands (17 if __DATA is present)
+	numCmds := uint32(16)
+	if hasDataSection {
+		numCmds = 17
+	}
 	header := machHeader64{
 		Magic:      MH_MAGIC_64,
 		CPUType:    CPU_TYPE_ARM64,
 		CPUSubtype: CPU_SUBTYPE_ARM64,
 		FileType:   MH_EXECUTE,
-		NCmds:      16, // Including LC_CODE_SIGNATURE
+		NCmds:      numCmds,
 		SizeofCmds: uint32(loadCmdsSize),
 		Flags:      MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL | MH_PIE,
 		Reserved:   0,
@@ -177,7 +207,7 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 		Cmdsize:  uint32(segmentCmdSize + sectionHeaderSize),
 		Segname:  segname,
 		VMAddr:   vmAddr,
-		VMSize:   vmSize,
+		VMSize:   textVMSize,
 		FileOff:  0,                       // Start at beginning of file
 		FileSize: textSegmentFileSize,     // Include header, load commands, and code
 		MaxProt:  VM_PROT_READ | VM_PROT_EXECUTE,
@@ -229,6 +259,41 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 		InitProt: 0,
 		NSects:   0,
 		Flags:    0,
+	}
+
+	// Build __DATA segment (for writable data like buffers)
+	var dataSegname [16]byte
+	copy(dataSegname[:], "__DATA")
+	var dataSectname [16]byte
+	copy(dataSectname[:], "__data")
+
+	dataSegment := segmentCommand64{
+		Cmd:      LC_SEGMENT_64,
+		Cmdsize:  uint32(dataSegmentCmdSize + dataSectionSize),
+		Segname:  dataSegname,
+		VMAddr:   dataVMAddr,
+		VMSize:   dataVMSize,
+		FileOff:  dataOffset,
+		FileSize: dataSegmentFileSize,
+		MaxProt:  VM_PROT_READ | VM_PROT_WRITE,
+		InitProt: VM_PROT_READ | VM_PROT_WRITE,
+		NSects:   1,
+		Flags:    0,
+	}
+
+	dataSection := section64{
+		Sectname:  dataSectname,
+		Segname:   dataSegname,
+		Addr:      dataVMAddr,    // VM address of data section
+		Size:      dataSize,      // Size of actual data
+		Offset:    uint32(dataOffset),
+		Align:     3, // 2^3 = 8 byte alignment (for 64-bit data)
+		Reloff:    0,
+		Nreloc:    0,
+		Flags:     0, // S_REGULAR
+		Reserved1: 0,
+		Reserved2: 0,
+		Reserved3: 0,
 	}
 
 	// Build __LINKEDIT segment (for code signatures and other link-edit data)
@@ -402,6 +467,15 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	if err := writeStruct(file, &section); err != nil {
 		return err
 	}
+	// Write __DATA segment (if we have data)
+	if hasDataSection {
+		if err := writeStruct(file, &dataSegment); err != nil {
+			return err
+		}
+		if err := writeStruct(file, &dataSection); err != nil {
+			return err
+		}
+	}
 	// Write __LINKEDIT segment
 	if err := writeStruct(file, &linkedit); err != nil {
 		return err
@@ -485,9 +559,15 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	w.logger.Printf("\nSegments:\n")
 	w.logger.Printf("  __PAGEZERO:        vm=0x%x-0x%x (size=0x%x)\n", uint64(0), uint64(0x100000000), uint64(0x100000000))
 	w.logger.Printf("  __TEXT:            vm=0x%x-0x%x (size=0x%x), file=0x%x-0x%x\n",
-		vmAddr, vmAddr+vmSize, vmSize, uint64(0), textSegmentFileSize)
+		vmAddr, vmAddr+textVMSize, textVMSize, uint64(0), textSegmentFileSize)
 	w.logger.Printf("    __text section:  vm=0x%x-0x%x (size=0x%x), file=0x%x\n",
 		vmAddr+codeOffset, vmAddr+codeOffset+machineCodeSize, machineCodeSize, codeOffset)
+	if hasDataSection {
+		w.logger.Printf("  __DATA:            vm=0x%x-0x%x (size=0x%x), file=0x%x-0x%x\n",
+			dataVMAddr, dataVMAddr+dataVMSize, dataVMSize, dataOffset, dataOffset+dataSegmentFileSize)
+		w.logger.Printf("    __data section:  vm=0x%x-0x%x (size=0x%x), file=0x%x\n",
+			dataVMAddr, dataVMAddr+dataSize, dataSize, dataOffset)
+	}
 	w.logger.Printf("  __LINKEDIT:        vm=0x%x-0x%x (size=0x%x), file=0x%x\n",
 		linkeditVMAddr, linkeditVMAddr+linkeditVMSize, linkeditVMSize, linkeditOffset)
 	w.logger.Printf("\nEntry point:         0x%x (file offset 0x%x)\n", vmAddr+codeOffset, codeOffset)
@@ -504,14 +584,30 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 		return err
 	}
 
-	// Pad the __TEXT segment to match vmSize
-	// The __TEXT segment starts at file offset 0 and should have filesize = vmSize
+	// Pad the __TEXT segment to match file size
+	// The __TEXT segment starts at file offset 0 and should have filesize = textSegmentFileSize
 	currentPos := codeOffset + machineCodeSize
-	textPadding := vmSize - currentPos
+	textPadding := textSegmentFileSize - currentPos
 	if textPadding > 0 {
 		padding := make([]byte, textPadding)
 		if _, err := file.Write(padding); err != nil {
 			return err
+		}
+	}
+
+	// Write __DATA segment data (if we have data)
+	if hasDataSection {
+		// We're now at dataOffset (which equals textSegmentFileSize)
+		if _, err := file.Write(data); err != nil {
+			return err
+		}
+		// Pad to fill the data segment
+		dataPadding := dataSegmentFileSize - dataSize
+		if dataPadding > 0 {
+			padding := make([]byte, dataPadding)
+			if _, err := file.Write(padding); err != nil {
+				return err
+			}
 		}
 	}
 

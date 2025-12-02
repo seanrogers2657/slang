@@ -117,10 +117,11 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 **Segments:**
 - `__PAGEZERO`: 4GB null pointer protection
 - `__TEXT`: Code segment with `__text` section
+- `__DATA`: Data segment with `__data` section (when data directives present)
 - `__LINKEDIT`: Link-edit data (code signatures, symbol table)
 
-**Load Commands (16 total):**
-- `LC_SEGMENT_64`: __PAGEZERO, __TEXT, __LINKEDIT
+**Load Commands (16-17 total):**
+- `LC_SEGMENT_64`: __PAGEZERO, __TEXT, [__DATA], __LINKEDIT
 - `LC_LOAD_DYLINKER`: `/usr/lib/dyld`
 - `LC_LOAD_DYLIB`: `/usr/lib/libSystem.B.dylib`
 - `LC_MAIN`: Entry point
@@ -217,7 +218,7 @@ Table-driven tests covering:
 - Byte/half-word loads: `ldrb`, `ldrh`, `strb`, `strh`
 
 ### Features
-- `__DATA` segment in Mach-O (data is parsed but not linked)
+- PC-relative data access (requires `adr`/`adrp` to address data symbols)
 - Object file generation (`.o` files)
 - Multi-file linking
 - Relocations for external symbols

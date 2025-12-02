@@ -122,3 +122,16 @@ func (st *SymbolTable) All() []*Symbol {
 	}
 	return symbols
 }
+
+// AdjustAddresses adjusts symbol addresses based on section base addresses
+// This is called after Mach-O layout is calculated to convert relative
+// addresses to absolute VM addresses
+func (st *SymbolTable) AdjustAddresses(textBase, dataBase uint64) {
+	for _, symbol := range st.symbols {
+		if symbol.Section == SectionText {
+			symbol.Address += textBase
+		} else if symbol.Section == SectionData {
+			symbol.Address += dataBase
+		}
+	}
+}

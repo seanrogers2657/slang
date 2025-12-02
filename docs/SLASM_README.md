@@ -163,6 +163,7 @@ _start:
 - **Mach Header** - ARM64, EXECUTE, with PIE/DYLDLINK/TWOLEVEL/NOUNDEFS flags
 - **__PAGEZERO** segment - Memory protection (0x0 - 0x100000000)
 - **__TEXT** segment with **__text** section - Executable code
+- **__DATA** segment with **__data** section - Writable data (when data directives present)
 - **__LINKEDIT** segment - Link-edit data (code signature, symbol table)
 - **LC_LOAD_DYLINKER** - Loads `/usr/lib/dyld`
 - **LC_LOAD_DYLIB** - Links `/usr/lib/libSystem.B.dylib`
@@ -254,7 +255,7 @@ go test -v ./assembler/slasm -run TestEndToEnd_ComplexPrograms
 - Byte/half-word loads: `ldrb`, `ldrh`, `strb`, `strh`
 
 ### Features
-- `__DATA` segment in Mach-O (data is parsed but not linked)
+- PC-relative data access (requires `adr`/`adrp` to address data symbols)
 - Object file generation (`.o` files)
 - Multi-file linking
 - Relocations for external symbols

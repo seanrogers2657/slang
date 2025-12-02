@@ -201,6 +201,55 @@ func TestEncodeMsub(t *testing.T) {
 	}
 }
 
+func TestEncodeNeg(t *testing.T) {
+	encoder := NewEncoder(NewSymbolTable())
+
+	tests := []struct {
+		name     string
+		inst     *Instruction
+		expected string // hex little-endian
+	}{
+		{
+			name: "neg x1, x0",
+			inst: &Instruction{
+				Mnemonic: "neg",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: "x1"},
+					{Type: OperandRegister, Value: "x0"},
+				},
+			},
+			// NEG x1, x0 = SUB x1, XZR, x0 = 0xcb0003e1
+			expected: "e10300cb",
+		},
+		{
+			name: "neg x2, x5",
+			inst: &Instruction{
+				Mnemonic: "neg",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: "x2"},
+					{Type: OperandRegister, Value: "x5"},
+				},
+			},
+			// NEG x2, x5 = SUB x2, XZR, x5 = 0xcb0503e2
+			expected: "e20305cb",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			bytes, err := encoder.Encode(tc.inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(bytes)
+			if got != tc.expected {
+				t.Errorf("Expected %s, got %s", tc.expected, got)
+			}
+		})
+	}
+}
+
 func TestEncodeUdiv(t *testing.T) {
 	tests := []struct {
 		name        string

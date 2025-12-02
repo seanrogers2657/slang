@@ -1,6 +1,6 @@
+; @test: exit_code=0
 ; Test .space data directive
-; This file demonstrates zero-filled buffer declarations
-; Note: Full .data section execution requires ADRP/ADR support (future enhancement)
+; Demonstrates zero-filled buffer declarations
 
 .data
 ; Buffer of 32 zero bytes

@@ -1,3 +1,4 @@
+// @test: exit_code=42
 // data_section.s - Demonstrate various data section directives
 // Shows .byte, .space, .asciz, .align directives
 

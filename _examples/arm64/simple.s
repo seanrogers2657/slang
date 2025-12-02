@@ -1,5 +1,4 @@
-; as -arch arm64 _examples/arm64/simple.s
-; ld -o test simple.o -lSystem -syslibroot `xcrun -sdk macosx --show-sdk-path` -e _start -arch arm64
+; @test: exit_code=1
 .global _start
 
 _start:

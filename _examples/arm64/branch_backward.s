@@ -1,5 +1,5 @@
+; @test: exit_code=5
 ; Test backward branch (simple counted loop)
-; Expected exit code: 5
 ; Counts down from 5 to 0 using backward branch
 .global _start
 

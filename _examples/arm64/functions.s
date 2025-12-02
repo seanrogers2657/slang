@@ -1,5 +1,7 @@
+// @test: exit_code=60
+// @test: skip=uses lsl instruction not supported by slasm
 // functions.s - Demonstrate function calls with bl and ret
-// Shows proper function calling convention with frame pointer
+// (10+20)*2 = 60
 
 .global _start
 .align 4

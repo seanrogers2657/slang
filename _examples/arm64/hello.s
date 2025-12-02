@@ -1,3 +1,6 @@
+// @test: exit_code=0
+// @test: stdout=Hello, World!\n
+// @test: skip=uses = assignment syntax not supported by slasm
 // hello.s - Print "Hello, World!" to stdout
 // Demonstrates data section, string literals, and write syscall
 

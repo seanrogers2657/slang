@@ -1,5 +1,6 @@
+// @test: exit_code=0
 // relocations.s - Demonstrate @PAGE and @PAGEOFF relocations
-// These are required for accessing data on macOS ARM64
+// Required for accessing data on macOS ARM64
 
 .data
 .align 3

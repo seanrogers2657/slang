@@ -1,5 +1,5 @@
+; @test: exit_code=42
 ; Test simple memory operations (str/ldr)
-; Expected exit code: 42
 ; Store a value to stack, load it back
 .global _start
 

@@ -1,6 +1,6 @@
+; @test: exit_code=30
 ; Test pair memory operations (stp/ldp)
-; Expected exit code: 30
-; Store and load register pairs
+; Store (10, 20) and load back, then add
 .global _start
 
 _start:

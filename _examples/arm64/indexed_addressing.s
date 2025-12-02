@@ -1,6 +1,6 @@
+// @test: exit_code=42
 // indexed_addressing.s - Test pre-indexed and post-indexed addressing modes
 // Tests: str [base, #offset]!, ldr [base], #offset (writeback modes)
-// Expected exit code: 42
 
 .global _start
 .align 4

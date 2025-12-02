@@ -1,6 +1,6 @@
+; @test: exit_code=7
 ; Test various memory offsets
-; Expected exit code: 7
-; Store multiple values at different offsets, sum them
+; Store 1,2,4 at different offsets, sum them = 7
 .global _start
 
 _start:

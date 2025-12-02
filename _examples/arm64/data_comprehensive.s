@@ -1,6 +1,6 @@
+; @test: exit_code=42
 ; Comprehensive test of all data directives
-; This file demonstrates the full range of data declarations supported
-; Note: Full .data section execution requires ADRP/ADR support (future enhancement)
+; Demonstrates the full range of data declarations supported
 
 .data
 ; String data

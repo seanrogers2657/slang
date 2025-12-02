@@ -1,5 +1,5 @@
+; @test: exit_code=1
 ; Test conditional branches (b.eq, b.ne)
-; Expected exit code: 1
 ; Tests equal and not-equal conditions
 .global _start
 

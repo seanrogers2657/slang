@@ -1,5 +1,5 @@
-; Test all comparison condition codes
-; Expected exit code: 0 (all tests pass)
+; @test: exit_code=0
+; Test all comparison condition codes (all tests pass)
 ; Tests: lt, gt, le, ge for signed comparisons
 .global _start
 

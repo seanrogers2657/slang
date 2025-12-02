@@ -1,6 +1,6 @@
+// @test: exit_code=7
 // modulo.s - Test modulo operation using udiv and msub
-// Tests: udiv, msub (compute remainder)
-// Expected exit code: 7 (47 % 10 = 7)
+// Tests: udiv, msub (47 % 10 = 7)
 
 .global _start
 .align 4

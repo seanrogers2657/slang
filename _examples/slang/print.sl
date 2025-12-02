@@ -1,3 +1,6 @@
+// @test: exit_code=0
+// @test: stdout=8\n8\n8\n10\n0\n42\n
+// @test: requires_system_asm=true
 fn main() {
     print 5 + 3
     print 10 - 2

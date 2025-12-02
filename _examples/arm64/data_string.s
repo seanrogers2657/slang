@@ -1,6 +1,6 @@
+; @test: exit_code=0
 ; Test .asciz string data directive
-; This file demonstrates null-terminated string declarations
-; Note: Full .data section execution requires ADRP/ADR support (future enhancement)
+; Demonstrates null-terminated string declarations
 
 .data
 ; Simple string

@@ -105,46 +105,14 @@ go run cmd/slasm/main.go build -o output --verbose input.s
 
 See: [SLASM Documentation](SLASM_README.md)
 
-### slasm-it - Assembler Integration Tests
-**Location:** `cmd/slasm-it/`
+## Debug Tools
 
-Integration test runner for the native slasm assembler.
+### slasm-debug - Assembler Debug Tool
+**Location:** `cmd/slasm-debug/`
 
-```bash
-# Run all assembler integration tests
-go run cmd/slasm-it/main.go
+Debug tool for inspecting slasm internals (tokens, AST, symbol table, etc.).
 
-# Run with verbose output
-go run cmd/slasm-it/main.go --verbose
-```
-
-**Tests include:**
-- Lexer integration tests
-- Parser integration tests
-- Symbol table integration tests
-- Layout integration tests
-- End-to-end assembly tests
-
-## Testing Tools
-
-### it - Compiler Integration Tests
-**Location:** `cmd/it/`
-
-Integration test runner for the Slang compiler.
-
-```bash
-# Run all compiler integration tests
-go run cmd/it/main.go
-
-# Run with verbose output
-go run cmd/it/main.go --verbose
-```
-
-**Tests include:**
-- End-to-end compilation tests
-- Pipeline stage tests
-- Example file tests
-- Regression tests
+See: [Debug Guide](SLASM_DEBUG_GUIDE.md)
 
 ## Usage Patterns
 
@@ -182,9 +150,9 @@ go run cmd/slasm/main.go build -o output --verbose input.s
 # 5. Test the compiler
 go run cmd/sl/main.go run _examples/slang/add.sl
 
-# 6. Run integration tests
-go run cmd/it/main.go --verbose
-go run cmd/slasm-it/main.go --verbose
+# 6. Run e2e tests
+go test ./test/sl/...    # Slang compiler e2e tests
+go test ./test/slasm/... # Assembler e2e tests
 ```
 
 ## Documentation

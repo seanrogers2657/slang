@@ -18,7 +18,12 @@ This repository follows strict organizational rules:
    - `cmd/slasm-debug/` - Assembler debug tool
    - etc.
 
-3. **Testing Documentation**: Testing guides and documentation should be in `docs/` (e.g., `docs/TESTING.md`)
+3. **End-to-End Tests**: All e2e tests must be in the `test/` directory with packages for each tool:
+   - `test/sl/` - Slang compiler e2e tests (reads from `_examples/slang/*.sl`)
+   - `test/slasm/` - Assembler e2e tests (reads from `_examples/arm64/*.s`)
+   - `test/testutil/` - Shared test utilities (expectation parsing)
+
+4. **Testing Documentation**: Testing guides and documentation should be in `docs/` (e.g., `docs/TESTING.md`)
 
 ## Project Overview
 
@@ -37,6 +42,7 @@ The compiler currently supports:
   - Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
 - **Statements**: Print statements, expression statements, variable declarations
 - **Functions**: Function declarations with `fn` keyword (e.g., `fn main() { ... }`)
+- **Comments**: Line comments with `//` (e.g., `// this is a comment`)
 
 ## Development Commands
 
@@ -283,9 +289,44 @@ All tests follow table-driven patterns with subtests using `t.Run()`. See `docs/
 - Multi-statement program analysis
 - Integration with error framework
 
+### End-to-End Tests
+
+E2E tests live in the `test/` directory and read example files from `_examples/`:
+
+- **`test/sl/e2e_test.go`** - Slang compiler e2e tests (reads `_examples/slang/*.sl`)
+- **`test/slasm/e2e_test.go`** - Assembler e2e tests (reads `_examples/arm64/*.s`)
+- **`test/testutil/`** - Shared expectation parsing utilities
+
+Example files use `@test:` directives in header comments to specify expectations:
+
+```slang
+// @test: exit_code=42
+// @test: requires_system_asm=true
+fn main() {
+    42
+}
+```
+
+```asm
+; @test: exit_code=5
+; @test: skip=reason to skip
+.global _start
+...
+```
+
+Supported directives:
+- `exit_code=N` - Expected exit code (default: 0)
+- `stdout=text` - Expected stdout output
+- `stderr=text` - Expected stderr output
+- `skip=reason` - Skip the test with a reason
+- `requires_system_asm=true` - Test requires system assembler (sl tests only)
+- `expect_error=true` - Test expects a compilation error
+- `error_stage=lexer|parser|semantic` - Which stage should produce the error
+- `error_contains=text` - Error message should contain this text
+
 ### Integration Tests
 
-`integration_test.go` contains end-to-end tests that verify the entire pipeline:
+`integration_test.go` contains pipeline integration tests:
 - `TestEndToEndCompilation` - Full source-to-assembly compilation
 - `TestCompilationPipelineStages` - Individual stage verification
 - `TestExampleFile` - Example file validation
@@ -308,6 +349,8 @@ When adding a new operator, you must update three files:
    - Add case in `GenerateExpr()` switch statement with ARM64 instructions
 
 4. **Tests**: Update test files for all three components
+
+5. **E2E Tests**: Add example files to `_examples/slang/` with `@test:` directives
 
 ### Variable Syntax
 

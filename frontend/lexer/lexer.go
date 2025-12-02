@@ -212,6 +212,19 @@ func (p *lexer) ParseString() {
 	p.Errors = append(p.Errors, fmt.Errorf("unterminated string literal"))
 }
 
+// skipLineComment skips a // comment until end of line
+func (p *lexer) skipLineComment() {
+	// Skip the //
+	p.advance()
+	p.advance()
+
+	// Skip until end of line or end of file
+	for p.Index < len(p.Source) && p.Source[p.Index] != '\n' {
+		p.advance()
+	}
+	// Don't consume the newline - let the main loop handle it
+}
+
 func (p *lexer) ParseIdentifierOrKeyword() {
 	startPos := p.currentPos()
 	ident := ""
@@ -313,9 +326,14 @@ func (p *lexer) Parse() {
 			p.Tokens = append(p.Tokens, Token{Type: TokenTypeMultiply, Value: "*", Pos: pos})
 			p.advance()
 		} else if b == '/' {
-			pos := p.currentPos()
-			p.Tokens = append(p.Tokens, Token{Type: TokenTypeDivide, Value: "/", Pos: pos})
-			p.advance()
+			// Check for // comment
+			if p.Index+1 < len(p.Source) && p.Source[p.Index+1] == '/' {
+				p.skipLineComment()
+			} else {
+				pos := p.currentPos()
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeDivide, Value: "/", Pos: pos})
+				p.advance()
+			}
 		} else if b == '%' {
 			pos := p.currentPos()
 			p.Tokens = append(p.Tokens, Token{Type: TokenTypeModulo, Value: "%", Pos: pos})

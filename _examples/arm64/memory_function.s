@@ -1,6 +1,6 @@
+; @test: exit_code=100
 ; Test function with stack frame (stp/ldp for frame pointer)
-; Expected exit code: 100
-; Simulates a function call with proper prologue/epilogue
+; 50 * 2 = 100
 .global _start
 
 _start:

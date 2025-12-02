@@ -1,3 +1,4 @@
+// @test: exit_code=0
 // load_store.s - Demonstrate load and store instructions
 // Shows ldr, str, ldp, stp with various addressing modes
 

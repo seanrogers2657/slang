@@ -1,6 +1,5 @@
-; Test forward branch
-; Expected exit code: 42
-; Branch forward to set exit code
+; @test: exit_code=42
+; Test forward branch - branch forward to set exit code
 .global _start
 
 _start:

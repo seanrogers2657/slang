@@ -11,7 +11,8 @@ The testing framework covers all major components of the Slang compiler:
 - **Semantic Analyzer** (frontend/semantic) - Type checking and validation
 - **Code Generator** (backend/as) - ARM64 assembly generation
 - **Assembler** (assembler/slasm) - Native ARM64 assembler
-- **Integration Tests** - End-to-end compilation pipeline
+- **End-to-End Tests** (test/) - E2E tests for sl and slasm
+- **Integration Tests** - Pipeline integration tests
 
 ## Test Coverage
 
@@ -60,7 +61,8 @@ go test ./frontend/parser/...
 go test ./frontend/semantic/...
 go test ./backend/as/...
 go test ./assembler/slasm/...
-go test ./cmd/sl/...
+go test ./test/sl/...      # E2E tests for sl compiler
+go test ./test/slasm/...   # E2E tests for slasm assembler
 
 # Run tests with race detector
 go test ./... -race
@@ -68,7 +70,7 @@ go test ./... -race
 # Run specific test by name
 go test -run TestLexerNumbers
 go test -run TestEndToEndCompilation
-go test -run TestSLRunCommand
+go test ./test/sl/... -run TestE2E
 
 # Run assembler encoder tests
 go test ./assembler/slasm/... -run TestEncode
@@ -129,7 +131,7 @@ End-to-end tests for the complete compilation pipeline:
 
 ### Assembler Tests (`assembler/slasm/`)
 
-Tests for the native ARM64 assembler:
+Unit tests for the native ARM64 assembler:
 
 **Lexer Tests** (`lexer_test.go`):
 - **TestLexerDirectives**: Parsing of `.global`, `.align`, data directives
@@ -168,31 +170,75 @@ Tests for the native ARM64 assembler:
 - **TestEncodeStr**: STR instruction encoding
 - **TestEncodeData**: Data directive encoding (.byte, .word, .quad, .asciz)
 
-**End-to-End Tests** (`e2e_test.go`):
-Table-driven tests that assemble and execute real ARM64 programs:
-- **TestEndToEnd_BasicExitCodes**: Exit codes (0, 1, 42, 255)
-- **TestEndToEnd_Branches**: Unconditional branches (forward, backward)
-- **TestEndToEnd_ConditionalBranches**: Conditional branches (eq, ne, lt, gt, le, ge)
-- **TestEndToEnd_BranchLink**: Branch with link and return
-- **TestEndToEnd_NestedFunctionCalls**: Nested function calls
-- **TestEndToEnd_MemoryOperations**: str/ldr with offsets, pair operations
-- **TestEndToEnd_WritebackAddressing**: Pre-indexed (`[sp, #-16]!`) and post-indexed (`[sp], #16`) modes
-- **TestEndToEnd_Arithmetic**: Arithmetic operations
-- **TestEndToEnd_Comparison**: Comparison operations
-- **TestEndToEnd_ComplexPrograms**: Factorial, fibonacci, sum loops, recursive functions
+### End-to-End Tests (`test/`)
 
-### CLI Tests (`cmd/sl/main_test.go`)
+E2E tests are located in the `test/` directory and read example files from `_examples/`. Each test file uses `@test:` directives in header comments to specify expectations.
 
-Tests for the `sl` compiler CLI commands:
+**Slang Compiler E2E Tests** (`test/sl/e2e_test.go`):
+Reads example files from `_examples/slang/*.sl` and runs them through the compiler pipeline.
 
-- **TestSLRunCommand**: Tests the `run` command with various source programs
-  - Simple addition
-  - Subtraction
-  - Multiplication
-  - Verifies assembly file generation
-- **TestSLRunCommandMissingFile**: Error handling for missing source files
-- **TestSLRunCommandNoArguments**: Error handling for missing arguments
-- **TestSLBuildCommand**: Currently skipped due to hardcoded paths in build command
+**Assembler E2E Tests** (`test/slasm/e2e_test.go`):
+Reads example files from `_examples/arm64/*.s` and assembles/executes them.
+
+**Shared Test Utilities** (`test/testutil/`):
+- `expectations.go` - Parses `@test:` directives from file headers
+- `expectations_test.go` - Tests for the expectation parser
+
+#### `@test:` Directive Format
+
+Example files use `@test:` directives in header comments:
+
+```slang
+// @test: exit_code=42
+// @test: requires_system_asm=true
+fn main() {
+    42
+}
+```
+
+```asm
+; @test: exit_code=5
+; @test: skip=reason to skip
+.global _start
+_start:
+    mov x0, #5
+    mov x16, #1
+    svc #0x80
+```
+
+**Supported directives:**
+| Directive | Description | Default |
+|-----------|-------------|---------|
+| `exit_code=N` | Expected exit code | 0 |
+| `stdout=text` | Expected stdout output | (empty) |
+| `stderr=text` | Expected stderr output | (empty) |
+| `skip=reason` | Skip the test with a reason | (not skipped) |
+| `requires_system_asm=true` | Test requires system assembler (sl tests only) | false |
+| `expect_error=true` | Test expects a compilation error | false |
+| `error_stage=stage` | Which stage should produce the error (lexer, parser, semantic) | (any) |
+| `error_contains=text` | Error message should contain this text | (any) |
+
+#### Adding New E2E Tests
+
+1. Create an example file in the appropriate `_examples/` directory:
+   - Slang: `_examples/slang/your_test.sl`
+   - ARM64: `_examples/arm64/your_test.s`
+
+2. Add `@test:` directives at the top of the file:
+   ```slang
+   // @test: exit_code=0
+   fn main() {
+       // your test code
+   }
+   ```
+
+3. Run the tests:
+   ```bash
+   go test ./test/sl/...    # Slang e2e tests
+   go test ./test/slasm/... # Assembler e2e tests
+   ```
+
+Tests run in parallel using `t.Parallel()` for efficiency.
 
 ## Test Patterns
 
@@ -348,6 +394,32 @@ func TestNewIntegrationScenario(t *testing.T) {
 }
 ```
 
+### For E2E Tests
+
+Add example files to `_examples/` with `@test:` directives:
+
+**Slang E2E Test** (`_examples/slang/new_feature.sl`):
+```slang
+// @test: exit_code=0
+fn main() {
+    val x = 42
+    print x
+}
+```
+
+**ARM64 E2E Test** (`_examples/arm64/new_feature.s`):
+```asm
+; @test: exit_code=42
+.global _start
+.align 4
+_start:
+    mov x0, #42
+    mov x16, #1
+    svc #0x80
+```
+
+The tests will automatically discover new files in these directories.
+
 ## Continuous Integration
 
 The testing framework is designed to be CI-friendly:
@@ -405,18 +477,18 @@ go tool cover -func=coverage.out
 ## Known Limitations
 
 1. **Build command not tested**: The `sl build` command has hardcoded paths making it difficult to test in isolation
-2. **Assembly execution not tested**: Tests verify generated assembly structure but don't execute it (except in CLI run command tests)
-3. **File I/O not mocked**: Integration tests could benefit from filesystem mocking
+2. **File I/O not mocked**: Integration tests could benefit from filesystem mocking
 
 ## Future Improvements
 
 - [x] Add tests for `sl run` command
+- [x] Add file-based e2e tests with expectation parsing
+- [x] Add tests that verify exit codes from executed programs
 - [ ] Fix `sl build` command hardcoded paths and add tests
 - [ ] Add benchmark tests for performance tracking
 - [ ] Add fuzzing tests for robustness
 - [ ] Add property-based testing
 - [ ] Mock filesystem operations in integration tests
-- [ ] Add tests that verify exit codes from executed programs
 - [ ] Add mutation testing to verify test quality
 
 ## Contributing

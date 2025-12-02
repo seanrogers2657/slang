@@ -1,6 +1,6 @@
+; @test: exit_code=1
 ; Test .word and .quad data directives
-; This file demonstrates multi-byte integer data declarations
-; Note: Full .data section execution requires ADRP/ADR support (future enhancement)
+; Demonstrates multi-byte integer data declarations
 
 .data
 ; 32-bit word

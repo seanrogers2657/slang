@@ -1,5 +1,5 @@
+; @test: exit_code=0
 ; Test unconditional branch (b)
-; Expected exit code: 0
 ; The branch skips the instruction that sets x0 to 42
 .global _start
 

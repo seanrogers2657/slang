@@ -1,3 +1,6 @@
+// @test: exit_code=0
+// @test: stdout=50\n55\n25\n
+// @test: requires_system_asm=true
 fn main() {
     val a = 5
     val b = 10

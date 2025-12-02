@@ -1,6 +1,6 @@
+; @test: exit_code=42
 ; Test .byte data directive
-; This file demonstrates byte data declarations
-; Note: Full .data section execution requires ADRP/ADR support (future enhancement)
+; Demonstrates byte data declarations
 
 .data
 ; Single byte values

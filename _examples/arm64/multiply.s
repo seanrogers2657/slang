@@ -1,3 +1,4 @@
+// @test: exit_code=15
 .global _start
 .align 4
 

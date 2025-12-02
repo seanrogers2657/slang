@@ -1,3 +1,4 @@
+// @test: exit_code=1
 // conditional.s - Demonstrate conditional execution and branches
 // Shows cmp, cset, and conditional branches (beq, bne, blt, etc.)
 

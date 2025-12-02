@@ -684,3 +684,89 @@ func TestLexerVariableDeclaration(t *testing.T) {
 		})
 	}
 }
+
+func TestLexerComments(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []Token
+	}{
+		{
+			name:     "line comment only",
+			input:    "// this is a comment",
+			expected: []Token{},
+		},
+		{
+			name:  "line comment after code",
+			input: "5 + 3 // add numbers",
+			expected: []Token{
+				{Type: TokenTypeInteger, Value: "5"},
+				{Type: TokenTypePlus, Value: "+"},
+				{Type: TokenTypeInteger, Value: "3"},
+			},
+		},
+		{
+			name:  "line comment with newline",
+			input: "// comment\n5",
+			expected: []Token{
+				{Type: TokenTypeNewline, Value: "\n"},
+				{Type: TokenTypeInteger, Value: "5"},
+			},
+		},
+		{
+			name:  "multiple comments",
+			input: "// first\n// second\n5",
+			expected: []Token{
+				{Type: TokenTypeNewline, Value: "\n"},
+				{Type: TokenTypeNewline, Value: "\n"},
+				{Type: TokenTypeInteger, Value: "5"},
+			},
+		},
+		{
+			name:  "comment with @test directive",
+			input: "// @test: exit_code=0\nfn main() { }",
+			expected: []Token{
+				{Type: TokenTypeNewline, Value: "\n"},
+				{Type: TokenTypeFn, Value: "fn"},
+				{Type: TokenTypeIdentifier, Value: "main"},
+				{Type: TokenTypeLParen, Value: "("},
+				{Type: TokenTypeRParen, Value: ")"},
+				{Type: TokenTypeLBrace, Value: "{"},
+				{Type: TokenTypeRBrace, Value: "}"},
+			},
+		},
+		{
+			name:  "division not confused with comment",
+			input: "10 / 2",
+			expected: []Token{
+				{Type: TokenTypeInteger, Value: "10"},
+				{Type: TokenTypeDivide, Value: "/"},
+				{Type: TokenTypeInteger, Value: "2"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("unexpected errors: %v", l.Errors)
+			}
+
+			if len(l.Tokens) != len(tt.expected) {
+				t.Fatalf("expected %d tokens, got %d: %v", len(tt.expected), len(l.Tokens), l.Tokens)
+			}
+
+			for i, token := range l.Tokens {
+				if token.Type != tt.expected[i].Type {
+					t.Errorf("token %d: expected type %v, got %v", i, tt.expected[i].Type, token.Type)
+				}
+				if token.Value != tt.expected[i].Value {
+					t.Errorf("token %d: expected value %q, got %q", i, tt.expected[i].Value, token.Value)
+				}
+			}
+		})
+	}
+}

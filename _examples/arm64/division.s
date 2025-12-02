@@ -1,6 +1,6 @@
+// @test: exit_code=5
 // division.s - Test unsigned and signed division instructions
-// Tests: udiv, sdiv
-// Expected exit code: 5 (100 / 20 = 5)
+// Tests: udiv, sdiv (100 / 20 = 5)
 
 .global _start
 .align 4

@@ -1,5 +1,6 @@
+// @test: exit_code=13
 // nested_calls_writeback.s - Nested function calls with stack frame management
-// Demonstrates proper use of pre/post-indexed addressing for callee-saved registers
+// compute(5) = (5 * 2) + 3 = 13
 
 .global _start
 .align 4

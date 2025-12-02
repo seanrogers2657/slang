@@ -1,6 +1,5 @@
+// @test: exit_code=30
 // stack_writeback.s - Demonstrate pre-indexed and post-indexed addressing modes
-// These are essential for stack operations (push/pop patterns)
-//
 // Pre-indexed:  [sp, #-16]!  - First adjusts sp, then accesses memory (push)
 // Post-indexed: [sp], #16    - First accesses memory, then adjusts sp (pop)
 

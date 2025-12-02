@@ -1,6 +1,6 @@
+; @test: exit_code=10
 ; Test stack operations with offsets
-; Expected exit code: 10
-; Store two values and add them
+; Store two values (3, 7) and add them
 .global _start
 
 _start:

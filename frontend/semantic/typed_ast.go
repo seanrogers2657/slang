@@ -107,17 +107,32 @@ func (s *TypedBlockStmt) typedStmtNode()    {}
 
 // TypedVarDeclStmt represents a typed variable declaration
 type TypedVarDeclStmt struct {
-	ValKeyword  ast.Position
+	Keyword     ast.Position
+	Mutable     bool
 	Name        string
 	NamePos     ast.Position
 	Equals      ast.Position
 	Initializer TypedExpression
 }
 
-func (s *TypedVarDeclStmt) Pos() ast.Position { return s.ValKeyword }
+func (s *TypedVarDeclStmt) Pos() ast.Position { return s.Keyword }
 func (s *TypedVarDeclStmt) End() ast.Position { return s.Initializer.End() }
 func (s *TypedVarDeclStmt) GetType() Type     { return TypeVoid }
 func (s *TypedVarDeclStmt) typedStmtNode()    {}
+
+// TypedAssignStmt represents a typed variable assignment
+type TypedAssignStmt struct {
+	Name    string
+	NamePos ast.Position
+	Equals  ast.Position
+	Value   TypedExpression
+	VarType Type // the variable's declared type
+}
+
+func (s *TypedAssignStmt) Pos() ast.Position { return s.NamePos }
+func (s *TypedAssignStmt) End() ast.Position { return s.Value.End() }
+func (s *TypedAssignStmt) GetType() Type     { return TypeVoid }
+func (s *TypedAssignStmt) typedStmtNode()    {}
 
 // ============================================================================
 // Typed Declarations

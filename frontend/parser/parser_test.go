@@ -902,6 +902,122 @@ func TestParserVariableDeclaration(t *testing.T) {
 	}
 }
 
+func TestParserMutableVariableDeclaration(t *testing.T) {
+	tests := []struct {
+		name        string
+		source      string
+		varName     string
+		mutable     bool
+	}{
+		{
+			name:    "immutable variable with val",
+			source:  "fn main() {\n    val x = 5\n}",
+			varName: "x",
+			mutable: false,
+		},
+		{
+			name:    "mutable variable with var",
+			source:  "fn main() {\n    var x = 5\n}",
+			varName: "x",
+			mutable: true,
+		},
+		{
+			name:    "mutable variable with expression",
+			source:  "fn main() {\n    var result = 10 + 20\n}",
+			varName: "result",
+			mutable: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			fnDecl := program.Declarations[0].(*ast.FunctionDecl)
+			varDecl, ok := fnDecl.Body.Statements[0].(*ast.VarDeclStmt)
+			if !ok {
+				t.Fatalf("expected VarDeclStmt, got %T", fnDecl.Body.Statements[0])
+			}
+
+			if varDecl.Name != tt.varName {
+				t.Errorf("expected variable name %q, got %q", tt.varName, varDecl.Name)
+			}
+
+			if varDecl.Mutable != tt.mutable {
+				t.Errorf("expected Mutable=%v, got %v", tt.mutable, varDecl.Mutable)
+			}
+		})
+	}
+}
+
+func TestParserAssignmentStatement(t *testing.T) {
+	tests := []struct {
+		name     string
+		source   string
+		varName  string
+	}{
+		{
+			name:    "simple assignment",
+			source:  "fn main() {\n    var x = 5\n    x = 10\n}",
+			varName: "x",
+		},
+		{
+			name:    "assignment with expression",
+			source:  "fn main() {\n    var x = 5\n    x = x + 10\n}",
+			varName: "x",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			fnDecl := program.Declarations[0].(*ast.FunctionDecl)
+			if len(fnDecl.Body.Statements) < 2 {
+				t.Fatalf("expected at least 2 statements, got %d", len(fnDecl.Body.Statements))
+			}
+
+			// Second statement should be assignment
+			assignStmt, ok := fnDecl.Body.Statements[1].(*ast.AssignStmt)
+			if !ok {
+				t.Fatalf("expected AssignStmt, got %T", fnDecl.Body.Statements[1])
+			}
+
+			if assignStmt.Name != tt.varName {
+				t.Errorf("expected variable name %q, got %q", tt.varName, assignStmt.Name)
+			}
+
+			if assignStmt.Value == nil {
+				t.Error("expected value expression, got nil")
+			}
+		})
+	}
+}
+
 func TestParserIdentifierExpression(t *testing.T) {
 	tests := []struct {
 		name         string

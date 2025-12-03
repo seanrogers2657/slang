@@ -184,6 +184,8 @@ func GenerateProgram(program *ast.Program) (string, error) {
 			code, err = GeneratePrintStmtWithContext(s, ctx)
 		case *ast.VarDeclStmt:
 			code, err = GenerateVarDecl(s, ctx)
+		case *ast.AssignStmt:
+			code, err = GenerateAssignStmt(s, ctx)
 		default:
 			return "", fmt.Errorf("unknown statement type: %T", s)
 		}
@@ -219,7 +221,8 @@ func countVariables(stmts []ast.Statement) int {
 	return count
 }
 
-// GenerateVarDecl generates code for a variable declaration
+// GenerateVarDecl generates code for a variable declaration.
+// Similar to GenerateAssignStmt but declares a new variable slot.
 func GenerateVarDecl(stmt *ast.VarDeclStmt, ctx *CodeGenContext) (string, error) {
 	builder := strings.Builder{}
 
@@ -232,6 +235,30 @@ func GenerateVarDecl(stmt *ast.VarDeclStmt, ctx *CodeGenContext) (string, error)
 
 	// Allocate stack slot for this variable
 	offset := ctx.declareVariable(stmt.Name)
+
+	// Store the value to stack (relative to frame pointer x29)
+	builder.WriteString(fmt.Sprintf("    str x2, [x29, #-%d]\n", offset))
+
+	return builder.String(), nil
+}
+
+// GenerateAssignStmt generates code for a variable assignment.
+// Similar to GenerateVarDecl but uses an existing variable slot.
+func GenerateAssignStmt(stmt *ast.AssignStmt, ctx *CodeGenContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Generate code to evaluate the value (result in x2)
+	code, err := GenerateExprWithContext(stmt.Value, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(code)
+
+	// Get the existing stack slot for this variable
+	offset, ok := ctx.getVariableOffset(stmt.Name)
+	if !ok {
+		return "", fmt.Errorf("undefined variable: %s", stmt.Name)
+	}
 
 	// Store the value to stack (relative to frame pointer x29)
 	builder.WriteString(fmt.Sprintf("    str x2, [x29, #-%d]\n", offset))

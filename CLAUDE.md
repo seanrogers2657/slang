@@ -35,7 +35,7 @@ This repository follows strict organizational rules:
 4. **Code Generator** (`backend/as`) - Generates ARM64 assembly from the AST
 
 The compiler currently supports:
-- **Variables**: Immutable variables with `val` keyword (e.g., `val x = 5`)
+- **Variables**: Immutable (`val`) and mutable (`var`) variables (e.g., `val x = 5`, `var y = 10`)
 - **Expressions**: Binary expressions with integers
 - **Operators**:
   - Arithmetic: `+`, `-`, `*`, `/`, `%`
@@ -354,23 +354,27 @@ When adding a new operator, you must update three files:
 
 ### Variable Syntax
 
-Variables are declared using the `val` keyword (Kotlin-style, immutable):
+Variables are declared using `val` (immutable) or `var` (mutable) keywords (Kotlin-style):
 
 ```slang
 fn main() {
-    val x = 42           // declare x with value 42
-    val y = 10           // declare y with value 10
+    val x = 42           // declare immutable x with value 42
+    var y = 10           // declare mutable y with value 10
     val sum = x + y      // use variables in expressions
     print sum            // prints 52
 
+    y = y + 5            // reassign mutable variable
+    print y              // prints 15
+
     val result = x * 2 + y   // complex expressions work correctly
-    print result             // prints 94
+    print result             // prints 99
 }
 ```
 
 **Variable rules:**
 - Variables must be declared before use
-- Variables cannot be reassigned (immutable)
+- `val` variables cannot be reassigned (immutable)
+- `var` variables can be reassigned
 - Variable names start with a letter, followed by letters, digits, or underscores
 - Type is inferred from the initializer expression
 
@@ -379,11 +383,11 @@ fn main() {
 print x        // Error: undefined variable 'x'
 val x = 5
 val x = 10     // Error: variable 'x' is already declared in this scope
+x = 20         // Error: cannot assign to immutable variable 'x'
 ```
 
 ### Current Limitations
 
-- Variables are immutable (no reassignment after declaration)
 - No parentheses support in expressions
 - No control flow (if/else, loops)
 - No function parameters or return values

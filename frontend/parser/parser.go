@@ -202,9 +202,21 @@ func (p *parser) ParseStatement() ast.Statement {
 		return p.ParsePrintStatement()
 	}
 
-	// Check if it's a variable declaration
+	// Check if it's an immutable variable declaration (val)
 	if p.CurrentToken().Type == lexer.TokenTypeVal {
-		return p.ParseVarDecl()
+		return p.ParseVarDecl(false)
+	}
+
+	// Check if it's a mutable variable declaration (var)
+	if p.CurrentToken().Type == lexer.TokenTypeVar {
+		return p.ParseVarDecl(true)
+	}
+
+	// Check for assignment: identifier followed by '='
+	if p.CurrentToken().Type == lexer.TokenTypeIdentifier {
+		if p.peek().Type == lexer.TokenTypeAssign {
+			return p.ParseAssignment()
+		}
 	}
 
 	// Otherwise, it's an expression statement
@@ -216,15 +228,16 @@ func (p *parser) ParseStatement() ast.Statement {
 	return nil
 }
 
-// ParseVarDecl parses a variable declaration: val <name> = <expr>
-func (p *parser) ParseVarDecl() ast.Statement {
-	// Get position of 'val' keyword
-	valKeyword := p.CurrentToken().Pos
-	p.advance() // consume 'val'
+// ParseVarDecl parses a variable declaration: val <name> = <expr> or var <name> = <expr>
+func (p *parser) ParseVarDecl(mutable bool) ast.Statement {
+	// Get position of 'val' or 'var' keyword
+	keyword := p.CurrentToken().Pos
+	keywordName := p.CurrentToken().Value
+	p.advance() // consume 'val' or 'var'
 
 	// Expect identifier
 	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-		p.Errors = append(p.Errors, fmt.Errorf("expected identifier after 'val', got %s", p.CurrentToken().Value))
+		p.Errors = append(p.Errors, fmt.Errorf("expected identifier after '%s', got %s", keywordName, p.CurrentToken().Value))
 		return nil
 	}
 
@@ -249,11 +262,35 @@ func (p *parser) ParseVarDecl() ast.Statement {
 	}
 
 	return &ast.VarDeclStmt{
-		ValKeyword:  valKeyword,
+		Keyword:     keyword,
+		Mutable:     mutable,
 		Name:        name,
 		NamePos:     namePos,
 		Equals:      equalsPos,
 		Initializer: initializer,
+	}
+}
+
+// ParseAssignment parses a variable assignment: <name> = <expr>
+func (p *parser) ParseAssignment() ast.Statement {
+	name := p.CurrentToken().Value
+	namePos := p.CurrentToken().Pos
+	p.advance() // consume identifier
+
+	equalsPos := p.CurrentToken().Pos
+	p.advance() // consume '='
+
+	value := p.parseExpression(precedenceLowest)
+	if value == nil {
+		p.Errors = append(p.Errors, fmt.Errorf("expected expression after '='"))
+		return nil
+	}
+
+	return &ast.AssignStmt{
+		Name:    name,
+		NamePos: namePos,
+		Equals:  equalsPos,
+		Value:   value,
 	}
 }
 

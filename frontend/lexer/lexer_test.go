@@ -598,6 +598,13 @@ func TestLexerVariableDeclaration(t *testing.T) {
 			},
 		},
 		{
+			name:  "var keyword",
+			input: "var",
+			expected: []Token{
+				{Type: TokenTypeVar, Value: "var"},
+			},
+		},
+		{
 			name:  "assignment operator",
 			input: "=",
 			expected: []Token{
@@ -615,11 +622,33 @@ func TestLexerVariableDeclaration(t *testing.T) {
 			},
 		},
 		{
+			name:  "simple mutable variable declaration",
+			input: "var x = 5",
+			expected: []Token{
+				{Type: TokenTypeVar, Value: "var"},
+				{Type: TokenTypeIdentifier, Value: "x"},
+				{Type: TokenTypeAssign, Value: "="},
+				{Type: TokenTypeInteger, Value: "5"},
+			},
+		},
+		{
 			name:  "variable declaration with expression",
 			input: "val result = 10 + 20",
 			expected: []Token{
 				{Type: TokenTypeVal, Value: "val"},
 				{Type: TokenTypeIdentifier, Value: "result"},
+				{Type: TokenTypeAssign, Value: "="},
+				{Type: TokenTypeInteger, Value: "10"},
+				{Type: TokenTypePlus, Value: "+"},
+				{Type: TokenTypeInteger, Value: "20"},
+			},
+		},
+		{
+			name:  "mutable variable declaration with expression",
+			input: "var counter = 10 + 20",
+			expected: []Token{
+				{Type: TokenTypeVar, Value: "var"},
+				{Type: TokenTypeIdentifier, Value: "counter"},
 				{Type: TokenTypeAssign, Value: "="},
 				{Type: TokenTypeInteger, Value: "10"},
 				{Type: TokenTypePlus, Value: "+"},

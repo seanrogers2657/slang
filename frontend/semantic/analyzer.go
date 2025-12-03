@@ -12,40 +12,46 @@ func toErrorPos(p ast.Position) errors.Position {
 	return errors.Position{Line: p.Line, Column: p.Column, Offset: p.Offset}
 }
 
+// VariableInfo holds information about a declared variable
+type VariableInfo struct {
+	Type    Type
+	Mutable bool
+}
+
 // Scope represents a lexical scope for variable lookup
 type Scope struct {
 	parent    *Scope
-	variables map[string]Type
+	variables map[string]VariableInfo
 }
 
 // newScope creates a new scope with an optional parent
 func newScope(parent *Scope) *Scope {
 	return &Scope{
 		parent:    parent,
-		variables: make(map[string]Type),
+		variables: make(map[string]VariableInfo),
 	}
 }
 
 // declare adds a variable to the current scope
 // Returns false if the variable is already declared in this scope
-func (s *Scope) declare(name string, typ Type) bool {
+func (s *Scope) declare(name string, typ Type, mutable bool) bool {
 	if _, exists := s.variables[name]; exists {
 		return false
 	}
-	s.variables[name] = typ
+	s.variables[name] = VariableInfo{Type: typ, Mutable: mutable}
 	return true
 }
 
 // lookup finds a variable in this scope or any parent scope
-// Returns the type and true if found, or nil and false if not found
-func (s *Scope) lookup(name string) (Type, bool) {
-	if typ, exists := s.variables[name]; exists {
-		return typ, true
+// Returns the variable info and true if found, or empty info and false if not found
+func (s *Scope) lookup(name string) (VariableInfo, bool) {
+	if info, exists := s.variables[name]; exists {
+		return info, true
 	}
 	if s.parent != nil {
 		return s.parent.lookup(name)
 	}
-	return nil, false
+	return VariableInfo{}, false
 }
 
 // Analyzer performs semantic analysis on the AST
@@ -186,6 +192,8 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 		return a.analyzeBlockStmt(s)
 	case *ast.VarDeclStmt:
 		return a.analyzeVarDeclStatement(s)
+	case *ast.AssignStmt:
+		return a.analyzeAssignStatement(s)
 	default:
 		a.addError("unknown statement type", stmt.Pos(), stmt.End())
 		return &TypedExprStmt{
@@ -207,7 +215,7 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 	initType := typedInit.GetType()
 
 	// Check for duplicate declaration in the current scope
-	if !a.currentScope.declare(stmt.Name, initType) {
+	if !a.currentScope.declare(stmt.Name, initType, stmt.Mutable) {
 		a.addError(
 			fmt.Sprintf("variable '%s' is already declared in this scope", stmt.Name),
 			stmt.NamePos, stmt.NamePos,
@@ -215,11 +223,62 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 	}
 
 	return &TypedVarDeclStmt{
-		ValKeyword:  stmt.ValKeyword,
+		Keyword:     stmt.Keyword,
+		Mutable:     stmt.Mutable,
 		Name:        stmt.Name,
 		NamePos:     stmt.NamePos,
 		Equals:      stmt.Equals,
 		Initializer: typedInit,
+	}
+}
+
+// analyzeAssignStatement analyzes a variable assignment statement
+func (a *Analyzer) analyzeAssignStatement(stmt *ast.AssignStmt) TypedStatement {
+	// Look up the variable
+	info, found := a.currentScope.lookup(stmt.Name)
+	if !found {
+		a.addError(
+			fmt.Sprintf("undefined variable '%s'", stmt.Name),
+			stmt.NamePos, stmt.NamePos,
+		).WithHint("did you forget to declare it with 'val' or 'var'?")
+		// Return error node
+		typedValue := a.analyzeExpression(stmt.Value)
+		return &TypedAssignStmt{
+			Name:    stmt.Name,
+			NamePos: stmt.NamePos,
+			Equals:  stmt.Equals,
+			Value:   typedValue,
+			VarType: TypeError,
+		}
+	}
+
+	// Check mutability
+	if !info.Mutable {
+		a.addError(
+			fmt.Sprintf("cannot assign to immutable variable '%s'", stmt.Name),
+			stmt.NamePos, stmt.Equals,
+		).WithHint("consider using 'var' instead of 'val' if you need to reassign")
+	}
+
+	// Analyze the value expression
+	typedValue := a.analyzeExpression(stmt.Value)
+	valueType := typedValue.GetType()
+
+	// Type check: value must match variable type (skip if value is already error type)
+	if _, isErr := valueType.(ErrorType); !isErr && !info.Type.Equals(valueType) {
+		a.addError(
+			fmt.Sprintf("cannot assign %s to variable '%s' of type %s",
+				valueType.String(), stmt.Name, info.Type.String()),
+			stmt.Value.Pos(), stmt.Value.End(),
+		)
+	}
+
+	return &TypedAssignStmt{
+		Name:    stmt.Name,
+		NamePos: stmt.NamePos,
+		Equals:  stmt.Equals,
+		Value:   typedValue,
+		VarType: info.Type,
 	}
 }
 
@@ -266,13 +325,16 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 // analyzeIdentifier analyzes an identifier (variable reference)
 func (a *Analyzer) analyzeIdentifier(ident *ast.IdentifierExpr) TypedExpression {
 	// Look up the variable in the current scope
-	typ, found := a.currentScope.lookup(ident.Name)
+	info, found := a.currentScope.lookup(ident.Name)
+	var typ Type
 	if !found {
 		a.addError(
 			fmt.Sprintf("undefined variable '%s'", ident.Name),
 			ident.StartPos, ident.EndPos,
-		).WithHint("did you forget to declare it with 'val'?")
+		).WithHint("did you forget to declare it with 'val' or 'var'?")
 		typ = TypeError
+	} else {
+		typ = info.Type
 	}
 
 	return &TypedIdentifierExpr{

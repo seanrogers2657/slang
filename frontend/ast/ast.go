@@ -133,18 +133,31 @@ func (b *BlockStmt) Pos() Position { return b.LeftBrace }
 func (b *BlockStmt) End() Position { return b.RightBrace }
 func (b *BlockStmt) stmtNode()     {}
 
-// VarDeclStmt represents a variable declaration (e.g., val x = 5)
+// VarDeclStmt represents a variable declaration (e.g., val x = 5 or var x = 5)
 type VarDeclStmt struct {
-	ValKeyword  Position   // position of 'val' keyword
+	Keyword     Position   // position of 'val' or 'var' keyword
+	Mutable     bool       // true for var, false for val
 	Name        string     // variable name
 	NamePos     Position   // position of variable name
 	Equals      Position   // position of '='
 	Initializer Expression // initializer expression
 }
 
-func (v *VarDeclStmt) Pos() Position { return v.ValKeyword }
+func (v *VarDeclStmt) Pos() Position { return v.Keyword }
 func (v *VarDeclStmt) End() Position { return v.Initializer.End() }
 func (v *VarDeclStmt) stmtNode()     {}
+
+// AssignStmt represents a variable assignment (e.g., x = 5)
+type AssignStmt struct {
+	Name    string     // variable name
+	NamePos Position   // position of variable name
+	Equals  Position   // position of '='
+	Value   Expression // value expression
+}
+
+func (a *AssignStmt) Pos() Position { return a.NamePos }
+func (a *AssignStmt) End() Position { return a.Value.End() }
+func (a *AssignStmt) stmtNode()     {}
 
 // ============================================================================
 // Declarations

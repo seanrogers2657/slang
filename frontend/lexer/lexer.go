@@ -27,6 +27,7 @@ const (
 	TokenTypePrint
 	TokenTypeFn
 	TokenTypeVal
+	TokenTypeVar
 	TokenTypeAssign
 	TokenTypeLParen
 	TokenTypeRParen
@@ -72,6 +73,8 @@ func (t TokenType) String() string {
 		return "FN"
 	case TokenTypeVal:
 		return "VAL"
+	case TokenTypeVar:
+		return "VAR"
 	case TokenTypeAssign:
 		return "ASSIGN"
 	case TokenTypeLParen:
@@ -265,6 +268,12 @@ func (p *lexer) ParseIdentifierOrKeyword() {
 	case "val":
 		p.Tokens = append(p.Tokens, Token{
 			Type:  TokenTypeVal,
+			Value: ident,
+			Pos:   startPos,
+		})
+	case "var":
+		p.Tokens = append(p.Tokens, Token{
+			Type:  TokenTypeVar,
 			Value: ident,
 			Pos:   startPos,
 		})

@@ -662,3 +662,149 @@ func TestGenerateExprWithStrings(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerateVarDecl(t *testing.T) {
+	tests := []struct {
+		name     string
+		stmt     *ast.VarDeclStmt
+		expected []string
+	}{
+		{
+			name: "simple variable declaration",
+			stmt: &ast.VarDeclStmt{
+				Name:    "x",
+				Mutable: false,
+				Initializer: &ast.LiteralExpr{
+					Kind:  ast.LiteralTypeNumber,
+					Value: "42",
+				},
+			},
+			expected: []string{
+				"mov x2, #42",
+				"str x2, [x29, #-16]",
+			},
+		},
+		{
+			name: "variable with expression initializer",
+			stmt: &ast.VarDeclStmt{
+				Name:    "result",
+				Mutable: true,
+				Initializer: &ast.BinaryExpr{
+					Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "10"},
+					Op:    "+",
+					Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+				},
+			},
+			expected: []string{
+				"mov x0, #10",
+				"mov x1, #5",
+				"add x2, x0, x1",
+				"str x2, [x29, #-16]",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := newCodeGenContext(nil)
+			output, err := GenerateVarDecl(tt.stmt, ctx)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			for _, expectedLine := range tt.expected {
+				if !strings.Contains(output, expectedLine) {
+					t.Errorf("expected output to contain %q, but it didn't.\nFull output:\n%s", expectedLine, output)
+				}
+			}
+		})
+	}
+}
+
+func TestGenerateAssignStmt(t *testing.T) {
+	tests := []struct {
+		name     string
+		setup    func(ctx *CodeGenContext)
+		stmt     *ast.AssignStmt
+		expected []string
+	}{
+		{
+			name: "simple assignment",
+			setup: func(ctx *CodeGenContext) {
+				// Pre-declare variable to simulate it being declared earlier
+				ctx.declareVariable("x")
+			},
+			stmt: &ast.AssignStmt{
+				Name: "x",
+				Value: &ast.LiteralExpr{
+					Kind:  ast.LiteralTypeNumber,
+					Value: "100",
+				},
+			},
+			expected: []string{
+				"mov x2, #100",
+				"str x2, [x29, #-16]",
+			},
+		},
+		{
+			name: "assignment with expression",
+			setup: func(ctx *CodeGenContext) {
+				ctx.declareVariable("counter")
+			},
+			stmt: &ast.AssignStmt{
+				Name: "counter",
+				Value: &ast.BinaryExpr{
+					Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "20"},
+					Op:    "*",
+					Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "3"},
+				},
+			},
+			expected: []string{
+				"mov x0, #20",
+				"mov x1, #3",
+				"mul x2, x0, x1",
+				"str x2, [x29, #-16]",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := newCodeGenContext(nil)
+			tt.setup(ctx)
+
+			output, err := GenerateAssignStmt(tt.stmt, ctx)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			for _, expectedLine := range tt.expected {
+				if !strings.Contains(output, expectedLine) {
+					t.Errorf("expected output to contain %q, but it didn't.\nFull output:\n%s", expectedLine, output)
+				}
+			}
+		})
+	}
+}
+
+func TestGenerateAssignStmtUndefinedVariable(t *testing.T) {
+	ctx := newCodeGenContext(nil)
+	// Don't declare any variable
+
+	stmt := &ast.AssignStmt{
+		Name: "undeclared",
+		Value: &ast.LiteralExpr{
+			Kind:  ast.LiteralTypeNumber,
+			Value: "10",
+		},
+	}
+
+	_, err := GenerateAssignStmt(stmt, ctx)
+	if err == nil {
+		t.Error("expected error for undefined variable, got none")
+	}
+
+	if !strings.Contains(err.Error(), "undefined variable") {
+		t.Errorf("expected 'undefined variable' error, got: %v", err)
+	}
+}

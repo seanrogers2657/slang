@@ -12,14 +12,16 @@ type CodeGenContext struct {
 	variables   map[string]int // variable name → stack offset (negative from frame pointer)
 	stackOffset int            // current stack position (starts at -16, decrements by 16)
 	stringMap   map[*ast.LiteralExpr]string
+	sourceLines []string // source code lines for comment generation
 }
 
 // newCodeGenContext creates a new code generation context
-func newCodeGenContext(stringMap map[*ast.LiteralExpr]string) *CodeGenContext {
+func newCodeGenContext(stringMap map[*ast.LiteralExpr]string, sourceLines []string) *CodeGenContext {
 	return &CodeGenContext{
 		variables:   make(map[string]int),
 		stackOffset: 0, // We'll reserve stack space as we go
 		stringMap:   stringMap,
+		sourceLines: sourceLines,
 	}
 }
 
@@ -36,40 +38,55 @@ func (ctx *CodeGenContext) getVariableOffset(name string) (int, bool) {
 	return offset, ok
 }
 
+// getSourceLineComment returns a comment with the source line for a given position
+func (ctx *CodeGenContext) getSourceLineComment(pos ast.Position) string {
+	if ctx.sourceLines == nil || pos.Line <= 0 || pos.Line > len(ctx.sourceLines) {
+		return ""
+	}
+	line := strings.TrimSpace(ctx.sourceLines[pos.Line-1])
+	if line == "" {
+		return ""
+	}
+	return fmt.Sprintf("// %d: %s\n", pos.Line, line)
+}
+
 type AsGenerator interface {
 	Generate() (string, error)
 }
 
 func NewAsGenerator(
 	program *ast.Program,
+	sourceLines []string,
 ) AsGenerator {
 	return &asGenerator{
-		program: program,
+		program:     program,
+		sourceLines: sourceLines,
 	}
 }
 
 type asGenerator struct {
-	program *ast.Program
+	program     *ast.Program
+	sourceLines []string
 }
 
 func (c *asGenerator) Generate() (string, error) {
-	return GenerateProgram(c.program)
+	return GenerateProgram(c.program, c.sourceLines)
 }
 
-func GenerateProgram(program *ast.Program) (string, error) {
+func GenerateProgram(program *ast.Program, sourceLines []string) (string, error) {
 	builder := strings.Builder{}
 
 	// Handle function-based programs with proper function support
 	if len(program.Declarations) > 0 {
-		return generateFunctionBasedProgram(program, &builder)
+		return generateFunctionBasedProgram(program, &builder, sourceLines)
 	}
 
 	// Legacy: use top-level statements
-	return generateLegacyProgram(program, &builder)
+	return generateLegacyProgram(program, &builder, sourceLines)
 }
 
 // generateFunctionBasedProgram generates code for programs with function declarations
-func generateFunctionBasedProgram(program *ast.Program, builder *strings.Builder) (string, error) {
+func generateFunctionBasedProgram(program *ast.Program, builder *strings.Builder, sourceLines []string) (string, error) {
 	// Collect all functions
 	functions := make([]*ast.FunctionDecl, 0)
 	for _, decl := range program.Declarations {
@@ -167,7 +184,7 @@ func generateFunctionBasedProgram(program *ast.Program, builder *strings.Builder
 
 	// Generate code for each function
 	for _, fn := range functions {
-		code, err := GenerateFunction(fn, stringMap)
+		code, err := GenerateFunction(fn, stringMap, sourceLines)
 		if err != nil {
 			return "", err
 		}
@@ -179,7 +196,7 @@ func generateFunctionBasedProgram(program *ast.Program, builder *strings.Builder
 }
 
 // GenerateFunction generates code for a single function
-func GenerateFunction(fn *ast.FunctionDecl, stringMap map[*ast.LiteralExpr]string) (string, error) {
+func GenerateFunction(fn *ast.FunctionDecl, stringMap map[*ast.LiteralExpr]string, sourceLines []string) (string, error) {
 	builder := strings.Builder{}
 
 	// Function label (prefix with _ to avoid conflicts)
@@ -187,7 +204,7 @@ func GenerateFunction(fn *ast.FunctionDecl, stringMap map[*ast.LiteralExpr]strin
 	builder.WriteString(fmt.Sprintf("_%s:\n", fn.Name))
 
 	// Create context for this function
-	ctx := newCodeGenContext(stringMap)
+	ctx := newCodeGenContext(stringMap, sourceLines)
 
 	// Count locals (parameters + variables in body)
 	paramCount := len(fn.Parameters)
@@ -213,6 +230,8 @@ func GenerateFunction(fn *ast.FunctionDecl, stringMap map[*ast.LiteralExpr]strin
 
 	// Generate code for function body
 	for _, stmt := range fn.Body.Statements {
+		// Add source line comment
+		builder.WriteString(ctx.getSourceLineComment(stmt.Pos()))
 		code, err := GenerateStmt(stmt, ctx)
 		if err != nil {
 			return "", err
@@ -318,7 +337,7 @@ func GenerateCallExpr(call *ast.CallExpr, ctx *CodeGenContext) (string, error) {
 }
 
 // generateLegacyProgram generates code for legacy top-level statement programs
-func generateLegacyProgram(program *ast.Program, builder *strings.Builder) (string, error) {
+func generateLegacyProgram(program *ast.Program, builder *strings.Builder, sourceLines []string) (string, error) {
 	statementsToProcess := program.Statements
 
 	// Check if we need a .data section for strings or print statements
@@ -381,7 +400,7 @@ func generateLegacyProgram(program *ast.Program, builder *strings.Builder) (stri
 
 	builder.WriteString("main:\n")
 
-	ctx := newCodeGenContext(stringMap)
+	ctx := newCodeGenContext(stringMap, sourceLines)
 	varCount := countVariables(statementsToProcess)
 
 	if varCount > 0 {
@@ -392,6 +411,8 @@ func generateLegacyProgram(program *ast.Program, builder *strings.Builder) (stri
 	}
 
 	for _, stmt := range statementsToProcess {
+		// Add source line comment
+		builder.WriteString(ctx.getSourceLineComment(stmt.Pos()))
 		code, err := GenerateStmt(stmt, ctx)
 		if err != nil {
 			return "", err
@@ -513,15 +534,15 @@ func GenerateExprWithContext(expr ast.Expression, ctx *CodeGenContext) (string, 
 				return "", err
 			}
 			builder.WriteString(leftCode)
-			builder.WriteString("    str x2, [sp, #-16]!  // Save left operand\n")
+			builder.WriteString("    str x2, [sp, #-16]!\n")
 
 			rightCode, err := GenerateExprWithContext(e.Right, ctx)
 			if err != nil {
 				return "", err
 			}
 			builder.WriteString(rightCode)
-			builder.WriteString("    mov x1, x2           // Move right to x1\n")
-			builder.WriteString("    ldr x0, [sp], #16    // Restore left operand\n")
+			builder.WriteString("    mov x1, x2\n")
+			builder.WriteString("    ldr x0, [sp], #16\n")
 
 		} else if rightIsBinary {
 			// Right is complex: evaluate right first, save it, then evaluate left
@@ -530,14 +551,14 @@ func GenerateExprWithContext(expr ast.Expression, ctx *CodeGenContext) (string, 
 				return "", err
 			}
 			builder.WriteString(rightCode)
-			builder.WriteString("    str x2, [sp, #-16]!  // Save right operand\n")
+			builder.WriteString("    str x2, [sp, #-16]!\n")
 
 			leftCode, err := generateOperandToReg(e.Left, "x0", ctx)
 			if err != nil {
 				return "", err
 			}
 			builder.WriteString(leftCode)
-			builder.WriteString("    ldr x1, [sp], #16    // Restore right operand\n")
+			builder.WriteString("    ldr x1, [sp], #16\n")
 
 		} else if leftIsBinary {
 			// Left is complex: evaluate left first, save it, then evaluate right
@@ -546,14 +567,14 @@ func GenerateExprWithContext(expr ast.Expression, ctx *CodeGenContext) (string, 
 				return "", err
 			}
 			builder.WriteString(leftCode)
-			builder.WriteString("    str x2, [sp, #-16]!  // Save left operand\n")
+			builder.WriteString("    str x2, [sp, #-16]!\n")
 
 			rightCode, err := generateOperandToReg(e.Right, "x1", ctx)
 			if err != nil {
 				return "", err
 			}
 			builder.WriteString(rightCode)
-			builder.WriteString("    ldr x0, [sp], #16    // Restore left operand\n")
+			builder.WriteString("    ldr x0, [sp], #16\n")
 
 		} else {
 			// Simple case: both operands are simple (literals or identifiers)
@@ -678,8 +699,8 @@ func GeneratePrintStmtWithContext(stmt *ast.PrintStmt, ctx *CodeGenContext) (str
 	builder.WriteString(code)
 
 	// Step 2: Convert integer to string
-	builder.WriteString("    mov x0, x2              // Pass value to convert\n")
-	builder.WriteString("    bl int_to_string        // Returns buffer in x0, length in x1\n")
+	builder.WriteString("    mov x0, x2\n")
+	builder.WriteString("    bl int_to_string\n")
 	builder.WriteString("\n")
 
 	// Step 3: Write the string to stdout
@@ -895,8 +916,8 @@ func GeneratePrintStmt(stmt *ast.PrintStmt, stringMap map[*ast.LiteralExpr]strin
 	builder.WriteString(code)
 
 	// Step 2: Convert integer to string
-	builder.WriteString("    mov x0, x2              // Pass value to convert\n")
-	builder.WriteString("    bl int_to_string        // Returns buffer in x0, length in x1\n")
+	builder.WriteString("    mov x0, x2\n")
+	builder.WriteString("    bl int_to_string\n")
 	builder.WriteString("\n")
 
 	// Step 3: Write the string to stdout
@@ -913,21 +934,21 @@ func GeneratePrintStmt(stmt *ast.PrintStmt, stringMap map[*ast.LiteralExpr]strin
 // bufferReg is the register containing the buffer address.
 // lengthReg is the register containing the length.
 func generateWriteSyscall(bufferReg, lengthReg string) string {
-	return fmt.Sprintf("    mov x2, %s              // Length\n", lengthReg) +
-		fmt.Sprintf("    mov x1, %s              // Buffer address\n", bufferReg) +
-		"    mov x0, #1              // File descriptor: stdout\n" +
-		"    mov x16, #4             // Syscall number: write\n" +
-		"    svc #0x80               // Make syscall\n"
+	return fmt.Sprintf("    mov x2, %s\n", lengthReg) +
+		fmt.Sprintf("    mov x1, %s\n", bufferReg) +
+		"    mov x0, #1\n" +
+		"    mov x16, #4\n" +
+		"    svc #0x80\n"
 }
 
 // generateNewline creates assembly code to write a newline to stdout.
 func generateNewline() string {
 	return "    adrp x1, newline@PAGE\n" +
 		"    add x1, x1, newline@PAGEOFF\n" +
-		"    mov x2, #1              // Length of newline\n" +
-		"    mov x0, #1              // File descriptor: stdout\n" +
-		"    mov x16, #4             // Syscall number: write\n" +
-		"    svc #0x80               // Make syscall\n"
+		"    mov x2, #1\n" +
+		"    mov x0, #1\n" +
+		"    mov x16, #4\n" +
+		"    svc #0x80\n"
 }
 
 // intToStringFunctionText generates the int-to-string conversion routine.
@@ -959,35 +980,32 @@ func buildIntToStringFunction() string {
 func functionPrologue() string {
 	return `.align 4
 int_to_string:
-    // Save callee-saved registers to stack
-    stp x29, x30, [sp, #-16]!   // Save frame pointer and link register
-    mov x29, sp                  // Set up frame pointer
-    stp x19, x20, [sp, #-16]!   // Save working registers
-    stp x21, x22, [sp, #-16]!   // Save working registers
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    stp x19, x20, [sp, #-16]!
+    stp x21, x22, [sp, #-16]!
 
 `
 }
 
 // setupConversion initializes registers for the conversion process
 func setupConversion() string {
-	return `    // Initialize conversion state
-    adrp x19, buffer@PAGE        // Load buffer address (page)
-    add x19, x19, buffer@PAGEOFF // Load buffer address (offset)
-    mov x20, x0                  // x20 = number to convert
-    mov x21, #0                  // x21 = is_negative flag (0 = positive)
+	return `    adrp x19, buffer@PAGE
+    add x19, x19, buffer@PAGEOFF
+    mov x20, x0
+    mov x21, #0
 
 `
 }
 
 // handleZeroCase handles the special case when the input is zero
 func handleZeroCase() string {
-	return `    // Special case: if number is 0, return "0"
-    cmp x20, #0
+	return `    cmp x20, #0
     bne check_negative
-    mov w10, #48                 // ASCII '0' = 48
-    strb w10, [x19]             // Store '0' in buffer
-    mov x0, x19                  // Return buffer address
-    mov x1, #1                   // Return length = 1
+    mov w10, #48
+    strb w10, [x19]
+    mov x0, x19
+    mov x1, #1
     b restore_regs
 
 `
@@ -996,13 +1014,10 @@ func handleZeroCase() string {
 // handleNegativeNumber checks for negative numbers and converts them to positive
 func handleNegativeNumber() string {
 	return `check_negative:
-    // Check if number is negative
     cmp x20, #0
-    bge convert_loop_setup       // If positive or zero, skip
-
-    // Number is negative: set flag and make it positive
-    mov x21, #1                  // Set is_negative flag
-    neg x20, x20                 // x20 = -x20 (make positive)
+    bge convert_loop_setup
+    mov x21, #1
+    neg x20, x20
 
 `
 }
@@ -1010,38 +1025,32 @@ func handleNegativeNumber() string {
 // convertDigitsToASCII converts the number to ASCII digits (backwards)
 func convertDigitsToASCII() string {
 	return `convert_loop_setup:
-    mov x22, #0                  // x22 = digit count (starts at 0)
-    add x19, x19, #31            // Point to end of 32-byte buffer
+    mov x22, #0
+    add x19, x19, #31
 
 convert_loop:
-    // Extract rightmost digit using division by 10
     mov x10, #10
-    udiv x11, x20, x10           // x11 = quotient (x20 / 10)
-    msub x12, x11, x10, x20      // x12 = remainder (x20 % 10)
-
-    // Convert digit to ASCII and store it
-    add x12, x12, #48            // Convert to ASCII ('0' = 48)
-    strb w12, [x19]              // Store digit in buffer
-    sub x19, x19, #1             // Move pointer backwards
-    add x22, x22, #1             // Increment digit count
-
-    // Continue if there are more digits
-    mov x20, x11                 // x20 = quotient
+    udiv x11, x20, x10
+    msub x12, x11, x10, x20
+    add x12, x12, #48
+    strb w12, [x19]
+    sub x19, x19, #1
+    add x22, x22, #1
+    mov x20, x11
     cmp x20, #0
-    bne convert_loop             // Loop if quotient > 0
+    bne convert_loop
 
 `
 }
 
 // addMinusSignIfNeeded adds a minus sign if the number was negative
 func addMinusSignIfNeeded() string {
-	return `    // If number was negative, prepend '-' sign
-    cmp x21, #1
+	return `    cmp x21, #1
     bne finalize
-    mov w10, #45                 // ASCII '-' = 45
-    strb w10, [x19]             // Store '-' in buffer
-    sub x19, x19, #1             // Move pointer backwards
-    add x22, x22, #1             // Increment digit count
+    mov w10, #45
+    strb w10, [x19]
+    sub x19, x19, #1
+    add x22, x22, #1
 
 `
 }
@@ -1049,16 +1058,14 @@ func addMinusSignIfNeeded() string {
 // functionEpilogue finalizes the result and restores registers
 func functionEpilogue() string {
 	return `finalize:
-    // Adjust pointer to start of string and set return values
-    add x19, x19, #1             // Move to first character
-    mov x0, x19                  // Return buffer address
-    mov x1, x22                  // Return string length
+    add x19, x19, #1
+    mov x0, x19
+    mov x1, x22
 
 restore_regs:
-    // Restore callee-saved registers from stack
-    ldp x21, x22, [sp], #16     // Restore working registers
-    ldp x19, x20, [sp], #16     // Restore working registers
-    ldp x29, x30, [sp], #16     // Restore frame pointer and link register
+    ldp x21, x22, [sp], #16
+    ldp x19, x20, [sp], #16
+    ldp x29, x30, [sp], #16
     ret
 `
 }

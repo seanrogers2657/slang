@@ -334,7 +334,7 @@ func TestAsGeneratorInterface(t *testing.T) {
 			program := &ast.Program{
 				Statements: []ast.Statement{&ast.ExprStmt{Expr: tt.expr}},
 			}
-			generator := NewAsGenerator(program)
+			generator := NewAsGenerator(program, nil)
 			output, err := generator.Generate()
 
 			if tt.expectError {
@@ -507,7 +507,7 @@ func TestGenerateProgramMultipleStatements(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			output, err := GenerateProgram(tt.program)
+			output, err := GenerateProgram(tt.program, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -706,7 +706,7 @@ func TestGenerateVarDecl(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := newCodeGenContext(nil)
+			ctx := newCodeGenContext(nil, nil)
 			output, err := GenerateVarDecl(tt.stmt, ctx)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -770,7 +770,7 @@ func TestGenerateAssignStmt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := newCodeGenContext(nil)
+			ctx := newCodeGenContext(nil, nil)
 			tt.setup(ctx)
 
 			output, err := GenerateAssignStmt(tt.stmt, ctx)
@@ -788,7 +788,7 @@ func TestGenerateAssignStmt(t *testing.T) {
 }
 
 func TestGenerateAssignStmtUndefinedVariable(t *testing.T) {
-	ctx := newCodeGenContext(nil)
+	ctx := newCodeGenContext(nil, nil)
 	// Don't declare any variable
 
 	stmt := &ast.AssignStmt{

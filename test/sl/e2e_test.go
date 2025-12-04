@@ -111,7 +111,8 @@ func runSlangTest(t *testing.T, tc *testutil.TestExpectation) {
 	}
 
 	// Code generation stage - uses raw AST, not typed AST
-	generator := as.NewAsGenerator(program)
+	sourceLines := strings.Split(string(source), "\n")
+	generator := as.NewAsGenerator(program, sourceLines)
 	asmOutput, err := generator.Generate()
 
 	if err != nil {

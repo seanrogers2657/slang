@@ -8,13 +8,19 @@ import (
 	"github.com/seanrogers2657/slang/frontend/semantic"
 )
 
-// TypedCodeGenerator generates ARM64 assembly from a TypedProgram
+// TypedCodeGenerator generates ARM64 assembly from a type-checked TypedProgram.
+// It handles type-aware code generation including:
+//   - Proper register selection (x registers for integers, d registers for floats)
+//   - Signed vs unsigned operations (sdiv vs udiv, etc.)
+//   - Float literals in the data section
+//   - String literal handling
 type TypedCodeGenerator struct {
 	program     *semantic.TypedProgram
 	sourceLines []string
+	info        *ProgramInfo
 }
 
-// NewTypedCodeGenerator creates a new typed code generator
+// NewTypedCodeGenerator creates a new typed code generator.
 func NewTypedCodeGenerator(program *semantic.TypedProgram, sourceLines []string) *TypedCodeGenerator {
 	return &TypedCodeGenerator{
 		program:     program,
@@ -22,50 +28,7 @@ func NewTypedCodeGenerator(program *semantic.TypedProgram, sourceLines []string)
 	}
 }
 
-// TypedCodeGenContext tracks state during typed code generation
-type TypedCodeGenContext struct {
-	variables   map[string]VariableSlot
-	stackOffset int
-	sourceLines []string
-}
-
-// VariableSlot tracks a variable's stack location and type
-type VariableSlot struct {
-	Offset int
-	Type   semantic.Type
-}
-
-func newTypedCodeGenContext(sourceLines []string) *TypedCodeGenContext {
-	return &TypedCodeGenContext{
-		variables:   make(map[string]VariableSlot),
-		stackOffset: 0,
-		sourceLines: sourceLines,
-	}
-}
-
-func (ctx *TypedCodeGenContext) declareVariable(name string, typ semantic.Type) int {
-	ctx.stackOffset += 16 // 16-byte aligned for ARM64
-	ctx.variables[name] = VariableSlot{Offset: ctx.stackOffset, Type: typ}
-	return ctx.stackOffset
-}
-
-func (ctx *TypedCodeGenContext) getVariable(name string) (VariableSlot, bool) {
-	slot, ok := ctx.variables[name]
-	return slot, ok
-}
-
-func (ctx *TypedCodeGenContext) getSourceLineComment(pos ast.Position) string {
-	if ctx.sourceLines == nil || pos.Line <= 0 || pos.Line > len(ctx.sourceLines) {
-		return ""
-	}
-	line := strings.TrimSpace(ctx.sourceLines[pos.Line-1])
-	if line == "" {
-		return ""
-	}
-	return fmt.Sprintf("// %d: %s\n", pos.Line, line)
-}
-
-// Generate generates ARM64 assembly from the typed program
+// Generate produces ARM64 assembly code from the typed program.
 func (g *TypedCodeGenerator) Generate() (string, error) {
 	builder := strings.Builder{}
 
@@ -77,7 +40,6 @@ func (g *TypedCodeGenerator) Generate() (string, error) {
 }
 
 func (g *TypedCodeGenerator) generateFunctionBasedProgram(builder *strings.Builder) (string, error) {
-	// Collect functions
 	functions := make([]*semantic.TypedFunctionDecl, 0)
 	for _, decl := range g.program.Declarations {
 		if fn, ok := decl.(*semantic.TypedFunctionDecl); ok {
@@ -89,67 +51,44 @@ func (g *TypedCodeGenerator) generateFunctionBasedProgram(builder *strings.Build
 		return "", fmt.Errorf("no functions found")
 	}
 
-	// Check for print statements and collect float/string literals
-	hasPrint := false
-	floatLiterals := make(map[string]floatLiteralInfo)
-	floatIndex := 0
-	stringLiterals := make([]stringLiteralInfo, 0)
-	stringIndex := 0
-
+	// Collect literals and detect print usage
+	g.info = NewProgramInfo()
 	for _, fn := range functions {
-		g.collectFloatLiterals(fn.Body, &floatLiterals, &floatIndex)
-		g.collectStringLiterals(fn.Body, &stringLiterals, &stringIndex)
-		if g.hasPrintStatements(fn.Body) {
-			hasPrint = true
-		}
+		g.info.CollectFromTypedFunction(fn)
 	}
 
-	// Write .data section
-	if len(floatLiterals) > 0 || len(stringLiterals) > 0 || hasPrint {
-		builder.WriteString(".data\n")
-		builder.WriteString(".align 3\n")
+	// Write .data section if needed
+	if len(g.info.FloatLiterals) > 0 || len(g.info.StringLiterals) > 0 || g.info.HasPrint {
+		EmitDataSection(builder, g.info.HasPrint)
 
-		if hasPrint {
-			builder.WriteString("buffer: .space 32\n")
-			builder.WriteString("newline: .byte 10\n")
-		}
-
-		// Float literals in .data section
-		for label, info := range floatLiterals {
-			if info.isF64 {
-				builder.WriteString(fmt.Sprintf("%s: .double %s\n", label, info.value))
+		// Float literals
+		for label, lit := range g.info.FloatLiterals {
+			if lit.IsF64 {
+				builder.WriteString(fmt.Sprintf("%s: .double %s\n", label, lit.Value))
 			} else {
-				builder.WriteString(fmt.Sprintf("%s: .float %s\n", label, info.value))
+				builder.WriteString(fmt.Sprintf("%s: .float %s\n", label, lit.Value))
 			}
 		}
 
-		// String literals in .data section
-		for _, info := range stringLiterals {
-			// Escape the string for assembly
-			escapedStr := escapeStringForAsm(info.value)
-			builder.WriteString(fmt.Sprintf("%s: .asciz \"%s\"\n", info.label, escapedStr))
-			builder.WriteString(fmt.Sprintf("%s_len = %d\n", info.label, info.length))
+		// String literals
+		for _, lit := range g.info.StringLiterals {
+			escapedStr := EscapeStringForAsm(lit.Value)
+			builder.WriteString(fmt.Sprintf("%s: .asciz \"%s\"\n", lit.Label, escapedStr))
+			builder.WriteString(fmt.Sprintf("%s_len = %d\n", lit.Label, lit.Length))
 		}
 
 		builder.WriteString("\n.text\n")
 	}
 
-	builder.WriteString(".global _start\n")
-	builder.WriteString(".align 4\n")
-	builder.WriteString("_start:\n")
-	builder.WriteString("    bl _main\n")
-	builder.WriteString("    mov x16, #1\n")
-	builder.WriteString("    svc #0\n")
-	builder.WriteString("\n")
+	EmitProgramEntry(builder)
 
-	if hasPrint {
+	if g.info.HasPrint {
 		builder.WriteString(intToStringFunctionText())
 		builder.WriteString("\n")
 	}
 
-	// Generate code for each function
 	for _, fn := range functions {
-		code, err := g.generateFunction(fn, floatLiterals, stringLiterals)
+		code, err := g.generateFunction(fn)
 		if err != nil {
 			return "", err
 		}
@@ -160,263 +99,93 @@ func (g *TypedCodeGenerator) generateFunctionBasedProgram(builder *strings.Build
 	return builder.String(), nil
 }
 
-type floatLiteralInfo struct {
-	value string
-	isF64 bool
-}
-
-type stringLiteralInfo struct {
-	value  string // the raw string content
-	label  string // the label in the data section
-	length int    // length of the string
-}
-
-// escapeStringForAsm escapes special characters for assembly string literals
-func escapeStringForAsm(s string) string {
-	result := ""
-	for _, c := range s {
-		switch c {
-		case '\n':
-			result += "\\n"
-		case '\t':
-			result += "\\t"
-		case '\r':
-			result += "\\r"
-		case '\\':
-			result += "\\\\"
-		case '"':
-			result += "\\\""
-		default:
-			result += string(c)
-		}
-	}
-	return result
-}
-
-func (g *TypedCodeGenerator) collectFloatLiterals(block *semantic.TypedBlockStmt, literals *map[string]floatLiteralInfo, index *int) {
-	for _, stmt := range block.Statements {
-		g.collectFloatLiteralsFromStmt(stmt, literals, index)
-	}
-}
-
-func (g *TypedCodeGenerator) collectFloatLiteralsFromStmt(stmt semantic.TypedStatement, literals *map[string]floatLiteralInfo, index *int) {
-	switch s := stmt.(type) {
-	case *semantic.TypedExprStmt:
-		g.collectFloatLiteralsFromExpr(s.Expr, literals, index)
-	case *semantic.TypedVarDeclStmt:
-		g.collectFloatLiteralsFromExpr(s.Initializer, literals, index)
-	case *semantic.TypedAssignStmt:
-		g.collectFloatLiteralsFromExpr(s.Value, literals, index)
-	case *semantic.TypedReturnStmt:
-		if s.Value != nil {
-			g.collectFloatLiteralsFromExpr(s.Value, literals, index)
-		}
-	}
-}
-
-func (g *TypedCodeGenerator) collectFloatLiteralsFromExpr(expr semantic.TypedExpression, literals *map[string]floatLiteralInfo, index *int) {
-	switch e := expr.(type) {
-	case *semantic.TypedLiteralExpr:
-		if e.LitType == ast.LiteralTypeFloat {
-			label := fmt.Sprintf("float_%d", *index)
-			(*index)++
-			_, isF64 := e.Type.(semantic.F64Type)
-			(*literals)[label] = floatLiteralInfo{value: e.Value, isF64: isF64}
-		}
-	case *semantic.TypedBinaryExpr:
-		g.collectFloatLiteralsFromExpr(e.Left, literals, index)
-		g.collectFloatLiteralsFromExpr(e.Right, literals, index)
-	case *semantic.TypedCallExpr:
-		for _, arg := range e.Arguments {
-			g.collectFloatLiteralsFromExpr(arg, literals, index)
-		}
-	}
-}
-
-func (g *TypedCodeGenerator) collectStringLiterals(block *semantic.TypedBlockStmt, literals *[]stringLiteralInfo, index *int) {
-	for _, stmt := range block.Statements {
-		g.collectStringLiteralsFromStmt(stmt, literals, index)
-	}
-}
-
-func (g *TypedCodeGenerator) collectStringLiteralsFromStmt(stmt semantic.TypedStatement, literals *[]stringLiteralInfo, index *int) {
-	switch s := stmt.(type) {
-	case *semantic.TypedExprStmt:
-		g.collectStringLiteralsFromExpr(s.Expr, literals, index)
-	case *semantic.TypedVarDeclStmt:
-		g.collectStringLiteralsFromExpr(s.Initializer, literals, index)
-	case *semantic.TypedAssignStmt:
-		g.collectStringLiteralsFromExpr(s.Value, literals, index)
-	case *semantic.TypedReturnStmt:
-		if s.Value != nil {
-			g.collectStringLiteralsFromExpr(s.Value, literals, index)
-		}
-	}
-}
-
-func (g *TypedCodeGenerator) collectStringLiteralsFromExpr(expr semantic.TypedExpression, literals *[]stringLiteralInfo, index *int) {
-	switch e := expr.(type) {
-	case *semantic.TypedLiteralExpr:
-		if e.LitType == ast.LiteralTypeString {
-			label := fmt.Sprintf("str_%d", *index)
-			*literals = append(*literals, stringLiteralInfo{
-				value:  e.Value,
-				label:  label,
-				length: len(e.Value),
-			})
-			(*index)++
-		}
-	case *semantic.TypedBinaryExpr:
-		g.collectStringLiteralsFromExpr(e.Left, literals, index)
-		g.collectStringLiteralsFromExpr(e.Right, literals, index)
-	case *semantic.TypedCallExpr:
-		for _, arg := range e.Arguments {
-			g.collectStringLiteralsFromExpr(arg, literals, index)
-		}
-	}
-}
-
-func (g *TypedCodeGenerator) hasPrintStatements(block *semantic.TypedBlockStmt) bool {
-	for _, stmt := range block.Statements {
-		if exprStmt, ok := stmt.(*semantic.TypedExprStmt); ok {
-			if g.hasPrintCall(exprStmt.Expr) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func (g *TypedCodeGenerator) hasPrintCall(expr semantic.TypedExpression) bool {
-	switch e := expr.(type) {
-	case *semantic.TypedCallExpr:
-		if e.Name == "print" {
-			return true
-		}
-		for _, arg := range e.Arguments {
-			if g.hasPrintCall(arg) {
-				return true
-			}
-		}
-	case *semantic.TypedBinaryExpr:
-		return g.hasPrintCall(e.Left) || g.hasPrintCall(e.Right)
-	}
-	return false
-}
-
-func (g *TypedCodeGenerator) generateFunction(fn *semantic.TypedFunctionDecl, floatLiterals map[string]floatLiteralInfo, stringLiterals []stringLiteralInfo) (string, error) {
+func (g *TypedCodeGenerator) generateFunction(fn *semantic.TypedFunctionDecl) (string, error) {
 	builder := strings.Builder{}
 
-	builder.WriteString(".align 4\n")
-	builder.WriteString(fmt.Sprintf("_%s:\n", fn.Name))
+	EmitFunctionLabel(&builder, fn.Name)
 
-	ctx := newTypedCodeGenContext(g.sourceLines)
+	ctx := NewBaseContext(g.sourceLines)
 
-	// Count locals
 	paramCount := len(fn.Parameters)
-	varCount := g.countVariables(fn.Body.Statements)
+	varCount := CountTypedVariables(fn.Body.Statements)
 	totalLocals := paramCount + varCount
+	stackSize := totalLocals * StackAlignment
 
-	// Function prologue
-	builder.WriteString("    stp x29, x30, [sp, #-16]!\n")
-	builder.WriteString("    mov x29, sp\n")
-
-	if totalLocals > 0 {
-		stackSize := totalLocals * 16
-		builder.WriteString(fmt.Sprintf("    sub sp, sp, #%d\n", stackSize))
-	}
+	EmitFunctionPrologue(&builder, stackSize)
 
 	// Store parameters
 	for i, param := range fn.Parameters {
-		offset := ctx.declareVariable(param.Name, param.Type)
-		builder.WriteString(fmt.Sprintf("    str x%d, [x29, #-%d]\n", i, offset))
+		offset := ctx.DeclareVariable(param.Name, param.Type)
+		EmitStoreToStack(&builder, fmt.Sprintf("x%d", i), offset)
 	}
 
 	// Generate body
 	for _, stmt := range fn.Body.Statements {
-		builder.WriteString(ctx.getSourceLineComment(stmt.Pos()))
-		code, err := g.generateStmt(stmt, ctx, floatLiterals, stringLiterals)
+		builder.WriteString(ctx.GetSourceLineComment(stmt.Pos()))
+		code, err := g.generateStmt(stmt, ctx)
 		if err != nil {
 			return "", err
 		}
 		builder.WriteString(code)
 	}
 
-	// Default return for main
+	// Default return for void main
 	if fn.Name == "main" {
 		if _, isVoid := fn.ReturnType.(semantic.VoidType); isVoid {
-			builder.WriteString("    mov x0, #0\n")
+			EmitMoveImm(&builder, "x0", "0")
 		}
 	}
 
-	// Function epilogue
-	if totalLocals > 0 {
-		builder.WriteString("    mov sp, x29\n")
-	}
-	builder.WriteString("    ldp x29, x30, [sp], #16\n")
-	builder.WriteString("    ret\n")
+	EmitFunctionEpilogue(&builder, totalLocals > 0)
 
 	return builder.String(), nil
 }
 
-func (g *TypedCodeGenerator) countVariables(stmts []semantic.TypedStatement) int {
-	count := 0
-	for _, stmt := range stmts {
-		if _, ok := stmt.(*semantic.TypedVarDeclStmt); ok {
-			count++
-		}
-	}
-	return count
-}
-
-func (g *TypedCodeGenerator) generateStmt(stmt semantic.TypedStatement, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo, stringLiterals []stringLiteralInfo) (string, error) {
+func (g *TypedCodeGenerator) generateStmt(stmt semantic.TypedStatement, ctx *BaseContext) (string, error) {
 	switch s := stmt.(type) {
 	case *semantic.TypedExprStmt:
-		return g.generateExpr(s.Expr, ctx, floatLiterals, stringLiterals)
+		return g.generateExpr(s.Expr, ctx)
 	case *semantic.TypedVarDeclStmt:
-		return g.generateVarDecl(s, ctx, floatLiterals, stringLiterals)
+		return g.generateVarDecl(s, ctx)
 	case *semantic.TypedAssignStmt:
-		return g.generateAssignStmt(s, ctx, floatLiterals, stringLiterals)
+		return g.generateAssignStmt(s, ctx)
 	case *semantic.TypedReturnStmt:
-		return g.generateReturnStmt(s, ctx, floatLiterals, stringLiterals)
+		return g.generateReturnStmt(s, ctx)
 	default:
 		return "", fmt.Errorf("unknown statement type: %T", s)
 	}
 }
 
-func (g *TypedCodeGenerator) generateVarDecl(stmt *semantic.TypedVarDeclStmt, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo, stringLiterals []stringLiteralInfo) (string, error) {
+func (g *TypedCodeGenerator) generateVarDecl(stmt *semantic.TypedVarDeclStmt, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
-	// Generate initializer
-	code, err := g.generateExpr(stmt.Initializer, ctx, floatLiterals, stringLiterals)
+	code, err := g.generateExpr(stmt.Initializer, ctx)
 	if err != nil {
 		return "", err
 	}
 	builder.WriteString(code)
 
-	// Allocate stack slot
-	offset := ctx.declareVariable(stmt.Name, stmt.DeclaredType)
+	offset := ctx.DeclareVariable(stmt.Name, stmt.DeclaredType)
 
-	// Store value based on type
 	if semantic.IsFloatType(stmt.DeclaredType) {
 		builder.WriteString(fmt.Sprintf("    str d0, [x29, #-%d]\n", offset))
 	} else {
-		builder.WriteString(fmt.Sprintf("    str x2, [x29, #-%d]\n", offset))
+		EmitStoreToStack(&builder, "x2", offset)
 	}
 
 	return builder.String(), nil
 }
 
-func (g *TypedCodeGenerator) generateAssignStmt(stmt *semantic.TypedAssignStmt, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo, stringLiterals []stringLiteralInfo) (string, error) {
+func (g *TypedCodeGenerator) generateAssignStmt(stmt *semantic.TypedAssignStmt, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
-	code, err := g.generateExpr(stmt.Value, ctx, floatLiterals, stringLiterals)
+	code, err := g.generateExpr(stmt.Value, ctx)
 	if err != nil {
 		return "", err
 	}
 	builder.WriteString(code)
 
-	slot, ok := ctx.getVariable(stmt.Name)
+	slot, ok := ctx.GetVariable(stmt.Name)
 	if !ok {
 		return "", fmt.Errorf("undefined variable: %s", stmt.Name)
 	}
@@ -424,100 +193,92 @@ func (g *TypedCodeGenerator) generateAssignStmt(stmt *semantic.TypedAssignStmt, 
 	if semantic.IsFloatType(slot.Type) {
 		builder.WriteString(fmt.Sprintf("    str d0, [x29, #-%d]\n", slot.Offset))
 	} else {
-		builder.WriteString(fmt.Sprintf("    str x2, [x29, #-%d]\n", slot.Offset))
+		EmitStoreToStack(&builder, "x2", slot.Offset)
 	}
 
 	return builder.String(), nil
 }
 
-func (g *TypedCodeGenerator) generateReturnStmt(stmt *semantic.TypedReturnStmt, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo, stringLiterals []stringLiteralInfo) (string, error) {
+func (g *TypedCodeGenerator) generateReturnStmt(stmt *semantic.TypedReturnStmt, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
 	if stmt.Value != nil {
-		code, err := g.generateExpr(stmt.Value, ctx, floatLiterals, stringLiterals)
+		code, err := g.generateExpr(stmt.Value, ctx)
 		if err != nil {
 			return "", err
 		}
 		builder.WriteString(code)
 
 		if semantic.IsFloatType(stmt.Value.GetType()) {
-			// Float return value in d0
 			builder.WriteString("    fmov x0, d0\n")
 		} else {
-			builder.WriteString("    mov x0, x2\n")
+			EmitMoveReg(&builder, "x0", "x2")
 		}
 	}
 
-	builder.WriteString("    mov sp, x29\n")
-	builder.WriteString("    ldp x29, x30, [sp], #16\n")
-	builder.WriteString("    ret\n")
-
+	EmitReturnEpilogue(&builder)
 	return builder.String(), nil
 }
 
-func (g *TypedCodeGenerator) generateExpr(expr semantic.TypedExpression, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo, stringLiterals []stringLiteralInfo) (string, error) {
+func (g *TypedCodeGenerator) generateExpr(expr semantic.TypedExpression, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
 	switch e := expr.(type) {
 	case *semantic.TypedLiteralExpr:
-		return g.generateLiteral(e, ctx, floatLiterals, stringLiterals)
+		return g.generateLiteral(e)
 
 	case *semantic.TypedIdentifierExpr:
-		slot, ok := ctx.getVariable(e.Name)
+		slot, ok := ctx.GetVariable(e.Name)
 		if !ok {
 			return "", fmt.Errorf("undefined variable: %s", e.Name)
 		}
 		if semantic.IsFloatType(slot.Type) {
 			builder.WriteString(fmt.Sprintf("    ldr d0, [x29, #-%d]\n", slot.Offset))
 		} else {
-			builder.WriteString(fmt.Sprintf("    ldr x2, [x29, #-%d]\n", slot.Offset))
+			EmitLoadFromStack(&builder, "x2", slot.Offset)
 		}
 		return builder.String(), nil
 
 	case *semantic.TypedCallExpr:
-		return g.generateCallExpr(e, ctx, floatLiterals, stringLiterals)
+		return g.generateCallExpr(e, ctx)
 
 	case *semantic.TypedBinaryExpr:
-		return g.generateBinaryExpr(e, ctx, floatLiterals, stringLiterals)
+		return g.generateBinaryExpr(e, ctx)
 
 	default:
 		return "", fmt.Errorf("unsupported expression type: %T", expr)
 	}
 }
 
-func (g *TypedCodeGenerator) generateLiteral(lit *semantic.TypedLiteralExpr, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo, stringLiterals []stringLiteralInfo) (string, error) {
+func (g *TypedCodeGenerator) generateLiteral(lit *semantic.TypedLiteralExpr) (string, error) {
 	builder := strings.Builder{}
 
 	if lit.LitType == ast.LiteralTypeFloat {
-		// Find the label for this float literal
-		for label, info := range floatLiterals {
-			if info.value == lit.Value {
-				_, isF64 := lit.Type.(semantic.F64Type)
-				if isF64 {
-					builder.WriteString(fmt.Sprintf("    adrp x8, %s@PAGE\n", label))
-					builder.WriteString(fmt.Sprintf("    ldr d0, [x8, %s@PAGEOFF]\n", label))
-				} else {
-					builder.WriteString(fmt.Sprintf("    adrp x8, %s@PAGE\n", label))
-					builder.WriteString(fmt.Sprintf("    ldr s0, [x8, %s@PAGEOFF]\n", label))
-					builder.WriteString("    fcvt d0, s0\n") // promote to d0 for operations
-				}
-				return builder.String(), nil
-			}
+		label, _, found := g.info.FindFloatLiteral(lit.Value)
+		if !found {
+			return "", fmt.Errorf("float literal not found in data section: %s", lit.Value)
 		}
-		return "", fmt.Errorf("float literal not found in data section: %s", lit.Value)
+
+		_, isF64 := lit.Type.(semantic.F64Type)
+		builder.WriteString(fmt.Sprintf("    adrp x8, %s@PAGE\n", label))
+		if isF64 {
+			builder.WriteString(fmt.Sprintf("    ldr d0, [x8, %s@PAGEOFF]\n", label))
+		} else {
+			builder.WriteString(fmt.Sprintf("    ldr s0, [x8, %s@PAGEOFF]\n", label))
+			builder.WriteString("    fcvt d0, s0\n")
+		}
+		return builder.String(), nil
 	}
 
-	// String literals don't generate inline code - they're handled by print
 	if lit.LitType == ast.LiteralTypeString {
-		// String literals are referenced by label in the data section
-		// The actual printing is handled in generatePrintBuiltin
+		// String literals are handled by print
 		return "", nil
 	}
 
-	// Integer literal - use appropriate instruction based on type
-	builder.WriteString(fmt.Sprintf("    mov x2, #%s\n", lit.Value))
+	// Integer literal
+	EmitMoveImm(&builder, "x2", lit.Value)
 
-	// Sign extend for smaller signed types
+	// Sign extend for smaller types
 	switch lit.Type.(type) {
 	case semantic.I8Type:
 		builder.WriteString("    sxtb x2, w2\n")
@@ -530,243 +291,118 @@ func (g *TypedCodeGenerator) generateLiteral(lit *semantic.TypedLiteralExpr, ctx
 	case semantic.U16Type:
 		builder.WriteString("    and x2, x2, #0xFFFF\n")
 	case semantic.U32Type:
-		builder.WriteString("    mov w2, w2\n") // zero-extends to x2
+		builder.WriteString("    mov w2, w2\n")
 	}
 
 	return builder.String(), nil
 }
 
-func (g *TypedCodeGenerator) generateBinaryExpr(expr *semantic.TypedBinaryExpr, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo, stringLiterals []stringLiteralInfo) (string, error) {
-	builder := strings.Builder{}
-
-	isFloat := semantic.IsFloatType(expr.Type)
-
-	if isFloat {
-		return g.generateFloatBinaryExpr(expr, ctx, floatLiterals, stringLiterals)
+func (g *TypedCodeGenerator) generateBinaryExpr(expr *semantic.TypedBinaryExpr, ctx *BaseContext) (string, error) {
+	if semantic.IsFloatType(expr.Type) {
+		return g.generateFloatBinaryExpr(expr, ctx)
 	}
-
-	return g.generateIntBinaryExpr(expr, ctx, floatLiterals, stringLiterals, &builder)
+	return g.generateIntBinaryExpr(expr, ctx)
 }
 
-func (g *TypedCodeGenerator) generateIntBinaryExpr(expr *semantic.TypedBinaryExpr, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo, stringLiterals []stringLiteralInfo, builder *strings.Builder) (string, error) {
-	// Check if operands are complex
+func (g *TypedCodeGenerator) generateIntBinaryExpr(expr *semantic.TypedBinaryExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
 	_, leftIsBinary := expr.Left.(*semantic.TypedBinaryExpr)
 	_, rightIsBinary := expr.Right.(*semantic.TypedBinaryExpr)
 
-	if leftIsBinary && rightIsBinary {
-		leftCode, err := g.generateExpr(expr.Left, ctx, floatLiterals, stringLiterals)
-		if err != nil {
-			return "", err
-		}
-		builder.WriteString(leftCode)
-		builder.WriteString("    str x2, [sp, #-16]!\n")
-
-		rightCode, err := g.generateExpr(expr.Right, ctx, floatLiterals, stringLiterals)
-		if err != nil {
-			return "", err
-		}
-		builder.WriteString(rightCode)
-		builder.WriteString("    mov x1, x2\n")
-		builder.WriteString("    ldr x0, [sp], #16\n")
-
-	} else if rightIsBinary {
-		rightCode, err := g.generateExpr(expr.Right, ctx, floatLiterals, stringLiterals)
-		if err != nil {
-			return "", err
-		}
-		builder.WriteString(rightCode)
-		builder.WriteString("    str x2, [sp, #-16]!\n")
-
-		leftCode, err := g.generateOperandToReg(expr.Left, "x0", ctx, floatLiterals, stringLiterals)
-		if err != nil {
-			return "", err
-		}
-		builder.WriteString(leftCode)
-		builder.WriteString("    ldr x1, [sp], #16\n")
-
-	} else if leftIsBinary {
-		leftCode, err := g.generateExpr(expr.Left, ctx, floatLiterals, stringLiterals)
-		if err != nil {
-			return "", err
-		}
-		builder.WriteString(leftCode)
-		builder.WriteString("    str x2, [sp, #-16]!\n")
-
-		rightCode, err := g.generateOperandToReg(expr.Right, "x1", ctx, floatLiterals, stringLiterals)
-		if err != nil {
-			return "", err
-		}
-		builder.WriteString(rightCode)
-		builder.WriteString("    ldr x0, [sp], #16\n")
-
-	} else {
-		leftCode, err := g.generateOperandToReg(expr.Left, "x0", ctx, floatLiterals, stringLiterals)
-		if err != nil {
-			return "", err
-		}
-		builder.WriteString(leftCode)
-
-		rightCode, err := g.generateOperandToReg(expr.Right, "x1", ctx, floatLiterals, stringLiterals)
-		if err != nil {
-			return "", err
-		}
-		builder.WriteString(rightCode)
+	eval := &BinaryExprEvaluator{
+		LeftIsComplex:  leftIsBinary,
+		RightIsComplex: rightIsBinary,
+		GenerateLeft: func() (string, error) {
+			return g.generateExpr(expr.Left, ctx)
+		},
+		GenerateRight: func() (string, error) {
+			return g.generateExpr(expr.Right, ctx)
+		},
+		GenerateLeftToReg: func(reg string) (string, error) {
+			return g.generateOperandToReg(expr.Left, reg, ctx)
+		},
+		GenerateRightToReg: func(reg string) (string, error) {
+			return g.generateOperandToReg(expr.Right, reg, ctx)
+		},
 	}
 
-	// Generate operation based on signedness
+	setupCode, err := EmitBinaryExprSetup(eval)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(setupCode)
+
+	// Determine signedness
 	isSigned := true
 	if numType, ok := expr.Type.(semantic.NumericType); ok {
 		isSigned = numType.IsSigned()
 	}
 
-	switch expr.Op {
-	case "+":
-		builder.WriteString("    add x2, x0, x1\n")
-	case "-":
-		builder.WriteString("    sub x2, x0, x1\n")
-	case "*":
-		builder.WriteString("    mul x2, x0, x1\n")
-	case "/":
-		if isSigned {
-			builder.WriteString("    sdiv x2, x0, x1\n")
-		} else {
-			builder.WriteString("    udiv x2, x0, x1\n")
-		}
-	case "%":
-		if isSigned {
-			builder.WriteString("    sdiv x3, x0, x1\n")
-		} else {
-			builder.WriteString("    udiv x3, x0, x1\n")
-		}
-		builder.WriteString("    msub x2, x3, x1, x0\n")
-	case "==":
-		builder.WriteString("    cmp x0, x1\n")
-		builder.WriteString("    cset x2, eq\n")
-	case "!=":
-		builder.WriteString("    cmp x0, x1\n")
-		builder.WriteString("    cset x2, ne\n")
-	case "<":
-		builder.WriteString("    cmp x0, x1\n")
-		if isSigned {
-			builder.WriteString("    cset x2, lt\n")
-		} else {
-			builder.WriteString("    cset x2, lo\n")
-		}
-	case ">":
-		builder.WriteString("    cmp x0, x1\n")
-		if isSigned {
-			builder.WriteString("    cset x2, gt\n")
-		} else {
-			builder.WriteString("    cset x2, hi\n")
-		}
-	case "<=":
-		builder.WriteString("    cmp x0, x1\n")
-		if isSigned {
-			builder.WriteString("    cset x2, le\n")
-		} else {
-			builder.WriteString("    cset x2, ls\n")
-		}
-	case ">=":
-		builder.WriteString("    cmp x0, x1\n")
-		if isSigned {
-			builder.WriteString("    cset x2, ge\n")
-		} else {
-			builder.WriteString("    cset x2, hs\n")
-		}
-	default:
-		return "", fmt.Errorf("unsupported operation: %s", expr.Op)
+	opCode, err := IntOperation(expr.Op, isSigned)
+	if err != nil {
+		return "", err
 	}
+	builder.WriteString(opCode)
 
 	return builder.String(), nil
 }
 
-func (g *TypedCodeGenerator) generateFloatBinaryExpr(expr *semantic.TypedBinaryExpr, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo, stringLiterals []stringLiteralInfo) (string, error) {
+func (g *TypedCodeGenerator) generateFloatBinaryExpr(expr *semantic.TypedBinaryExpr, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
-	// Evaluate left operand into d0
-	leftCode, err := g.generateExpr(expr.Left, ctx, floatLiterals, stringLiterals)
+	setupCode, err := EmitFloatBinaryExprSetup(
+		func() (string, error) { return g.generateExpr(expr.Left, ctx) },
+		func() (string, error) { return g.generateExpr(expr.Right, ctx) },
+	)
 	if err != nil {
 		return "", err
 	}
-	builder.WriteString(leftCode)
-	builder.WriteString("    fmov d1, d0\n") // save left to d1
+	builder.WriteString(setupCode)
 
-	// Evaluate right operand into d0
-	rightCode, err := g.generateExpr(expr.Right, ctx, floatLiterals, stringLiterals)
+	opCode, err := FloatOperation(expr.Op)
 	if err != nil {
 		return "", err
 	}
-	builder.WriteString(rightCode)
-	// Now d1 = left, d0 = right
-
-	switch expr.Op {
-	case "+":
-		builder.WriteString("    fadd d0, d1, d0\n")
-	case "-":
-		builder.WriteString("    fsub d0, d1, d0\n")
-	case "*":
-		builder.WriteString("    fmul d0, d1, d0\n")
-	case "/":
-		builder.WriteString("    fdiv d0, d1, d0\n")
-	case "==":
-		builder.WriteString("    fcmp d1, d0\n")
-		builder.WriteString("    cset x2, eq\n")
-	case "!=":
-		builder.WriteString("    fcmp d1, d0\n")
-		builder.WriteString("    cset x2, ne\n")
-	case "<":
-		builder.WriteString("    fcmp d1, d0\n")
-		builder.WriteString("    cset x2, mi\n")
-	case ">":
-		builder.WriteString("    fcmp d1, d0\n")
-		builder.WriteString("    cset x2, gt\n")
-	case "<=":
-		builder.WriteString("    fcmp d1, d0\n")
-		builder.WriteString("    cset x2, ls\n")
-	case ">=":
-		builder.WriteString("    fcmp d1, d0\n")
-		builder.WriteString("    cset x2, ge\n")
-	default:
-		return "", fmt.Errorf("unsupported float operation: %s", expr.Op)
-	}
+	builder.WriteString(opCode)
 
 	return builder.String(), nil
 }
 
-func (g *TypedCodeGenerator) generateOperandToReg(expr semantic.TypedExpression, reg string, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo, stringLiterals []stringLiteralInfo) (string, error) {
+func (g *TypedCodeGenerator) generateOperandToReg(expr semantic.TypedExpression, reg string, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
 	switch e := expr.(type) {
 	case *semantic.TypedLiteralExpr:
 		if e.LitType == ast.LiteralTypeInteger {
-			builder.WriteString(fmt.Sprintf("    mov %s, #%s\n", reg, e.Value))
+			EmitMoveImm(&builder, reg, e.Value)
 		}
 
 	case *semantic.TypedIdentifierExpr:
-		slot, ok := ctx.getVariable(e.Name)
+		slot, ok := ctx.GetVariable(e.Name)
 		if !ok {
 			return "", fmt.Errorf("undefined variable: %s", e.Name)
 		}
-		builder.WriteString(fmt.Sprintf("    ldr %s, [x29, #-%d]\n", reg, slot.Offset))
+		EmitLoadFromStack(&builder, reg, slot.Offset)
 
 	case *semantic.TypedBinaryExpr:
-		code, err := g.generateExpr(e, ctx, floatLiterals, stringLiterals)
+		code, err := g.generateExpr(e, ctx)
 		if err != nil {
 			return "", err
 		}
 		builder.WriteString(code)
 		if reg != "x2" {
-			builder.WriteString(fmt.Sprintf("    mov %s, x2\n", reg))
+			EmitMoveReg(&builder, reg, "x2")
 		}
 
 	case *semantic.TypedCallExpr:
-		code, err := g.generateCallExpr(e, ctx, floatLiterals, stringLiterals)
+		code, err := g.generateCallExpr(e, ctx)
 		if err != nil {
 			return "", err
 		}
 		builder.WriteString(code)
 		if reg != "x2" {
-			builder.WriteString(fmt.Sprintf("    mov %s, x2\n", reg))
+			EmitMoveReg(&builder, reg, "x2")
 		}
 
 	default:
@@ -776,75 +412,57 @@ func (g *TypedCodeGenerator) generateOperandToReg(expr semantic.TypedExpression,
 	return builder.String(), nil
 }
 
-func (g *TypedCodeGenerator) generateCallExpr(call *semantic.TypedCallExpr, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo, stringLiterals []stringLiteralInfo) (string, error) {
-	// Check for built-in functions first
+func (g *TypedCodeGenerator) generateCallExpr(call *semantic.TypedCallExpr, ctx *BaseContext) (string, error) {
 	if _, isBuiltin := semantic.Builtins[call.Name]; isBuiltin {
-		return g.generateBuiltinCall(call, ctx, floatLiterals, stringLiterals)
+		return g.generateBuiltinCall(call, ctx)
 	}
 
 	builder := strings.Builder{}
 
 	argCount := len(call.Arguments)
-
 	if argCount > 0 {
-		builder.WriteString(fmt.Sprintf("    sub sp, sp, #%d\n", argCount*16))
-
-		for i, arg := range call.Arguments {
-			code, err := g.generateExpr(arg, ctx, floatLiterals, stringLiterals)
-			if err != nil {
-				return "", err
-			}
-			builder.WriteString(code)
-			builder.WriteString(fmt.Sprintf("    str x2, [sp, #%d]\n", i*16))
-		}
-
-		for i := 0; i < argCount && i < 8; i++ {
-			builder.WriteString(fmt.Sprintf("    ldr x%d, [sp, #%d]\n", i, i*16))
-		}
-
-		builder.WriteString(fmt.Sprintf("    add sp, sp, #%d\n", argCount*16))
-	}
-
-	builder.WriteString(fmt.Sprintf("    bl _%s\n", call.Name))
-	builder.WriteString("    mov x2, x0\n")
-
-	return builder.String(), nil
-}
-
-func (g *TypedCodeGenerator) generateBuiltinCall(call *semantic.TypedCallExpr, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo, stringLiterals []stringLiteralInfo) (string, error) {
-	switch call.Name {
-	case "exit":
-		return g.generateExitBuiltin(call, ctx, floatLiterals, stringLiterals)
-	case "print":
-		return g.generatePrintBuiltin(call, ctx, floatLiterals, stringLiterals)
-	default:
-		return "", fmt.Errorf("unknown built-in function: %s", call.Name)
-	}
-}
-
-func (g *TypedCodeGenerator) generateExitBuiltin(call *semantic.TypedCallExpr, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo, stringLiterals []stringLiteralInfo) (string, error) {
-	builder := strings.Builder{}
-
-	// Generate code for the exit code argument (result in x2)
-	if len(call.Arguments) > 0 {
-		code, err := g.generateExpr(call.Arguments[0], ctx, floatLiterals, stringLiterals)
+		code, err := EmitCallSetup(argCount, func(i int) (string, error) {
+			return g.generateExpr(call.Arguments[i], ctx)
+		})
 		if err != nil {
 			return "", err
 		}
 		builder.WriteString(code)
 	}
 
-	// Move exit code from x2 to x0
-	builder.WriteString("    mov x0, x2\n")
-	// Syscall 1 = exit on macOS
-	builder.WriteString("    mov x16, #1\n")
-	// Invoke syscall
-	builder.WriteString("    svc #0\n")
+	EmitBranchLink(&builder, call.Name)
+	EmitMoveReg(&builder, "x2", "x0")
 
 	return builder.String(), nil
 }
 
-func (g *TypedCodeGenerator) generatePrintBuiltin(call *semantic.TypedCallExpr, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo, stringLiterals []stringLiteralInfo) (string, error) {
+func (g *TypedCodeGenerator) generateBuiltinCall(call *semantic.TypedCallExpr, ctx *BaseContext) (string, error) {
+	switch call.Name {
+	case "exit":
+		return g.generateExitBuiltin(call, ctx)
+	case "print":
+		return g.generatePrintBuiltin(call, ctx)
+	default:
+		return "", fmt.Errorf("unknown built-in function: %s", call.Name)
+	}
+}
+
+func (g *TypedCodeGenerator) generateExitBuiltin(call *semantic.TypedCallExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	if len(call.Arguments) > 0 {
+		code, err := g.generateExpr(call.Arguments[0], ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+	}
+
+	EmitExitSyscall(&builder)
+	return builder.String(), nil
+}
+
+func (g *TypedCodeGenerator) generatePrintBuiltin(call *semantic.TypedCallExpr, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
 	if len(call.Arguments) == 0 {
@@ -856,52 +474,34 @@ func (g *TypedCodeGenerator) generatePrintBuiltin(call *semantic.TypedCallExpr, 
 
 	// Check if argument is a string
 	if _, isString := argType.(semantic.StringType); isString {
-		// Handle string literal printing
 		if lit, ok := arg.(*semantic.TypedLiteralExpr); ok {
-			// Find the string label in our collected literals
-			for _, info := range stringLiterals {
-				if info.value == lit.Value {
-					// Load string address
-					builder.WriteString(fmt.Sprintf("    adrp x1, %s@PAGE\n", info.label))
-					builder.WriteString(fmt.Sprintf("    add x1, x1, %s@PAGEOFF\n", info.label))
-					// Load string length
-					builder.WriteString(fmt.Sprintf("    mov x2, #%d\n", info.length))
-					// Write to stdout (fd=1)
-					builder.WriteString("    mov x0, #1\n")
-					builder.WriteString("    mov x16, #4\n")
-					builder.WriteString("    svc #0x80\n")
-					// Write newline
-					builder.WriteString(generateNewline())
-					return builder.String(), nil
-				}
+			info, found := g.info.FindStringLiteral(lit.Value)
+			if !found {
+				return "", fmt.Errorf("string literal not found in data section: %s", lit.Value)
 			}
-			return "", fmt.Errorf("string literal not found in data section: %s", lit.Value)
+
+			EmitLoadAddress(&builder, "x1", info.Label)
+			EmitMoveImm(&builder, "x2", fmt.Sprintf("%d", info.Length))
+			builder.WriteString("    mov x0, #1\n")
+			builder.WriteString("    mov x16, #4\n")
+			builder.WriteString("    svc #0x80\n")
+			EmitNewline(&builder)
+			return builder.String(), nil
 		}
 		return "", fmt.Errorf("only string literals are supported for print")
 	}
 
-	// Handle integer printing (existing logic)
-	code, err := g.generateExpr(arg, ctx, floatLiterals, stringLiterals)
+	// Handle integer printing
+	code, err := g.generateExpr(arg, ctx)
 	if err != nil {
 		return "", err
 	}
 	builder.WriteString(code)
 
-	// Convert integer to string
-	builder.WriteString("    mov x0, x2\n")
-	builder.WriteString("    bl int_to_string\n\n")
-
-	// Write the string to stdout
-	builder.WriteString(generateWriteSyscall("x0", "x1"))
-	builder.WriteString("\n")
-
-	// Write a newline character
-	builder.WriteString(generateNewline())
-
+	EmitPrintInt(&builder)
 	return builder.String(), nil
 }
 
 func (g *TypedCodeGenerator) generateLegacyProgram(builder *strings.Builder) (string, error) {
-	// Legacy programs not supported with typed codegen yet
 	return "", fmt.Errorf("legacy programs not supported with typed code generator")
 }

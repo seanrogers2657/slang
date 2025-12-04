@@ -254,9 +254,9 @@ func TestGenerateExprUnsupportedOperation(t *testing.T) {
 		t.Fatal("expected error for unsupported operator, got none")
 	}
 
-	expectedError := "unsupported operation ^ when generating code"
-	if err.Error() != expectedError {
-		t.Errorf("expected error %q, got %q", expectedError, err.Error())
+	// Check error contains the unsupported operation
+	if !strings.Contains(err.Error(), "unsupported") || !strings.Contains(err.Error(), "^") {
+		t.Errorf("expected error about unsupported operation ^, got %q", err.Error())
 	}
 
 	if output != "" {
@@ -706,7 +706,7 @@ func TestGenerateVarDecl(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := newCodeGenContext(nil, nil)
+			ctx := NewBaseContext(nil)
 			output, err := GenerateVarDecl(tt.stmt, ctx)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -724,15 +724,15 @@ func TestGenerateVarDecl(t *testing.T) {
 func TestGenerateAssignStmt(t *testing.T) {
 	tests := []struct {
 		name     string
-		setup    func(ctx *CodeGenContext)
+		setup    func(ctx *BaseContext)
 		stmt     *ast.AssignStmt
 		expected []string
 	}{
 		{
 			name: "simple assignment",
-			setup: func(ctx *CodeGenContext) {
+			setup: func(ctx *BaseContext) {
 				// Pre-declare variable to simulate it being declared earlier
-				ctx.declareVariable("x")
+				ctx.DeclareVariable("x", nil)
 			},
 			stmt: &ast.AssignStmt{
 				Name: "x",
@@ -748,8 +748,8 @@ func TestGenerateAssignStmt(t *testing.T) {
 		},
 		{
 			name: "assignment with expression",
-			setup: func(ctx *CodeGenContext) {
-				ctx.declareVariable("counter")
+			setup: func(ctx *BaseContext) {
+				ctx.DeclareVariable("counter", nil)
 			},
 			stmt: &ast.AssignStmt{
 				Name: "counter",
@@ -770,7 +770,7 @@ func TestGenerateAssignStmt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := newCodeGenContext(nil, nil)
+			ctx := NewBaseContext(nil)
 			tt.setup(ctx)
 
 			output, err := GenerateAssignStmt(tt.stmt, ctx)
@@ -788,7 +788,7 @@ func TestGenerateAssignStmt(t *testing.T) {
 }
 
 func TestGenerateAssignStmtUndefinedVariable(t *testing.T) {
-	ctx := newCodeGenContext(nil, nil)
+	ctx := NewBaseContext(nil)
 	// Don't declare any variable
 
 	stmt := &ast.AssignStmt{

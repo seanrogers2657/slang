@@ -692,6 +692,11 @@ func (g *TypedCodeGenerator) generateOperandToReg(expr semantic.TypedExpression,
 }
 
 func (g *TypedCodeGenerator) generateCallExpr(call *semantic.TypedCallExpr, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo) (string, error) {
+	// Check for built-in functions first
+	if _, isBuiltin := semantic.Builtins[call.Name]; isBuiltin {
+		return g.generateBuiltinCall(call, ctx, floatLiterals)
+	}
+
 	builder := strings.Builder{}
 
 	argCount := len(call.Arguments)
@@ -717,6 +722,37 @@ func (g *TypedCodeGenerator) generateCallExpr(call *semantic.TypedCallExpr, ctx 
 
 	builder.WriteString(fmt.Sprintf("    bl _%s\n", call.Name))
 	builder.WriteString("    mov x2, x0\n")
+
+	return builder.String(), nil
+}
+
+func (g *TypedCodeGenerator) generateBuiltinCall(call *semantic.TypedCallExpr, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo) (string, error) {
+	switch call.Name {
+	case "exit":
+		return g.generateExitBuiltin(call, ctx, floatLiterals)
+	default:
+		return "", fmt.Errorf("unknown built-in function: %s", call.Name)
+	}
+}
+
+func (g *TypedCodeGenerator) generateExitBuiltin(call *semantic.TypedCallExpr, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo) (string, error) {
+	builder := strings.Builder{}
+
+	// Generate code for the exit code argument (result in x2)
+	if len(call.Arguments) > 0 {
+		code, err := g.generateExpr(call.Arguments[0], ctx, floatLiterals)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+	}
+
+	// Move exit code from x2 to x0
+	builder.WriteString("    mov x0, x2\n")
+	// Syscall 1 = exit on macOS
+	builder.WriteString("    mov x16, #1\n")
+	// Invoke syscall
+	builder.WriteString("    svc #0\n")
 
 	return builder.String(), nil
 }

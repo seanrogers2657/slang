@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/seanrogers2657/slang/frontend/ast"
+	"github.com/seanrogers2657/slang/frontend/semantic"
 )
 
 // CodeGenContext tracks state during code generation
@@ -297,6 +298,11 @@ func GenerateReturnStmt(stmt *ast.ReturnStmt, ctx *CodeGenContext) (string, erro
 
 // GenerateCallExpr generates code for a function call expression
 func GenerateCallExpr(call *ast.CallExpr, ctx *CodeGenContext) (string, error) {
+	// Check for built-in functions first
+	if _, isBuiltin := semantic.Builtins[call.Name]; isBuiltin {
+		return generateBuiltinCallAST(call, ctx)
+	}
+
 	builder := strings.Builder{}
 
 	// Evaluate each argument and store on stack temporarily
@@ -332,6 +338,39 @@ func GenerateCallExpr(call *ast.CallExpr, ctx *CodeGenContext) (string, error) {
 
 	// Result is in x0, move to x2 (our convention)
 	builder.WriteString("    mov x2, x0\n")
+
+	return builder.String(), nil
+}
+
+// generateBuiltinCallAST generates code for a built-in function call (AST version)
+func generateBuiltinCallAST(call *ast.CallExpr, ctx *CodeGenContext) (string, error) {
+	switch call.Name {
+	case "exit":
+		return generateExitBuiltinAST(call, ctx)
+	default:
+		return "", fmt.Errorf("unknown built-in function: %s", call.Name)
+	}
+}
+
+// generateExitBuiltinAST generates code for the exit() built-in (AST version)
+func generateExitBuiltinAST(call *ast.CallExpr, ctx *CodeGenContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Generate code for the exit code argument (result in x2)
+	if len(call.Arguments) > 0 {
+		code, err := GenerateExprWithContext(call.Arguments[0], ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+	}
+
+	// Move exit code from x2 to x0
+	builder.WriteString("    mov x0, x2\n")
+	// Syscall 1 = exit on macOS
+	builder.WriteString("    mov x16, #1\n")
+	// Invoke syscall
+	builder.WriteString("    svc #0\n")
 
 	return builder.String(), nil
 }

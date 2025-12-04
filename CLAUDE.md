@@ -42,6 +42,7 @@ The compiler currently supports:
   - Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
 - **Statements**: Print statements, expression statements, variable declarations
 - **Functions**: Function declarations with `fn` keyword (e.g., `fn main() { ... }`)
+- **Built-in Functions**: `exit(code)` - exit program with specified exit code
 - **Comments**: Line comments with `//` (e.g., `// this is a comment`)
 
 ## Development Commands
@@ -352,6 +353,49 @@ When adding a new operator, you must update three files:
 
 5. **E2E Tests**: Add example files to `_examples/slang/` with `@test:` directives
 
+### Adding a New Built-in Function
+
+Built-in functions are registered in a central registry and handled specially by the semantic analyzer and code generator.
+
+1. **Registry** (`frontend/semantic/builtins.go`):
+   - Add entry to the `Builtins` map with parameter types, return type, and flags
+
+   ```go
+   var Builtins = map[string]BuiltinFunc{
+       "exit": {ParamTypes: []Type{TypeI64}, ReturnType: TypeVoid, NoReturn: true},
+       // Add new built-in here
+   }
+   ```
+
+2. **Code Generator - Typed** (`backend/as/typed_codegen.go`):
+   - Add case in `generateBuiltinCall()` switch statement
+   - Implement the generation function (e.g., `generateExitBuiltin()`)
+
+3. **Code Generator - AST** (`backend/as/as.go`):
+   - Add case in `generateBuiltinCallAST()` switch statement
+   - Implement the generation function (e.g., `generateExitBuiltinAST()`)
+
+4. **E2E Tests**: Add example files to `_examples/slang/builtins/` with `@test:` directives
+
+**Example: The `exit()` built-in**
+
+```slang
+fn main(): void {
+    exit(42)           // exit with literal
+    exit(10 + 20)      // exit with expression
+    val code = 7
+    exit(code)         // exit with variable
+}
+```
+
+Generated ARM64 assembly for `exit(42)`:
+```asm
+    mov x2, #42      // evaluate exit code into x2
+    mov x0, x2       // move to x0 (syscall argument)
+    mov x16, #1      // syscall 1 = exit
+    svc #0           // invoke syscall
+```
+
 ### Variable Syntax
 
 Variables are declared using `val` (immutable) or `var` (mutable) keywords (Kotlin-style):
@@ -390,8 +434,6 @@ x = 20         // Error: cannot assign to immutable variable 'x'
 
 - No parentheses support in expressions
 - No control flow (if/else, loops)
-- No function parameters or return values
-- Hardcoded exit syscall in generated assembly
 - Print statements require system assembler (`--assembler system`)
 
 ## Module Information

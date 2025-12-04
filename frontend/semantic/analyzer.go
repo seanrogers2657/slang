@@ -520,6 +520,11 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 
 // analyzeCallExpr analyzes a function call expression
 func (a *Analyzer) analyzeCallExpr(call *ast.CallExpr) TypedExpression {
+	// Check for built-in functions first
+	if builtin, ok := Builtins[call.Name]; ok {
+		return a.analyzeBuiltinCall(call, builtin)
+	}
+
 	// Look up the function
 	fnInfo, exists := a.functions[call.Name]
 	if !exists {
@@ -578,6 +583,60 @@ func (a *Analyzer) analyzeCallExpr(call *ast.CallExpr) TypedExpression {
 		Arguments:  typedArgs,
 		RightParen: call.RightParen,
 	}
+}
+
+// analyzeBuiltinCall analyzes a call to a built-in function
+func (a *Analyzer) analyzeBuiltinCall(call *ast.CallExpr, builtin BuiltinFunc) TypedExpression {
+	// Check argument count
+	if len(call.Arguments) != len(builtin.ParamTypes) {
+		a.addError(
+			fmt.Sprintf("built-in function '%s' expects %d argument(s), got %d",
+				call.Name, len(builtin.ParamTypes), len(call.Arguments)),
+			call.LeftParen, call.RightParen,
+		)
+	}
+
+	// Analyze arguments and check types
+	typedArgs := make([]TypedExpression, len(call.Arguments))
+	for i, arg := range call.Arguments {
+		typedArgs[i] = a.analyzeExpression(arg)
+
+		// Type check if we have a corresponding parameter
+		if i < len(builtin.ParamTypes) {
+			argType := typedArgs[i].GetType()
+			paramType := builtin.ParamTypes[i]
+
+			// Allow integer types to be passed to i64 parameters
+			if _, isErr := argType.(ErrorType); !isErr {
+				if !paramType.Equals(argType) && !isCompatibleIntegerType(paramType, argType) {
+					a.addError(
+						fmt.Sprintf("argument %d: expected %s, got %s",
+							i+1, paramType.String(), argType.String()),
+						arg.Pos(), arg.End(),
+					)
+				}
+			}
+		}
+	}
+
+	return &TypedCallExpr{
+		Type:       builtin.ReturnType,
+		Name:       call.Name,
+		NamePos:    call.NamePos,
+		LeftParen:  call.LeftParen,
+		Arguments:  typedArgs,
+		RightParen: call.RightParen,
+	}
+}
+
+// isCompatibleIntegerType checks if argType can be passed to paramType
+// This allows generic integer literals to be passed to sized integer parameters
+func isCompatibleIntegerType(paramType, argType Type) bool {
+	// If param expects i64, allow any integer type
+	if _, isI64 := paramType.(I64Type); isI64 {
+		return isIntegerType(argType)
+	}
+	return false
 }
 
 // analyzeIdentifier analyzes an identifier (variable reference)

@@ -400,8 +400,9 @@ func compileSource(filename string, verbose bool, timer *timing.Timer) (string, 
 	if timer != nil {
 		timer.Start("Code Generation")
 	}
-	codeGenerator := as.NewAsGenerator(parsedAST, sourceLines)
-	assemblyOutput, err := codeGenerator.Generate()
+	// Use typed code generator for type-aware code generation
+	typedCodeGenerator := as.NewTypedCodeGenerator(typedAST, sourceLines)
+	assemblyOutput, err := typedCodeGenerator.Generate()
 	if err != nil {
 		return "", fmt.Errorf("code generation failed: %w", err)
 	}

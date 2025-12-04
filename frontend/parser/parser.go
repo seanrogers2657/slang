@@ -236,7 +236,7 @@ func (p *parser) ParseStatement() ast.Statement {
 	return nil
 }
 
-// ParseVarDecl parses a variable declaration: val <name> = <expr> or var <name> = <expr>
+// ParseVarDecl parses a variable declaration: val <name> = <expr> or val <name>: <type> = <expr>
 func (p *parser) ParseVarDecl(mutable bool) ast.Statement {
 	// Get position of 'val' or 'var' keyword
 	keyword := p.CurrentToken().Pos
@@ -252,6 +252,26 @@ func (p *parser) ParseVarDecl(mutable bool) ast.Statement {
 	name := p.CurrentToken().Value
 	namePos := p.CurrentToken().Pos
 	p.advance() // consume identifier
+
+	// Check for optional type annotation
+	var colonPos ast.Position
+	var typeName string
+	var typePos ast.Position
+
+	if p.CurrentToken().Type == lexer.TokenTypeColon {
+		colonPos = p.CurrentToken().Pos
+		p.advance() // consume ':'
+
+		// Expect type identifier
+		if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+			p.Errors = append(p.Errors, fmt.Errorf("expected type after ':', got %s", p.CurrentToken().Value))
+			return nil
+		}
+
+		typeName = p.CurrentToken().Value
+		typePos = p.CurrentToken().Pos
+		p.advance() // consume type
+	}
 
 	// Expect '='
 	if p.CurrentToken().Type != lexer.TokenTypeAssign {
@@ -274,6 +294,9 @@ func (p *parser) ParseVarDecl(mutable bool) ast.Statement {
 		Mutable:     mutable,
 		Name:        name,
 		NamePos:     namePos,
+		Colon:       colonPos,
+		TypeName:    typeName,
+		TypePos:     typePos,
 		Equals:      equalsPos,
 		Initializer: initializer,
 	}
@@ -345,7 +368,19 @@ func (p *parser) ParseLiteral() ast.Expression {
 	if p.CurrentToken().Type == lexer.TokenTypeInteger {
 		token := p.CurrentToken()
 		literal := &ast.LiteralExpr{
-			Kind:     ast.LiteralTypeNumber,
+			Kind:     ast.LiteralTypeInteger,
+			Value:    token.Value,
+			StartPos: token.Pos,
+			EndPos:   ast.Position{Line: token.Pos.Line, Column: token.Pos.Column + len(token.Value), Offset: token.Pos.Offset + len(token.Value)},
+		}
+		p.Index++
+		return literal
+	}
+
+	if p.CurrentToken().Type == lexer.TokenTypeFloat {
+		token := p.CurrentToken()
+		literal := &ast.LiteralExpr{
+			Kind:     ast.LiteralTypeFloat,
 			Value:    token.Value,
 			StartPos: token.Pos,
 			EndPos:   ast.Position{Line: token.Pos.Line, Column: token.Pos.Column + len(token.Value), Offset: token.Pos.Offset + len(token.Value)},

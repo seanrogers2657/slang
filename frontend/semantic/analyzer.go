@@ -2,6 +2,8 @@ package semantic
 
 import (
 	"fmt"
+	"math/big"
+	"strconv"
 
 	"github.com/seanrogers2657/slang/errors"
 	"github.com/seanrogers2657/slang/frontend/ast"
@@ -273,7 +275,7 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 		return &TypedExprStmt{
 			Expr: &TypedLiteralExpr{
 				Type:     TypeError,
-				LitType:  ast.LiteralTypeNumber,
+				LitType:  ast.LiteralTypeInteger,
 				Value:    "0",
 				StartPos: stmt.Pos(),
 				EndPos:   stmt.End(),
@@ -288,8 +290,33 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 	typedInit := a.analyzeExpression(stmt.Initializer)
 	initType := typedInit.GetType()
 
+	// Determine the declared type
+	var declaredType Type
+	if stmt.TypeName != "" {
+		// Explicit type annotation
+		declaredType = TypeFromName(stmt.TypeName)
+		if _, isErr := declaredType.(ErrorType); isErr {
+			a.addError(
+				fmt.Sprintf("unknown type '%s'", stmt.TypeName),
+				stmt.TypePos, stmt.TypePos,
+			)
+			declaredType = TypeError
+		} else {
+			// Type compatibility check
+			if _, isErr := initType.(ErrorType); !isErr {
+				// Check if initializer type is compatible with declared type
+				if !a.checkTypeCompatibility(declaredType, initType, typedInit, stmt.Initializer.Pos()) {
+					// Error already reported by checkTypeCompatibility
+				}
+			}
+		}
+	} else {
+		// Infer type from initializer
+		declaredType = initType
+	}
+
 	// Check for duplicate declaration in the current scope
-	if !a.currentScope.declare(stmt.Name, initType, stmt.Mutable) {
+	if !a.currentScope.declare(stmt.Name, declaredType, stmt.Mutable) {
 		a.addError(
 			fmt.Sprintf("variable '%s' is already declared in this scope", stmt.Name),
 			stmt.NamePos, stmt.NamePos,
@@ -297,13 +324,63 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 	}
 
 	return &TypedVarDeclStmt{
-		Keyword:     stmt.Keyword,
-		Mutable:     stmt.Mutable,
-		Name:        stmt.Name,
-		NamePos:     stmt.NamePos,
-		Equals:      stmt.Equals,
-		Initializer: typedInit,
+		Keyword:      stmt.Keyword,
+		Mutable:      stmt.Mutable,
+		Name:         stmt.Name,
+		NamePos:      stmt.NamePos,
+		Colon:        stmt.Colon,
+		TypeName:     stmt.TypeName,
+		TypePos:      stmt.TypePos,
+		DeclaredType: declaredType,
+		Equals:       stmt.Equals,
+		Initializer:  typedInit,
 	}
+}
+
+// checkTypeCompatibility checks if an initializer is compatible with the declared type
+func (a *Analyzer) checkTypeCompatibility(declaredType, initType Type, typedInit TypedExpression, pos ast.Position) bool {
+	// If types are exactly equal, always ok
+	if declaredType.Equals(initType) {
+		return true
+	}
+
+	// Check for literal bounds when assigning to a specific type
+	if litExpr, ok := typedInit.(*TypedLiteralExpr); ok {
+		// Integer literal -> any integer type (with bounds check)
+		if litExpr.LitType == ast.LiteralTypeInteger && isIntegerType(declaredType) {
+			return a.checkIntegerBounds(litExpr.Value, declaredType, pos)
+		}
+
+		// Float literal -> any float type (with bounds check)
+		if litExpr.LitType == ast.LiteralTypeFloat && isFloatType(declaredType) {
+			return a.checkFloatBounds(litExpr.Value, declaredType, pos)
+		}
+
+		// Integer literal cannot be assigned to float type
+		if litExpr.LitType == ast.LiteralTypeInteger && isFloatType(declaredType) {
+			a.addError(
+				fmt.Sprintf("cannot assign integer literal to %s", declaredType.String()),
+				pos, pos,
+			).WithHint("use a float literal like 42.0 instead")
+			return false
+		}
+
+		// Float literal cannot be assigned to integer type
+		if litExpr.LitType == ast.LiteralTypeFloat && isIntegerType(declaredType) {
+			a.addError(
+				fmt.Sprintf("cannot assign float literal to %s", declaredType.String()),
+				pos, pos,
+			)
+			return false
+		}
+	}
+
+	// Types don't match and no special conversion allowed
+	a.addError(
+		fmt.Sprintf("cannot assign %s to variable of type %s", initType.String(), declaredType.String()),
+		pos, pos,
+	)
+	return false
 }
 
 // analyzeAssignStatement analyzes a variable assignment statement
@@ -433,7 +510,7 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 		a.addError("unknown expression type", expr.Pos(), expr.End())
 		return &TypedLiteralExpr{
 			Type:     TypeError,
-			LitType:  ast.LiteralTypeNumber,
+			LitType:  ast.LiteralTypeInteger,
 			Value:    "0",
 			StartPos: expr.Pos(),
 			EndPos:   expr.End(),
@@ -530,8 +607,10 @@ func (a *Analyzer) analyzeIdentifier(ident *ast.IdentifierExpr) TypedExpression 
 func (a *Analyzer) analyzeLiteral(lit *ast.LiteralExpr) TypedExpression {
 	var typ Type
 	switch lit.Kind {
-	case ast.LiteralTypeNumber:
+	case ast.LiteralTypeInteger:
 		typ = TypeInteger
+	case ast.LiteralTypeFloat:
+		typ = TypeFloat64 // default float type is f64
 	case ast.LiteralTypeString:
 		typ = TypeString
 	case ast.LiteralTypeBoolean:
@@ -584,45 +663,80 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 	}
 
 	// Arithmetic operators: +, -, *, /, %
-	// These require integer operands and return integer
+	// These require matching numeric types (strict type matching)
 	if op == "+" || op == "-" || op == "*" || op == "/" || op == "%" {
-		if !leftType.Equals(TypeInteger) {
+		// Check left operand is numeric
+		if !isIntegerType(leftType) && !isFloatType(leftType) {
 			a.addError(
-				fmt.Sprintf("operator '%s' requires integer operands, but left operand has type '%s'", op, leftType.String()),
+				fmt.Sprintf("operator '%s' requires numeric operands, but left operand has type '%s'", op, leftType.String()),
 				leftPos, leftPos,
-			).WithHint("arithmetic operators only work with integers")
+			).WithHint("arithmetic operators only work with numeric types")
 			return TypeError
 		}
-		if !rightType.Equals(TypeInteger) {
+
+		// Check right operand is numeric
+		if !isIntegerType(rightType) && !isFloatType(rightType) {
 			a.addError(
-				fmt.Sprintf("operator '%s' requires integer operands, but right operand has type '%s'", op, rightType.String()),
+				fmt.Sprintf("operator '%s' requires numeric operands, but right operand has type '%s'", op, rightType.String()),
 				rightPos, rightPos,
-			).WithHint("arithmetic operators only work with integers")
+			).WithHint("arithmetic operators only work with numeric types")
 			return TypeError
 		}
-		return TypeInteger
+
+		// Strict type matching: both operands must have the same type
+		if !leftType.Equals(rightType) {
+			a.addError(
+				fmt.Sprintf("operator '%s' requires operands of the same type, but got '%s' and '%s'",
+					op, leftType.String(), rightType.String()),
+				leftPos, rightPos,
+			).WithHint("both operands must have the same type (no implicit conversion)")
+			return TypeError
+		}
+
+		// Modulo only works with integers
+		if op == "%" && isFloatType(leftType) {
+			a.addError(
+				fmt.Sprintf("operator '%%' is not supported for floating point types"),
+				leftPos, rightPos,
+			).WithHint("modulo only works with integer types")
+			return TypeError
+		}
+
+		return leftType
 	}
 
 	// Comparison operators: ==, !=, <, >, <=, >=
-	// These require matching operand types and return integer (0 or 1)
+	// These require matching numeric types and return i64 (0 or 1)
 	if op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" {
-		// For now, we only support integer comparisons
-		if !leftType.Equals(TypeInteger) {
+		// Check left operand is numeric
+		if !isIntegerType(leftType) && !isFloatType(leftType) {
 			a.addError(
-				fmt.Sprintf("operator '%s' requires integer operands, but left operand has type '%s'", op, leftType.String()),
+				fmt.Sprintf("operator '%s' requires numeric operands, but left operand has type '%s'", op, leftType.String()),
 				leftPos, leftPos,
-			).WithHint("comparison operators currently only work with integers")
-			return TypeError
-		}
-		if !rightType.Equals(TypeInteger) {
-			a.addError(
-				fmt.Sprintf("operator '%s' requires integer operands, but right operand has type '%s'", op, rightType.String()),
-				rightPos, rightPos,
-			).WithHint("comparison operators currently only work with integers")
+			).WithHint("comparison operators only work with numeric types")
 			return TypeError
 		}
 
-		// Comparison result is an integer (0 or 1) in our system
+		// Check right operand is numeric
+		if !isIntegerType(rightType) && !isFloatType(rightType) {
+			a.addError(
+				fmt.Sprintf("operator '%s' requires numeric operands, but right operand has type '%s'", op, rightType.String()),
+				rightPos, rightPos,
+			).WithHint("comparison operators only work with numeric types")
+			return TypeError
+		}
+
+		// Strict type matching: both operands must have the same type
+		if !leftType.Equals(rightType) {
+			a.addError(
+				fmt.Sprintf("operator '%s' requires operands of the same type, but got '%s' and '%s'",
+					op, leftType.String(), rightType.String()),
+				leftPos, rightPos,
+			).WithHint("both operands must have the same type (no implicit conversion)")
+			return TypeError
+		}
+
+		// Comparison result is an integer (0 or 1)
 		return TypeInteger
 	}
 
@@ -637,4 +751,121 @@ func (a *Analyzer) addError(message string, startPos, endPos ast.Position) *erro
 	err.Tool = errors.ToolSL
 	a.errors = append(a.errors, err)
 	return err
+}
+
+// Type bounds for integer types
+var (
+	minI8, _   = big.NewInt(0).SetString("-128", 10)
+	maxI8, _   = big.NewInt(0).SetString("127", 10)
+	minI16, _  = big.NewInt(0).SetString("-32768", 10)
+	maxI16, _  = big.NewInt(0).SetString("32767", 10)
+	minI32, _  = big.NewInt(0).SetString("-2147483648", 10)
+	maxI32, _  = big.NewInt(0).SetString("2147483647", 10)
+	minI64, _  = big.NewInt(0).SetString("-9223372036854775808", 10)
+	maxI64, _  = big.NewInt(0).SetString("9223372036854775807", 10)
+	minI128, _ = big.NewInt(0).SetString("-170141183460469231731687303715884105728", 10)
+	maxI128, _ = big.NewInt(0).SetString("170141183460469231731687303715884105727", 10)
+
+	maxU8, _   = big.NewInt(0).SetString("255", 10)
+	maxU16, _  = big.NewInt(0).SetString("65535", 10)
+	maxU32, _  = big.NewInt(0).SetString("4294967295", 10)
+	maxU64, _  = big.NewInt(0).SetString("18446744073709551615", 10)
+	maxU128, _ = big.NewInt(0).SetString("340282366920938463463374607431768211455", 10)
+)
+
+// checkIntegerBounds checks if an integer literal fits in the declared type
+func (a *Analyzer) checkIntegerBounds(value string, targetType Type, pos ast.Position) bool {
+	val, ok := big.NewInt(0).SetString(value, 10)
+	if !ok {
+		a.addError(fmt.Sprintf("invalid integer literal: %s", value), pos, pos)
+		return false
+	}
+
+	zero := big.NewInt(0)
+
+	switch targetType.(type) {
+	case I8Type:
+		if val.Cmp(minI8) < 0 || val.Cmp(maxI8) > 0 {
+			a.addError(fmt.Sprintf("integer literal %s out of range for i8 (-128 to 127)", value), pos, pos)
+			return false
+		}
+	case I16Type:
+		if val.Cmp(minI16) < 0 || val.Cmp(maxI16) > 0 {
+			a.addError(fmt.Sprintf("integer literal %s out of range for i16 (-32768 to 32767)", value), pos, pos)
+			return false
+		}
+	case I32Type:
+		if val.Cmp(minI32) < 0 || val.Cmp(maxI32) > 0 {
+			a.addError(fmt.Sprintf("integer literal %s out of range for i32", value), pos, pos)
+			return false
+		}
+	case I64Type, IntegerType:
+		if val.Cmp(minI64) < 0 || val.Cmp(maxI64) > 0 {
+			a.addError(fmt.Sprintf("integer literal %s out of range for i64", value), pos, pos)
+			return false
+		}
+	case I128Type:
+		if val.Cmp(minI128) < 0 || val.Cmp(maxI128) > 0 {
+			a.addError(fmt.Sprintf("integer literal %s out of range for i128", value), pos, pos)
+			return false
+		}
+	case U8Type:
+		if val.Cmp(zero) < 0 || val.Cmp(maxU8) > 0 {
+			a.addError(fmt.Sprintf("integer literal %s out of range for u8 (0 to 255)", value), pos, pos)
+			return false
+		}
+	case U16Type:
+		if val.Cmp(zero) < 0 || val.Cmp(maxU16) > 0 {
+			a.addError(fmt.Sprintf("integer literal %s out of range for u16 (0 to 65535)", value), pos, pos)
+			return false
+		}
+	case U32Type:
+		if val.Cmp(zero) < 0 || val.Cmp(maxU32) > 0 {
+			a.addError(fmt.Sprintf("integer literal %s out of range for u32", value), pos, pos)
+			return false
+		}
+	case U64Type:
+		if val.Cmp(zero) < 0 || val.Cmp(maxU64) > 0 {
+			a.addError(fmt.Sprintf("integer literal %s out of range for u64", value), pos, pos)
+			return false
+		}
+	case U128Type:
+		if val.Cmp(zero) < 0 || val.Cmp(maxU128) > 0 {
+			a.addError(fmt.Sprintf("integer literal %s out of range for u128", value), pos, pos)
+			return false
+		}
+	}
+	return true
+}
+
+// checkFloatBounds checks if a float literal can be represented in the target type
+func (a *Analyzer) checkFloatBounds(value string, targetType Type, pos ast.Position) bool {
+	_, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		a.addError(fmt.Sprintf("invalid float literal: %s", value), pos, pos)
+		return false
+	}
+
+	// For now, we don't do strict float bounds checking
+	// f32 and f64 can represent most reasonable literals
+	return true
+}
+
+// isIntegerType checks if a type is any integer type
+func isIntegerType(t Type) bool {
+	switch t.(type) {
+	case IntegerType, I8Type, I16Type, I32Type, I64Type, I128Type,
+		U8Type, U16Type, U32Type, U64Type, U128Type:
+		return true
+	}
+	return false
+}
+
+// isFloatType checks if a type is any float type
+func isFloatType(t Type) bool {
+	switch t.(type) {
+	case F32Type, F64Type:
+		return true
+	}
+	return false
 }

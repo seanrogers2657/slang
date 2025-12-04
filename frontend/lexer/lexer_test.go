@@ -714,6 +714,147 @@ func TestLexerVariableDeclaration(t *testing.T) {
 	}
 }
 
+func TestLexerFloatLiterals(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []Token
+	}{
+		{
+			name:  "simple float",
+			input: "3.14",
+			expected: []Token{
+				{Type: TokenTypeFloat, Value: "3.14"},
+			},
+		},
+		{
+			name:  "float with many decimals",
+			input: "3.14159265",
+			expected: []Token{
+				{Type: TokenTypeFloat, Value: "3.14159265"},
+			},
+		},
+		{
+			name:  "float starting with zero",
+			input: "0.5",
+			expected: []Token{
+				{Type: TokenTypeFloat, Value: "0.5"},
+			},
+		},
+		{
+			name:  "scientific notation lowercase",
+			input: "1e10",
+			expected: []Token{
+				{Type: TokenTypeFloat, Value: "1e10"},
+			},
+		},
+		{
+			name:  "scientific notation uppercase",
+			input: "1E10",
+			expected: []Token{
+				{Type: TokenTypeFloat, Value: "1E10"},
+			},
+		},
+		{
+			name:  "scientific with positive exponent",
+			input: "1.5e+10",
+			expected: []Token{
+				{Type: TokenTypeFloat, Value: "1.5e+10"},
+			},
+		},
+		{
+			name:  "scientific with negative exponent",
+			input: "2.5e-3",
+			expected: []Token{
+				{Type: TokenTypeFloat, Value: "2.5e-3"},
+			},
+		},
+		{
+			name:  "float in expression",
+			input: "3.14 + 2.0",
+			expected: []Token{
+				{Type: TokenTypeFloat, Value: "3.14"},
+				{Type: TokenTypePlus, Value: "+"},
+				{Type: TokenTypeFloat, Value: "2.0"},
+			},
+		},
+		{
+			name:  "integer not confused with float",
+			input: "42",
+			expected: []Token{
+				{Type: TokenTypeInteger, Value: "42"},
+			},
+		},
+		{
+			name:  "mixed int and float",
+			input: "42 + 3.14",
+			expected: []Token{
+				{Type: TokenTypeInteger, Value: "42"},
+				{Type: TokenTypePlus, Value: "+"},
+				{Type: TokenTypeFloat, Value: "3.14"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("unexpected errors: %v", l.Errors)
+			}
+
+			if len(l.Tokens) != len(tt.expected) {
+				t.Fatalf("expected %d tokens, got %d: %v", len(tt.expected), len(l.Tokens), l.Tokens)
+			}
+
+			for i, token := range l.Tokens {
+				if token.Type != tt.expected[i].Type {
+					t.Errorf("token %d: expected type %v, got %v", i, tt.expected[i].Type, token.Type)
+				}
+				if token.Value != tt.expected[i].Value {
+					t.Errorf("token %d: expected value %q, got %q", i, tt.expected[i].Value, token.Value)
+				}
+			}
+		})
+	}
+}
+
+func TestLexerFloatErrors(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		expectedError string
+	}{
+		{
+			name:          "exponent without digits",
+			input:         "1e",
+			expectedError: "invalid float literal: exponent has no digits",
+		},
+		{
+			name:          "exponent with sign but no digits",
+			input:         "1e+",
+			expectedError: "invalid float literal: exponent has no digits",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			l.Parse()
+
+			if len(l.Errors) == 0 {
+				t.Fatalf("expected error, got none")
+			}
+
+			if l.Errors[0].Error() != tt.expectedError {
+				t.Errorf("expected error %q, got %q", tt.expectedError, l.Errors[0].Error())
+			}
+		})
+	}
+}
+
 func TestLexerComments(t *testing.T) {
 	tests := []struct {
 		name     string

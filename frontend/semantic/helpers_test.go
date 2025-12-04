@@ -17,7 +17,7 @@ func pos(line, col int) ast.Position {
 
 func intLit(value string) *ast.LiteralExpr {
 	return &ast.LiteralExpr{
-		Kind:     ast.LiteralTypeNumber,
+		Kind:     ast.LiteralTypeInteger,
 		Value:    value,
 		StartPos: pos(1, 1),
 		EndPos:   pos(1, len(value)),
@@ -60,6 +60,29 @@ func varDecl(name string, mutable bool, init ast.Expression) *ast.VarDeclStmt {
 		NamePos:     pos(1, 5),
 		Equals:      pos(1, 7),
 		Initializer: init,
+	}
+}
+
+func typedVarDecl(name string, typeName string, mutable bool, init ast.Expression) *ast.VarDeclStmt {
+	return &ast.VarDeclStmt{
+		Keyword:     pos(1, 1),
+		Mutable:     mutable,
+		Name:        name,
+		NamePos:     pos(1, 5),
+		Colon:       pos(1, 7),
+		TypeName:    typeName,
+		TypePos:     pos(1, 9),
+		Equals:      pos(1, 12),
+		Initializer: init,
+	}
+}
+
+func floatLit(value string) *ast.LiteralExpr {
+	return &ast.LiteralExpr{
+		Kind:     ast.LiteralTypeFloat,
+		Value:    value,
+		StartPos: pos(1, 1),
+		EndPos:   pos(1, len(value)),
 	}
 }
 

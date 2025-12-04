@@ -19,7 +19,7 @@ func TestParserLiterals(t *testing.T) {
 				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
 			},
 			expected: &ast.LiteralExpr{
-				Kind:  ast.LiteralTypeNumber,
+				Kind:  ast.LiteralTypeInteger,
 				Value: "5",
 			},
 		},
@@ -29,7 +29,7 @@ func TestParserLiterals(t *testing.T) {
 				{Type: lexer.TokenTypeInteger, Value: "123", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
 			},
 			expected: &ast.LiteralExpr{
-				Kind:  ast.LiteralTypeNumber,
+				Kind:  ast.LiteralTypeInteger,
 				Value: "123",
 			},
 		},
@@ -39,7 +39,7 @@ func TestParserLiterals(t *testing.T) {
 				{Type: lexer.TokenTypeInteger, Value: "0", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
 			},
 			expected: &ast.LiteralExpr{
-				Kind:  ast.LiteralTypeNumber,
+				Kind:  ast.LiteralTypeInteger,
 				Value: "0",
 			},
 		},
@@ -1079,6 +1079,141 @@ func TestParserIdentifierExpression(t *testing.T) {
 
 			if !foundIdent {
 				t.Errorf("expected to find identifier %q", tt.expectedName)
+			}
+		})
+	}
+}
+
+func TestParserFloatLiterals(t *testing.T) {
+	tests := []struct {
+		name     string
+		tokens   []lexer.Token
+		expected *ast.LiteralExpr
+	}{
+		{
+			name: "simple float",
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeFloat, Value: "3.14", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+			},
+			expected: &ast.LiteralExpr{
+				Kind:  ast.LiteralTypeFloat,
+				Value: "3.14",
+			},
+		},
+		{
+			name: "scientific notation",
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeFloat, Value: "1e10", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+			},
+			expected: &ast.LiteralExpr{
+				Kind:  ast.LiteralTypeFloat,
+				Value: "1e10",
+			},
+		},
+		{
+			name: "negative exponent",
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeFloat, Value: "2.5e-3", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+			},
+			expected: &ast.LiteralExpr{
+				Kind:  ast.LiteralTypeFloat,
+				Value: "2.5e-3",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewParser(tt.tokens)
+			literal := p.ParseLiteral()
+
+			if literal == nil {
+				t.Fatal("expected literal, got nil")
+			}
+
+			litExpr, ok := literal.(*ast.LiteralExpr)
+			if !ok {
+				t.Fatal("expected LiteralExpr")
+			}
+
+			if litExpr.Kind != tt.expected.Kind {
+				t.Errorf("expected type %d, got %d", tt.expected.Kind, litExpr.Kind)
+			}
+
+			if litExpr.Value != tt.expected.Value {
+				t.Errorf("expected value %q, got %q", tt.expected.Value, litExpr.Value)
+			}
+		})
+	}
+}
+
+func TestParserTypeAnnotation(t *testing.T) {
+	tests := []struct {
+		name         string
+		source       string
+		varName      string
+		expectedType string
+	}{
+		{
+			name:         "i8 type annotation",
+			source:       "fn main(): void {\n    val x: i8 = 42\n}",
+			varName:      "x",
+			expectedType: "i8",
+		},
+		{
+			name:         "i32 type annotation",
+			source:       "fn main(): void {\n    val y: i32 = 100\n}",
+			varName:      "y",
+			expectedType: "i32",
+		},
+		{
+			name:         "u64 type annotation",
+			source:       "fn main(): void {\n    val z: u64 = 999\n}",
+			varName:      "z",
+			expectedType: "u64",
+		},
+		{
+			name:         "f64 type annotation",
+			source:       "fn main(): void {\n    val pi: f64 = 3.14\n}",
+			varName:      "pi",
+			expectedType: "f64",
+		},
+		{
+			name:         "no type annotation",
+			source:       "fn main(): void {\n    val x = 42\n}",
+			varName:      "x",
+			expectedType: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			fnDecl := program.Declarations[0].(*ast.FunctionDecl)
+			varDecl, ok := fnDecl.Body.Statements[0].(*ast.VarDeclStmt)
+			if !ok {
+				t.Fatalf("expected VarDeclStmt, got %T", fnDecl.Body.Statements[0])
+			}
+
+			if varDecl.Name != tt.varName {
+				t.Errorf("expected variable name %q, got %q", tt.varName, varDecl.Name)
+			}
+
+			if varDecl.TypeName != tt.expectedType {
+				t.Errorf("expected type name %q, got %q", tt.expectedType, varDecl.TypeName)
 			}
 		})
 	}

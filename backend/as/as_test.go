@@ -16,9 +16,9 @@ func TestGenerateExprAddition(t *testing.T) {
 		{
 			name: "simple addition",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "2"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "2"},
 				Op:    "+",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 			},
 			expectedOutput: []string{
 				".global _start",
@@ -35,9 +35,9 @@ func TestGenerateExprAddition(t *testing.T) {
 		{
 			name: "addition with larger numbers",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "100"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "100"},
 				Op:    "+",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "200"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "200"},
 			},
 			expectedOutput: []string{
 				".global _start",
@@ -54,9 +54,9 @@ func TestGenerateExprAddition(t *testing.T) {
 		{
 			name: "addition with zero",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "0"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "0"},
 				Op:    "+",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 			},
 			expectedOutput: []string{
 				".global _start",
@@ -102,36 +102,36 @@ func TestGenerateExprAllOperations(t *testing.T) {
 		{
 			name: "subtraction",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "10"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "10"},
 				Op:    "-",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "3"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "3"},
 			},
 			expectedOperation: []string{"    sub x2, x0, x1"},
 		},
 		{
 			name: "multiplication",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "4"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "4"},
 				Op:    "*",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "7"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "7"},
 			},
 			expectedOperation: []string{"    mul x2, x0, x1"},
 		},
 		{
 			name: "division",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "20"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "20"},
 				Op:    "/",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "4"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "4"},
 			},
 			expectedOperation: []string{"    sdiv x2, x0, x1"},
 		},
 		{
 			name: "modulo",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "10"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "10"},
 				Op:    "%",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "3"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "3"},
 			},
 			expectedOperation: []string{
 				"    sdiv x3, x0, x1",
@@ -141,9 +141,9 @@ func TestGenerateExprAllOperations(t *testing.T) {
 		{
 			name: "equality",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 				Op:    "==",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 			},
 			expectedOperation: []string{
 				"    cmp x0, x1",
@@ -153,9 +153,9 @@ func TestGenerateExprAllOperations(t *testing.T) {
 		{
 			name: "not equal",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 				Op:    "!=",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "3"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "3"},
 			},
 			expectedOperation: []string{
 				"    cmp x0, x1",
@@ -165,9 +165,9 @@ func TestGenerateExprAllOperations(t *testing.T) {
 		{
 			name: "less than",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "3"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "3"},
 				Op:    "<",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 			},
 			expectedOperation: []string{
 				"    cmp x0, x1",
@@ -177,9 +177,9 @@ func TestGenerateExprAllOperations(t *testing.T) {
 		{
 			name: "greater than",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "7"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "7"},
 				Op:    ">",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "2"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "2"},
 			},
 			expectedOperation: []string{
 				"    cmp x0, x1",
@@ -189,9 +189,9 @@ func TestGenerateExprAllOperations(t *testing.T) {
 		{
 			name: "less than or equal",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "3"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "3"},
 				Op:    "<=",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 			},
 			expectedOperation: []string{
 				"    cmp x0, x1",
@@ -201,9 +201,9 @@ func TestGenerateExprAllOperations(t *testing.T) {
 		{
 			name: "greater than or equal",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "7"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "7"},
 				Op:    ">=",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "2"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "2"},
 			},
 			expectedOperation: []string{
 				"    cmp x0, x1",
@@ -244,9 +244,9 @@ func TestGenerateExprAllOperations(t *testing.T) {
 
 func TestGenerateExprUnsupportedOperation(t *testing.T) {
 	expr := &ast.BinaryExpr{
-		Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+		Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 		Op:    "^",
-		Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "2"},
+		Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "2"},
 	}
 
 	output, err := GenerateExpr(expr)
@@ -274,9 +274,9 @@ func TestAsGeneratorInterface(t *testing.T) {
 		{
 			name: "successful generation with addition",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "2"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "2"},
 				Op:    "+",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 			},
 			expectedOutput: []string{
 				".global _start",
@@ -297,9 +297,9 @@ func TestAsGeneratorInterface(t *testing.T) {
 		{
 			name: "successful generation with subtraction",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "10"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "10"},
 				Op:    "-",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "3"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "3"},
 			},
 			expectedOutput: []string{
 				".global _start",
@@ -320,9 +320,9 @@ func TestAsGeneratorInterface(t *testing.T) {
 		{
 			name: "error on unsupported operation",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 				Op:    "^",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "2"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "2"},
 			},
 			expectError: true,
 		},
@@ -364,9 +364,9 @@ func TestAsGeneratorInterface(t *testing.T) {
 
 func TestGenerateExprStructure(t *testing.T) {
 	expr := &ast.BinaryExpr{
-		Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "2"},
+		Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "2"},
 		Op:    "+",
-		Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+		Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 	}
 
 	output, err := GenerateExpr(expr)
@@ -431,14 +431,14 @@ func TestGenerateProgramMultipleStatements(t *testing.T) {
 			program: &ast.Program{
 				Statements: []ast.Statement{
 					&ast.ExprStmt{Expr: &ast.BinaryExpr{
-						Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "2"},
+						Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "2"},
 						Op:    "+",
-						Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+						Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 					}},
 					&ast.ExprStmt{Expr: &ast.BinaryExpr{
-						Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "10"},
+						Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "10"},
 						Op:    "-",
-						Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "3"},
+						Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "3"},
 					}},
 				},
 			},
@@ -465,19 +465,19 @@ func TestGenerateProgramMultipleStatements(t *testing.T) {
 			program: &ast.Program{
 				Statements: []ast.Statement{
 					&ast.ExprStmt{Expr: &ast.BinaryExpr{
-						Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "4"},
+						Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "4"},
 						Op:    "*",
-						Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "3"},
+						Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "3"},
 					}},
 					&ast.ExprStmt{Expr: &ast.BinaryExpr{
-						Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "10"},
+						Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "10"},
 						Op:    "/",
-						Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "2"},
+						Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "2"},
 					}},
 					&ast.ExprStmt{Expr: &ast.BinaryExpr{
-						Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+						Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 						Op:    "==",
-						Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+						Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 					}},
 				},
 			},
@@ -538,7 +538,7 @@ func TestGenerateExprWithStrings(t *testing.T) {
 			expr: &ast.BinaryExpr{
 				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeString, Value: "hello"},
 				Op:    "+",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 			},
 			expected: []string{
 				".data",
@@ -557,7 +557,7 @@ func TestGenerateExprWithStrings(t *testing.T) {
 		{
 			name: "string on right side",
 			expr: &ast.BinaryExpr{
-				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "10"},
+				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "10"},
 				Op:    "-",
 				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeString, Value: "world"},
 			},
@@ -628,7 +628,7 @@ func TestGenerateExprWithStrings(t *testing.T) {
 			expr: &ast.BinaryExpr{
 				Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeString, Value: "hello\nworld"},
 				Op:    "+",
-				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "1"},
+				Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "1"},
 			},
 			expected: []string{
 				".data",
@@ -675,7 +675,7 @@ func TestGenerateVarDecl(t *testing.T) {
 				Name:    "x",
 				Mutable: false,
 				Initializer: &ast.LiteralExpr{
-					Kind:  ast.LiteralTypeNumber,
+					Kind:  ast.LiteralTypeInteger,
 					Value: "42",
 				},
 			},
@@ -690,9 +690,9 @@ func TestGenerateVarDecl(t *testing.T) {
 				Name:    "result",
 				Mutable: true,
 				Initializer: &ast.BinaryExpr{
-					Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "10"},
+					Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "10"},
 					Op:    "+",
-					Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "5"},
+					Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "5"},
 				},
 			},
 			expected: []string{
@@ -737,7 +737,7 @@ func TestGenerateAssignStmt(t *testing.T) {
 			stmt: &ast.AssignStmt{
 				Name: "x",
 				Value: &ast.LiteralExpr{
-					Kind:  ast.LiteralTypeNumber,
+					Kind:  ast.LiteralTypeInteger,
 					Value: "100",
 				},
 			},
@@ -754,9 +754,9 @@ func TestGenerateAssignStmt(t *testing.T) {
 			stmt: &ast.AssignStmt{
 				Name: "counter",
 				Value: &ast.BinaryExpr{
-					Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "20"},
+					Left:  &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "20"},
 					Op:    "*",
-					Right: &ast.LiteralExpr{Kind: ast.LiteralTypeNumber, Value: "3"},
+					Right: &ast.LiteralExpr{Kind: ast.LiteralTypeInteger, Value: "3"},
 				},
 			},
 			expected: []string{
@@ -794,7 +794,7 @@ func TestGenerateAssignStmtUndefinedVariable(t *testing.T) {
 	stmt := &ast.AssignStmt{
 		Name: "undeclared",
 		Value: &ast.LiteralExpr{
-			Kind:  ast.LiteralTypeNumber,
+			Kind:  ast.LiteralTypeInteger,
 			Value: "10",
 		},
 	}

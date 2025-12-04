@@ -60,7 +60,7 @@ func TestAnalyzeBinaryExpression_TypeError(t *testing.T) {
 			test := newTest(t)
 			result := test.analyzer.analyzeBinaryExpression(tt.expr.build())
 			test.expectType(result, TypeError)
-			test.expectErrorContaining("requires integer operands")
+			test.expectErrorContaining("requires numeric operands")
 		})
 	}
 }
@@ -249,4 +249,233 @@ func bin(left interface{}, op string, right interface{}) *BinaryExprBuilder {
 
 func (b *BinaryExprBuilder) build() *ast.BinaryExpr {
 	return binExpr(b.left.(ast.Expression), b.op, b.right.(ast.Expression))
+}
+
+// -----------------------------------------------------------------------------
+// Bounds Checking Tests
+// -----------------------------------------------------------------------------
+
+func TestAnalyzeTypedVariableDeclaration(t *testing.T) {
+	tests := []struct {
+		name         string
+		typeName     string
+		initValue    string
+		expectedType Type
+	}{
+		{"i8 type", "i8", "42", TypeI8},
+		{"i16 type", "i16", "1000", TypeI16},
+		{"i32 type", "i32", "100000", TypeI32},
+		{"i64 type", "i64", "9223372036854775807", TypeI64},
+		{"u8 type", "u8", "255", TypeU8},
+		{"u16 type", "u16", "65535", TypeU16},
+		{"u32 type", "u32", "4294967295", TypeU32},
+		{"u64 type", "u64", "18446744073709551615", TypeU64},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			test := newTest(t).withScope()
+			result := test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", tt.typeName, false, intLit(tt.initValue)))
+
+			typedVarDecl, ok := result.(*TypedVarDeclStmt)
+			if !ok {
+				t.Fatal("expected TypedVarDeclStmt")
+			}
+
+			test.expectNoErrors()
+
+			// Verify variable is in scope with correct type
+			varInfo, found := test.analyzer.currentScope.lookup("x")
+			if !found {
+				t.Error("variable x not found in scope")
+			}
+			if !varInfo.Type.Equals(tt.expectedType) {
+				t.Errorf("variable has wrong type: expected %s, got %s", tt.expectedType, varInfo.Type)
+			}
+			if !typedVarDecl.DeclaredType.Equals(tt.expectedType) {
+				t.Errorf("declared type wrong: expected %s, got %s", tt.expectedType, typedVarDecl.DeclaredType)
+			}
+		})
+	}
+}
+
+func TestAnalyzeBoundsChecking(t *testing.T) {
+	tests := []struct {
+		name      string
+		typeName  string
+		initValue string
+		errorMsg  string
+	}{
+		// i8 bounds: -128 to 127
+		{"i8 overflow positive", "i8", "128", "out of range for i8"},
+		{"i8 overflow large", "i8", "200", "out of range for i8"},
+		// i16 bounds: -32768 to 32767
+		{"i16 overflow", "i16", "32768", "out of range for i16"},
+		// i32 bounds: -2147483648 to 2147483647
+		{"i32 overflow", "i32", "2147483648", "out of range for i32"},
+		// u8 bounds: 0 to 255
+		{"u8 overflow", "u8", "256", "out of range for u8"},
+		// u16 bounds: 0 to 65535
+		{"u16 overflow", "u16", "65536", "out of range for u16"},
+		// u32 bounds: 0 to 4294967295
+		{"u32 overflow", "u32", "4294967296", "out of range for u32"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			test := newTest(t).withScope()
+			test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", tt.typeName, false, intLit(tt.initValue)))
+			test.expectErrorContaining(tt.errorMsg)
+		})
+	}
+}
+
+func TestAnalyzeBoundsCheckingNegative(t *testing.T) {
+	// Test negative values for unsigned types
+	t.Run("negative value for u8", func(t *testing.T) {
+		test := newTest(t).withScope()
+		// Note: negative literals would be represented as unary minus on a positive literal
+		// For now, test that we properly validate against unsigned types
+		test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", "u8", false, intLit("-1")))
+		test.expectErrorContaining("out of range for u8")
+	})
+}
+
+// -----------------------------------------------------------------------------
+// Type Compatibility Tests
+// -----------------------------------------------------------------------------
+
+func TestAnalyzeTypeMismatch(t *testing.T) {
+	tests := []struct {
+		name     string
+		leftType string
+		rightType string
+		errorMsg string
+	}{
+		{"i32 + i64", "i32", "i64", "requires operands of the same type"},
+		{"i8 + i16", "i8", "i16", "requires operands of the same type"},
+		{"u8 + u16", "u8", "u16", "requires operands of the same type"},
+		{"i32 + u32", "i32", "u32", "requires operands of the same type"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			test := newTest(t).withScope()
+			// Declare variables with different types
+			test.analyzer.analyzeVarDeclStatement(typedVarDecl("a", tt.leftType, false, intLit("10")))
+			test.analyzer.analyzeVarDeclStatement(typedVarDecl("b", tt.rightType, false, intLit("20")))
+			// Try to use them in a binary expression
+			test.analyzer.analyzeBinaryExpression(binExpr(ident("a"), "+", ident("b")))
+			test.expectErrorContaining(tt.errorMsg)
+		})
+	}
+}
+
+func TestAnalyzeSameTypeOperations(t *testing.T) {
+	tests := []struct {
+		name     string
+		typeName string
+		value1   string
+		value2   string
+	}{
+		{"i8 + i8", "i8", "10", "20"},
+		{"i16 + i16", "i16", "100", "200"},
+		{"i32 + i32", "i32", "1000", "2000"},
+		{"i64 + i64", "i64", "10000", "20000"},
+		{"u8 + u8", "u8", "10", "20"},
+		{"u16 + u16", "u16", "100", "200"},
+		{"u32 + u32", "u32", "1000", "2000"},
+		{"u64 + u64", "u64", "10000", "20000"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			test := newTest(t).withScope()
+			test.analyzer.analyzeVarDeclStatement(typedVarDecl("a", tt.typeName, false, intLit(tt.value1)))
+			test.analyzer.analyzeVarDeclStatement(typedVarDecl("b", tt.typeName, false, intLit(tt.value2)))
+			result := test.analyzer.analyzeBinaryExpression(binExpr(ident("a"), "+", ident("b")))
+			test.expectNoErrors()
+			expectedType := TypeFromName(tt.typeName)
+			test.expectType(result, expectedType)
+		})
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Float Type Tests
+// -----------------------------------------------------------------------------
+
+func TestAnalyzeFloatLiteral(t *testing.T) {
+	t.Run("float literal default type", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeLiteral(floatLit("3.14"))
+		test.expectType(result, TypeFloat64)
+		test.expectNoErrors()
+	})
+}
+
+func TestAnalyzeTypedFloatDeclaration(t *testing.T) {
+	tests := []struct {
+		name         string
+		typeName     string
+		initValue    string
+		expectedType Type
+	}{
+		{"f32 type", "f32", "3.14", TypeFloat32},
+		{"f64 type", "f64", "3.14159", TypeFloat64},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			test := newTest(t).withScope()
+			result := test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", tt.typeName, false, floatLit(tt.initValue)))
+
+			typedVarDecl, ok := result.(*TypedVarDeclStmt)
+			if !ok {
+				t.Fatal("expected TypedVarDeclStmt")
+			}
+
+			test.expectNoErrors()
+
+			varInfo, found := test.analyzer.currentScope.lookup("x")
+			if !found {
+				t.Error("variable x not found in scope")
+			}
+			if !varInfo.Type.Equals(tt.expectedType) {
+				t.Errorf("variable has wrong type: expected %s, got %s", tt.expectedType, varInfo.Type)
+			}
+			_ = typedVarDecl // silence unused warning
+		})
+	}
+}
+
+func TestAnalyzeFloatOperations(t *testing.T) {
+	for _, op := range []string{"+", "-", "*", "/"} {
+		t.Run("f64 "+op+" f64", func(t *testing.T) {
+			test := newTest(t).withScope()
+			test.analyzer.analyzeVarDeclStatement(typedVarDecl("a", "f64", false, floatLit("1.5")))
+			test.analyzer.analyzeVarDeclStatement(typedVarDecl("b", "f64", false, floatLit("2.5")))
+			result := test.analyzer.analyzeBinaryExpression(binExpr(ident("a"), op, ident("b")))
+			test.expectNoErrors()
+			test.expectType(result, TypeFloat64)
+		})
+	}
+}
+
+func TestAnalyzeFloatIntegerMismatch(t *testing.T) {
+	t.Run("f64 + i64", func(t *testing.T) {
+		test := newTest(t).withScope()
+		test.analyzer.analyzeVarDeclStatement(typedVarDecl("a", "f64", false, floatLit("1.5")))
+		test.analyzer.analyzeVarDeclStatement(typedVarDecl("b", "i64", false, intLit("10")))
+		test.analyzer.analyzeBinaryExpression(binExpr(ident("a"), "+", ident("b")))
+		test.expectErrorContaining("requires operands of the same type")
+	})
+}
+
+func TestAnalyzeUnknownType(t *testing.T) {
+	t.Run("unknown type annotation", func(t *testing.T) {
+		test := newTest(t).withScope()
+		test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", "unknown_type", false, intLit("42")))
+		test.expectErrorContaining("unknown type")
+	})
 }

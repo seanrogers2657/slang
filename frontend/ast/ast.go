@@ -53,7 +53,8 @@ func (l *LiteralExpr) exprNode()     {}
 type LiteralType int
 
 const (
-	LiteralTypeNumber LiteralType = iota
+	LiteralTypeInteger LiteralType = iota
+	LiteralTypeFloat
 	LiteralTypeString
 	LiteralTypeBoolean
 )
@@ -146,12 +147,15 @@ func (b *BlockStmt) Pos() Position { return b.LeftBrace }
 func (b *BlockStmt) End() Position { return b.RightBrace }
 func (b *BlockStmt) stmtNode()     {}
 
-// VarDeclStmt represents a variable declaration (e.g., val x = 5 or var x = 5)
+// VarDeclStmt represents a variable declaration (e.g., val x = 5 or val x: i32 = 5)
 type VarDeclStmt struct {
 	Keyword     Position   // position of 'val' or 'var' keyword
 	Mutable     bool       // true for var, false for val
 	Name        string     // variable name
 	NamePos     Position   // position of variable name
+	Colon       Position   // position of ':' (zero value if no type annotation)
+	TypeName    string     // type name (empty string if no type annotation)
+	TypePos     Position   // position of type name (zero value if no type annotation)
 	Equals      Position   // position of '='
 	Initializer Expression // initializer expression
 }

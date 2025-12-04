@@ -11,6 +11,7 @@ type TokenType int
 
 const (
 	TokenTypeInteger TokenType = iota
+	TokenTypeFloat
 	TokenTypeString
 	TokenTypePlus
 	TokenTypeMinus
@@ -44,6 +45,8 @@ func (t TokenType) String() string {
 	switch t {
 	case TokenTypeInteger:
 		return "INTEGER"
+	case TokenTypeFloat:
+		return "FLOAT"
 	case TokenTypeString:
 		return "STRING"
 	case TokenTypePlus:
@@ -155,21 +158,77 @@ func (p *lexer) advance() {
 func (p *lexer) ParseNumber() {
 	startPos := p.currentPos()
 	number := ""
+	isFloat := false
+
+	// Parse integer part
 	for p.Index < len(p.Source) {
 		currentChar := p.Source[p.Index]
-		//spew.Dump("current char", string(currentChar), unicode.IsDigit(rune(currentChar)))
-
 		if !unicode.IsDigit(rune(currentChar)) {
 			break
 		}
-
 		number += string(currentChar)
 		p.advance()
 	}
 
+	// Check for decimal point
+	if p.Index < len(p.Source) && p.Source[p.Index] == '.' {
+		// Look ahead to make sure there's a digit after the dot
+		// (to avoid treating "5.method()" as a float)
+		if p.Index+1 < len(p.Source) && unicode.IsDigit(rune(p.Source[p.Index+1])) {
+			isFloat = true
+			number += "."
+			p.advance()
+
+			// Parse fractional part
+			for p.Index < len(p.Source) {
+				currentChar := p.Source[p.Index]
+				if !unicode.IsDigit(rune(currentChar)) {
+					break
+				}
+				number += string(currentChar)
+				p.advance()
+			}
+		}
+	}
+
+	// Check for exponent (e or E)
+	if p.Index < len(p.Source) && (p.Source[p.Index] == 'e' || p.Source[p.Index] == 'E') {
+		isFloat = true
+		number += string(p.Source[p.Index])
+		p.advance()
+
+		// Check for optional sign
+		if p.Index < len(p.Source) && (p.Source[p.Index] == '+' || p.Source[p.Index] == '-') {
+			number += string(p.Source[p.Index])
+			p.advance()
+		}
+
+		// Parse exponent digits
+		hasExponentDigits := false
+		for p.Index < len(p.Source) {
+			currentChar := p.Source[p.Index]
+			if !unicode.IsDigit(rune(currentChar)) {
+				break
+			}
+			number += string(currentChar)
+			p.advance()
+			hasExponentDigits = true
+		}
+
+		if !hasExponentDigits {
+			p.Errors = append(p.Errors, fmt.Errorf("invalid float literal: exponent has no digits"))
+			return
+		}
+	}
+
+	tokenType := TokenTypeInteger
+	if isFloat {
+		tokenType = TokenTypeFloat
+	}
+
 	p.Tokens = append(p.Tokens, Token{
-		Type:  TokenTypeInteger,
-		Value: string(number),
+		Type:  tokenType,
+		Value: number,
 		Pos:   startPos,
 	})
 }

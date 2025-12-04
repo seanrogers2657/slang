@@ -122,12 +122,16 @@ func (s *TypedBlockStmt) typedStmtNode()    {}
 
 // TypedVarDeclStmt represents a typed variable declaration
 type TypedVarDeclStmt struct {
-	Keyword     ast.Position
-	Mutable     bool
-	Name        string
-	NamePos     ast.Position
-	Equals      ast.Position
-	Initializer TypedExpression
+	Keyword      ast.Position
+	Mutable      bool
+	Name         string
+	NamePos      ast.Position
+	Colon        ast.Position // position of ':' (zero if no type annotation)
+	TypeName     string       // declared type name (empty if no annotation)
+	TypePos      ast.Position // position of type name (zero if no annotation)
+	DeclaredType Type         // the declared or inferred type
+	Equals       ast.Position
+	Initializer  TypedExpression
 }
 
 func (s *TypedVarDeclStmt) Pos() ast.Position { return s.Keyword }

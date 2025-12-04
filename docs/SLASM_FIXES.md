@@ -119,7 +119,7 @@ Only `MOV` (MOVZ) and `SVC` are implemented in `encoder.go:76-244`.
 
 ### Instructions Needed
 
-From `backend/as/as.go` in the main compiler, you need:
+From `backend/codegen/as.go` in the main compiler, you need:
 -  `mov` - Already implemented
 - L `add` - Addition
 - L `sub` - Subtraction

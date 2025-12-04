@@ -9,7 +9,7 @@ The testing framework covers all major components of the Slang compiler:
 - **Lexer** (frontend/lexer) - Tokenization of source code
 - **Parser** (frontend/parser) - AST construction
 - **Semantic Analyzer** (frontend/semantic) - Type checking and validation
-- **Code Generator** (backend/as) - ARM64 assembly generation
+- **Code Generator** (backend/codegen) - ARM64 assembly generation
 - **Assembler** (assembler/slasm) - Native ARM64 assembler
 - **End-to-End Tests** (test/) - E2E tests for sl and slasm
 - **Integration Tests** - Pipeline integration tests
@@ -59,7 +59,7 @@ go tool cover -html=coverage.out -o coverage.html
 go test ./frontend/lexer/...
 go test ./frontend/parser/...
 go test ./frontend/semantic/...
-go test ./backend/as/...
+go test ./backend/codegen/...
 go test ./assembler/slasm/...
 go test ./test/sl/...      # E2E tests for sl compiler
 go test ./test/slasm/...   # E2E tests for slasm assembler
@@ -110,7 +110,7 @@ Tests for type checking and semantic validation:
 - **TestAnalyzerMultiStatement**: Analysis of multi-statement programs
 - **TestAnalyzerMainFunction**: Validation of main function presence
 
-### Code Generator Tests (`backend/as/as_test.go`)
+### Code Generator Tests (`backend/codegen/codegen_test.go`)
 
 Tests for ARM64 assembly generation:
 
@@ -348,7 +348,7 @@ func TestParserNewFeature(t *testing.T) {
 
 ### For Code Generator
 
-Add tests to `backend/as/as_test.go`:
+Add tests to `backend/codegen/codegen_test.go`:
 
 ```go
 func TestCodegenNewFeature(t *testing.T) {

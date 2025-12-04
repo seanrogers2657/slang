@@ -10,7 +10,7 @@ import (
 	"github.com/seanrogers2657/slang/assembler"
 	nativeasm "github.com/seanrogers2657/slang/assembler/slasm"
 	"github.com/seanrogers2657/slang/assembler/system"
-	"github.com/seanrogers2657/slang/backend/as"
+	"github.com/seanrogers2657/slang/backend/codegen"
 	"github.com/seanrogers2657/slang/errors"
 	"github.com/seanrogers2657/slang/frontend/ast"
 	"github.com/seanrogers2657/slang/frontend/lexer"
@@ -395,7 +395,7 @@ func compileSource(filename string, verbose bool, timer *timing.Timer) (string, 
 		timer.Start("Code Generation")
 	}
 	// Use typed code generator for type-aware code generation
-	typedCodeGenerator := as.NewTypedCodeGenerator(typedAST, sourceLines)
+	typedCodeGenerator := codegen.NewTypedCodeGenerator(typedAST, sourceLines)
 	assemblyOutput, err := typedCodeGenerator.Generate()
 	if err != nil {
 		return "", fmt.Errorf("code generation failed: %w", err)

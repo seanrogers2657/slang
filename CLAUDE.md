@@ -32,7 +32,7 @@ This repository follows strict organizational rules:
 1. **Lexer** (`frontend/lexer`) - Tokenizes source code into tokens
 2. **Parser** (`frontend/parser`) - Builds an Abstract Syntax Tree (AST) from tokens
 3. **Semantic Analyzer** (`frontend/semantic`) - Performs type checking and semantic analysis
-4. **Code Generator** (`backend/as`) - Generates ARM64 assembly from the AST
+4. **Code Generator** (`backend/codegen`) - Generates ARM64 assembly from the AST
 
 The compiler currently supports:
 - **Variables**: Immutable (`val`) and mutable (`var`) variables (e.g., `val x = 5`, `var y = 10`)
@@ -223,7 +223,7 @@ Linker (ld) → Executable binary
   - Optional hints for fixing the error
   - Summary of total errors/warnings
 
-**Code Generator** (`backend/as/as.go`):
+**Code Generator** (`backend/codegen/codegen.go`):
 - `AsGenerator` interface with `Generate() (string, error)`
 - `CodeGenContext` - Tracks variable stack offsets during code generation
 - Generates ARM64 assembly targeting macOS
@@ -348,7 +348,7 @@ When adding a new operator, you must update three files:
 2. **Parser** (`frontend/parser/parser.go`):
    - Add case in `ParseBinaryExpression()` switch statement
 
-3. **Code Generator** (`backend/as/as.go`):
+3. **Code Generator** (`backend/codegen/codegen.go`):
    - Add case in `GenerateExpr()` switch statement with ARM64 instructions
 
 4. **Tests**: Update test files for all three components
@@ -370,11 +370,11 @@ Built-in functions are registered in a central registry and handled specially by
    }
    ```
 
-2. **Code Generator - Typed** (`backend/as/typed_codegen.go`):
+2. **Code Generator - Typed** (`backend/codegen/typed_codegen.go`):
    - Add case in `generateBuiltinCall()` switch statement
    - Implement the generation function (e.g., `generateExitBuiltin()`)
 
-3. **Code Generator - AST** (`backend/as/as.go`):
+3. **Code Generator - AST** (`backend/codegen/codegen.go`):
    - Add case in `generateBuiltinCallAST()` switch statement
    - Implement the generation function (e.g., `generateExitBuiltinAST()`)
 

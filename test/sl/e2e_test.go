@@ -12,7 +12,7 @@ import (
 
 	"github.com/seanrogers2657/slang/assembler"
 	"github.com/seanrogers2657/slang/assembler/slasm"
-	"github.com/seanrogers2657/slang/backend/as"
+	"github.com/seanrogers2657/slang/backend/codegen"
 	slangErrors "github.com/seanrogers2657/slang/errors"
 	"github.com/seanrogers2657/slang/frontend/lexer"
 	"github.com/seanrogers2657/slang/frontend/parser"
@@ -112,7 +112,7 @@ func runSlangTest(t *testing.T, tc *testutil.TestExpectation) {
 
 	// Code generation stage - uses raw AST, not typed AST
 	sourceLines := strings.Split(string(source), "\n")
-	generator := as.NewAsGenerator(program, sourceLines)
+	generator := codegen.NewAsGenerator(program, sourceLines)
 	asmOutput, err := generator.Generate()
 
 	if err != nil {

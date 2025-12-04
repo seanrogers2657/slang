@@ -146,9 +146,6 @@ func formatStatement(sb *strings.Builder, stmt ast.Statement, prefix string, isL
 		for i, innerStmt := range s.Statements {
 			formatStatement(sb, innerStmt, childPrefix, i == len(s.Statements)-1)
 		}
-	case *ast.PrintStmt:
-		sb.WriteString(prefix + connector + "PrintStmt\n")
-		formatExpression(sb, s.Expr, childPrefix, true)
 	case *ast.ExprStmt:
 		sb.WriteString(prefix + connector + "ExprStmt\n")
 		formatExpression(sb, s.Expr, childPrefix, true)
@@ -247,9 +244,6 @@ func formatTypedStatement(sb *strings.Builder, stmt semantic.TypedStatement, pre
 		for i, innerStmt := range s.Statements {
 			formatTypedStatement(sb, innerStmt, childPrefix, i == len(s.Statements)-1)
 		}
-	case *semantic.TypedPrintStmt:
-		sb.WriteString(prefix + connector + "PrintStmt\n")
-		formatTypedExpression(sb, s.Expr, childPrefix, true)
 	case *semantic.TypedExprStmt:
 		sb.WriteString(prefix + connector + "ExprStmt\n")
 		formatTypedExpression(sb, s.Expr, childPrefix, true)

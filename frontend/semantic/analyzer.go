@@ -260,8 +260,6 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 	switch s := stmt.(type) {
 	case *ast.ExprStmt:
 		return a.analyzeExprStatement(s)
-	case *ast.PrintStmt:
-		return a.analyzePrintStatement(s)
 	case *ast.BlockStmt:
 		return a.analyzeBlockStmt(s)
 	case *ast.VarDeclStmt:
@@ -481,17 +479,6 @@ func (a *Analyzer) analyzeExprStatement(stmt *ast.ExprStmt) TypedStatement {
 	typedExpr := a.analyzeExpression(stmt.Expr)
 	return &TypedExprStmt{
 		Expr: typedExpr,
-	}
-}
-
-// analyzePrintStatement analyzes a print statement
-func (a *Analyzer) analyzePrintStatement(stmt *ast.PrintStmt) TypedStatement {
-	typedExpr := a.analyzeExpression(stmt.Expr)
-
-	// Print can handle any type, so no type checking needed here
-	return &TypedPrintStmt{
-		Keyword: stmt.Keyword,
-		Expr:    typedExpr,
 	}
 }
 

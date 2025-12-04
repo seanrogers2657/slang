@@ -10,5 +10,5 @@ fn add_one(x: int): int {
 
 fn main(): void {
     val result = double(add_one(double(5)))
-    print result
+    print(result)
 }

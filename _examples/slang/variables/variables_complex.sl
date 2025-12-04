@@ -4,9 +4,9 @@ fn main(): void {
     val a = 5
     val b = 10
     val c = a * b
-    print c
+    print(c)
     val d = c + a
-    print d
+    print(d)
     val result = a + b * 2
-    print result
+    print(result)
 }

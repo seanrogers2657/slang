@@ -762,13 +762,13 @@ func TestParserFunctionDeclaration(t *testing.T) {
 		},
 		{
 			name:         "main function with single statement",
-			source:       "fn main(): void {\n    print 42\n}",
+			source:       "fn main(): void {\n    print(42)\n}",
 			expectedName: "main",
 			expectedBody: 1,
 		},
 		{
 			name:         "main function with multiple statements",
-			source:       "fn main(): void {\n    print 1\n    print 2\n}",
+			source:       "fn main(): void {\n    print(1)\n    print(2)\n}",
 			expectedName: "main",
 			expectedBody: 2,
 		},
@@ -1026,17 +1026,17 @@ func TestParserIdentifierExpression(t *testing.T) {
 	}{
 		{
 			name:         "simple identifier",
-			source:       "fn main(): void {\n    print x\n}",
+			source:       "fn main(): void {\n    print(x)\n}",
 			expectedName: "x",
 		},
 		{
 			name:         "identifier with underscore",
-			source:       "fn main(): void {\n    print my_var\n}",
+			source:       "fn main(): void {\n    print(my_var)\n}",
 			expectedName: "my_var",
 		},
 		{
 			name:         "identifier in binary expression",
-			source:       "fn main(): void {\n    val x = 5\n    print x + 10\n}",
+			source:       "fn main(): void {\n    val x = 5\n    print(x + 10)\n}",
 			expectedName: "x",
 		},
 	}
@@ -1062,16 +1062,20 @@ func TestParserIdentifierExpression(t *testing.T) {
 
 			var foundIdent bool
 			for _, stmt := range fnDecl.Body.Statements {
-				if printStmt, ok := stmt.(*ast.PrintStmt); ok {
-					// Check if the print expression contains an identifier
-					switch e := printStmt.Expr.(type) {
-					case *ast.IdentifierExpr:
-						if e.Name == tt.expectedName {
-							foundIdent = true
-						}
-					case *ast.BinaryExpr:
-						if left, ok := e.Left.(*ast.IdentifierExpr); ok && left.Name == tt.expectedName {
-							foundIdent = true
+				if exprStmt, ok := stmt.(*ast.ExprStmt); ok {
+					if callExpr, ok := exprStmt.Expr.(*ast.CallExpr); ok && callExpr.Name == "print" {
+						// Check if the print argument contains an identifier
+						if len(callExpr.Arguments) > 0 {
+							switch e := callExpr.Arguments[0].(type) {
+							case *ast.IdentifierExpr:
+								if e.Name == tt.expectedName {
+									foundIdent = true
+								}
+							case *ast.BinaryExpr:
+								if left, ok := e.Left.(*ast.IdentifierExpr); ok && left.Name == tt.expectedName {
+									foundIdent = true
+								}
+							}
 						}
 					}
 				}
@@ -1224,7 +1228,7 @@ func TestParserMultipleVariables(t *testing.T) {
     val x = 5
     val y = 10
     val z = x + y
-    print z
+    print(z)
 }`
 
 	l := lexer.NewLexer([]byte(source))
@@ -1259,9 +1263,13 @@ func TestParserMultipleVariables(t *testing.T) {
 		}
 	}
 
-	// Check last is print statement
-	_, ok := fnDecl.Body.Statements[3].(*ast.PrintStmt)
+	// Check last is print() call
+	exprStmt, ok := fnDecl.Body.Statements[3].(*ast.ExprStmt)
 	if !ok {
-		t.Fatalf("expected PrintStmt for statement 3, got %T", fnDecl.Body.Statements[3])
+		t.Fatalf("expected ExprStmt for statement 3, got %T", fnDecl.Body.Statements[3])
+	}
+	callExpr, ok := exprStmt.Expr.(*ast.CallExpr)
+	if !ok || callExpr.Name != "print" {
+		t.Fatalf("expected print() call, got %T", exprStmt.Expr)
 	}
 }

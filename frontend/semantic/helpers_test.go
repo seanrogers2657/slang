@@ -95,13 +95,6 @@ func assignStmt(name string, value ast.Expression) *ast.AssignStmt {
 	}
 }
 
-func printStmt(expr ast.Expression) *ast.PrintStmt {
-	return &ast.PrintStmt{
-		Keyword: pos(1, 1),
-		Expr:    expr,
-	}
-}
-
 func exprStmt(expr ast.Expression) *ast.ExprStmt {
 	return &ast.ExprStmt{Expr: expr}
 }

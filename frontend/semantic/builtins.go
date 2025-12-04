@@ -14,4 +14,9 @@ var Builtins = map[string]BuiltinFunc{
 		ReturnType: TypeVoid,
 		NoReturn:   true,
 	},
+	"print": {
+		ParamTypes: []Type{TypeI64},
+		ReturnType: TypeVoid,
+		NoReturn:   false,
+	},
 }

@@ -200,11 +200,6 @@ func (p *parser) Parse() *ast.Program {
 }
 
 func (p *parser) ParseStatement() ast.Statement {
-	// Check if it's a print statement
-	if p.CurrentToken().Type == lexer.TokenTypePrint {
-		return p.ParsePrintStatement()
-	}
-
 	// Check if it's a return statement
 	if p.CurrentToken().Type == lexer.TokenTypeReturn {
 		return p.ParseReturnStatement()
@@ -322,26 +317,6 @@ func (p *parser) ParseAssignment() ast.Statement {
 		NamePos: namePos,
 		Equals:  equalsPos,
 		Value:   value,
-	}
-}
-
-func (p *parser) ParsePrintStatement() ast.Statement {
-	// Get position of 'print' keyword
-	keywordPos := p.CurrentToken().Pos
-
-	// Consume 'print' token
-	p.advance()
-
-	// Parse the expression to print using the Pratt parser
-	expr := p.parseExpression(precedenceLowest)
-	if expr == nil {
-		p.Errors = append(p.Errors, fmt.Errorf("expected expression after 'print'"))
-		return nil
-	}
-
-	return &ast.PrintStmt{
-		Keyword: keywordPos,
-		Expr:    expr,
 	}
 }
 

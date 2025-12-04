@@ -97,17 +97,6 @@ func (s *TypedExprStmt) End() ast.Position { return s.Expr.End() }
 func (s *TypedExprStmt) GetType() Type     { return TypeVoid }
 func (s *TypedExprStmt) typedStmtNode()    {}
 
-// TypedPrintStmt represents a typed print statement
-type TypedPrintStmt struct {
-	Keyword ast.Position
-	Expr    TypedExpression
-}
-
-func (s *TypedPrintStmt) Pos() ast.Position { return s.Keyword }
-func (s *TypedPrintStmt) End() ast.Position { return s.Expr.End() }
-func (s *TypedPrintStmt) GetType() Type     { return TypeVoid }
-func (s *TypedPrintStmt) typedStmtNode()    {}
-
 // TypedBlockStmt represents a typed block statement
 type TypedBlockStmt struct {
 	LeftBrace  ast.Position

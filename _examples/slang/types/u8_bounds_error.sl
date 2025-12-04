@@ -3,5 +3,5 @@
 // @test: error_contains=out of range for u8
 fn main(): void {
     val x: u8 = 256
-    print x
+    print(x)
 }

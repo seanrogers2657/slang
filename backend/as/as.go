@@ -128,20 +128,41 @@ func generateFunctionBasedProgram(program *ast.Program, builder *strings.Builder
 		}
 	}
 
+	// Check for print calls in expressions
+	var checkForPrintCall func(ast.Expression)
+	checkForPrintCall = func(expr ast.Expression) {
+		if expr == nil {
+			return
+		}
+		switch e := expr.(type) {
+		case *ast.CallExpr:
+			if e.Name == "print" {
+				hasPrint = true
+			}
+			for _, arg := range e.Arguments {
+				checkForPrintCall(arg)
+			}
+		case *ast.BinaryExpr:
+			checkForPrintCall(e.Left)
+			checkForPrintCall(e.Right)
+		}
+	}
+
 	var collectStringsFromStmt func(ast.Statement)
 	collectStringsFromStmt = func(stmt ast.Statement) {
 		switch s := stmt.(type) {
-		case *ast.PrintStmt:
-			hasPrint = true
-			collectStringsFromExpr(s.Expr)
 		case *ast.ExprStmt:
 			collectStringsFromExpr(s.Expr)
+			checkForPrintCall(s.Expr)
 		case *ast.VarDeclStmt:
 			collectStringsFromExpr(s.Initializer)
+			checkForPrintCall(s.Initializer)
 		case *ast.AssignStmt:
 			collectStringsFromExpr(s.Value)
+			checkForPrintCall(s.Value)
 		case *ast.ReturnStmt:
 			collectStringsFromExpr(s.Value)
+			checkForPrintCall(s.Value)
 		}
 	}
 
@@ -260,8 +281,6 @@ func GenerateStmt(stmt ast.Statement, ctx *CodeGenContext) (string, error) {
 	switch s := stmt.(type) {
 	case *ast.ExprStmt:
 		return GenerateExprWithContext(s.Expr, ctx)
-	case *ast.PrintStmt:
-		return GeneratePrintStmtWithContext(s, ctx)
 	case *ast.VarDeclStmt:
 		return GenerateVarDecl(s, ctx)
 	case *ast.AssignStmt:
@@ -347,6 +366,8 @@ func generateBuiltinCallAST(call *ast.CallExpr, ctx *CodeGenContext) (string, er
 	switch call.Name {
 	case "exit":
 		return generateExitBuiltinAST(call, ctx)
+	case "print":
+		return generatePrintBuiltinAST(call, ctx)
 	default:
 		return "", fmt.Errorf("unknown built-in function: %s", call.Name)
 	}
@@ -375,6 +396,34 @@ func generateExitBuiltinAST(call *ast.CallExpr, ctx *CodeGenContext) (string, er
 	return builder.String(), nil
 }
 
+// generatePrintBuiltinAST generates code for the print() built-in (AST version)
+func generatePrintBuiltinAST(call *ast.CallExpr, ctx *CodeGenContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Generate code for the argument (result in x2)
+	if len(call.Arguments) > 0 {
+		code, err := GenerateExprWithContext(call.Arguments[0], ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+	}
+
+	// Convert integer to string
+	builder.WriteString("    mov x0, x2\n")
+	builder.WriteString("    bl int_to_string\n")
+	builder.WriteString("\n")
+
+	// Write the string to stdout
+	builder.WriteString(generateWriteSyscall("x0", "x1"))
+	builder.WriteString("\n")
+
+	// Write a newline character
+	builder.WriteString(generateNewline())
+
+	return builder.String(), nil
+}
+
 // generateLegacyProgram generates code for legacy top-level statement programs
 func generateLegacyProgram(program *ast.Program, builder *strings.Builder, sourceLines []string) (string, error) {
 	statementsToProcess := program.Statements
@@ -397,17 +446,19 @@ func generateLegacyProgram(program *ast.Program, builder *strings.Builder, sourc
 					stringIndex++
 				}
 			}
+		case *ast.CallExpr:
+			if e.Name == "print" {
+				hasPrint = true
+			}
+			for _, arg := range e.Arguments {
+				collectStrings(arg)
+			}
 		}
 	}
 
 	for _, stmt := range statementsToProcess {
-		if _, ok := stmt.(*ast.PrintStmt); ok {
-			hasPrint = true
-		}
 		switch s := stmt.(type) {
 		case *ast.ExprStmt:
-			collectStrings(s.Expr)
-		case *ast.PrintStmt:
 			collectStrings(s.Expr)
 		}
 	}
@@ -726,32 +777,6 @@ func generateOperandToReg(expr ast.Expression, reg string, ctx *CodeGenContext) 
 	return builder.String(), nil
 }
 
-// GeneratePrintStmtWithContext generates code for a print statement with variable support
-func GeneratePrintStmtWithContext(stmt *ast.PrintStmt, ctx *CodeGenContext) (string, error) {
-	builder := strings.Builder{}
-
-	// Step 1: Evaluate the expression (result goes into x2)
-	code, err := GenerateExprWithContext(stmt.Expr, ctx)
-	if err != nil {
-		return "", err
-	}
-	builder.WriteString(code)
-
-	// Step 2: Convert integer to string
-	builder.WriteString("    mov x0, x2\n")
-	builder.WriteString("    bl int_to_string\n")
-	builder.WriteString("\n")
-
-	// Step 3: Write the string to stdout
-	builder.WriteString(generateWriteSyscall("x0", "x1"))
-	builder.WriteString("\n")
-
-	// Step 4: Write a newline character
-	builder.WriteString(generateNewline())
-
-	return builder.String(), nil
-}
-
 func GenerateExprInline(expr ast.Expression, stringMap map[*ast.LiteralExpr]string) (string, error) {
 	builder := strings.Builder{}
 
@@ -938,33 +963,6 @@ func GenerateExpr(expr *ast.BinaryExpr) (string, error) {
 	builder.WriteString("    mov x0, #0\n")
 	builder.WriteString("    mov x16, #1\n")
 	builder.WriteString("    svc #0\n")
-
-	return builder.String(), nil
-}
-
-// GeneratePrintStmt generates code for a print statement.
-// It evaluates the expression, converts the result to a string, and writes it to stdout.
-func GeneratePrintStmt(stmt *ast.PrintStmt, stringMap map[*ast.LiteralExpr]string) (string, error) {
-	builder := strings.Builder{}
-
-	// Step 1: Evaluate the expression (result goes into x2)
-	code, err := GenerateExprInline(stmt.Expr, stringMap)
-	if err != nil {
-		return "", err
-	}
-	builder.WriteString(code)
-
-	// Step 2: Convert integer to string
-	builder.WriteString("    mov x0, x2\n")
-	builder.WriteString("    bl int_to_string\n")
-	builder.WriteString("\n")
-
-	// Step 3: Write the string to stdout
-	builder.WriteString(generateWriteSyscall("x0", "x1"))
-	builder.WriteString("\n")
-
-	// Step 4: Write a newline character
-	builder.WriteString(generateNewline())
 
 	return builder.String(), nil
 }

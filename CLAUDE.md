@@ -40,9 +40,11 @@ The compiler currently supports:
 - **Operators**:
   - Arithmetic: `+`, `-`, `*`, `/`, `%`
   - Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
-- **Statements**: Print statements, expression statements, variable declarations
+- **Statements**: Expression statements, variable declarations
 - **Functions**: Function declarations with `fn` keyword (e.g., `fn main() { ... }`)
-- **Built-in Functions**: `exit(code)` - exit program with specified exit code
+- **Built-in Functions**:
+  - `print(value)` - print an integer value to stdout
+  - `exit(code)` - exit program with specified exit code
 - **Comments**: Line comments with `//` (e.g., `// this is a comment`)
 
 ## Development Commands
@@ -207,7 +209,7 @@ Linker (ld) → Executable binary
 - Type checking rules:
   - Arithmetic operators (`+`, `-`, `*`, `/`, `%`) require integer operands
   - Comparison operators (`==`, `!=`, `<`, `>`, `<=`, `>=`) require integer operands
-  - Print statements can handle any type
+  - Built-in functions are validated against their registered signatures
 - Outputs: `[]*CompilerError` and `*TypedProgram`
 
 **Error Framework** (`frontend/errors/`):
@@ -362,7 +364,8 @@ Built-in functions are registered in a central registry and handled specially by
 
    ```go
    var Builtins = map[string]BuiltinFunc{
-       "exit": {ParamTypes: []Type{TypeI64}, ReturnType: TypeVoid, NoReturn: true},
+       "exit":  {ParamTypes: []Type{TypeI64}, ReturnType: TypeVoid, NoReturn: true},
+       "print": {ParamTypes: []Type{TypeI64}, ReturnType: TypeVoid, NoReturn: false},
        // Add new built-in here
    }
    ```
@@ -401,17 +404,17 @@ Generated ARM64 assembly for `exit(42)`:
 Variables are declared using `val` (immutable) or `var` (mutable) keywords (Kotlin-style):
 
 ```slang
-fn main() {
+fn main(): void {
     val x = 42           // declare immutable x with value 42
     var y = 10           // declare mutable y with value 10
     val sum = x + y      // use variables in expressions
-    print sum            // prints 52
+    print(sum)           // prints 52
 
     y = y + 5            // reassign mutable variable
-    print y              // prints 15
+    print(y)             // prints 15
 
     val result = x * 2 + y   // complex expressions work correctly
-    print result             // prints 99
+    print(result)            // prints 99
 }
 ```
 
@@ -424,7 +427,7 @@ fn main() {
 
 **Error examples:**
 ```slang
-print x        // Error: undefined variable 'x'
+print(x)       // Error: undefined variable 'x'
 val x = 5
 val x = 10     // Error: variable 'x' is already declared in this scope
 x = 20         // Error: cannot assign to immutable variable 'x'
@@ -434,7 +437,7 @@ x = 20         // Error: cannot assign to immutable variable 'x'
 
 - No parentheses support in expressions
 - No control flow (if/else, loops)
-- Print statements require system assembler (`--assembler system`)
+- print() requires system assembler (`--assembler system`)
 
 ## Module Information
 

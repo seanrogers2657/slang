@@ -10,9 +10,9 @@ fn multiply(a: int, b: int): int {
 
 fn main(): void {
     val x = add(3, 7)
-    print x
+    print(x)
     val y = multiply(2, 10)
-    print y
+    print(y)
     val z = multiply(x, y)
-    print z
+    print(z)
 }

@@ -164,8 +164,6 @@ func (g *TypedCodeGenerator) collectFloatLiteralsFromStmt(stmt semantic.TypedSta
 	switch s := stmt.(type) {
 	case *semantic.TypedExprStmt:
 		g.collectFloatLiteralsFromExpr(s.Expr, literals, index)
-	case *semantic.TypedPrintStmt:
-		g.collectFloatLiteralsFromExpr(s.Expr, literals, index)
 	case *semantic.TypedVarDeclStmt:
 		g.collectFloatLiteralsFromExpr(s.Initializer, literals, index)
 	case *semantic.TypedAssignStmt:
@@ -198,9 +196,28 @@ func (g *TypedCodeGenerator) collectFloatLiteralsFromExpr(expr semantic.TypedExp
 
 func (g *TypedCodeGenerator) hasPrintStatements(block *semantic.TypedBlockStmt) bool {
 	for _, stmt := range block.Statements {
-		if _, ok := stmt.(*semantic.TypedPrintStmt); ok {
+		if exprStmt, ok := stmt.(*semantic.TypedExprStmt); ok {
+			if g.hasPrintCall(exprStmt.Expr) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (g *TypedCodeGenerator) hasPrintCall(expr semantic.TypedExpression) bool {
+	switch e := expr.(type) {
+	case *semantic.TypedCallExpr:
+		if e.Name == "print" {
 			return true
 		}
+		for _, arg := range e.Arguments {
+			if g.hasPrintCall(arg) {
+				return true
+			}
+		}
+	case *semantic.TypedBinaryExpr:
+		return g.hasPrintCall(e.Left) || g.hasPrintCall(e.Right)
 	}
 	return false
 }
@@ -274,8 +291,6 @@ func (g *TypedCodeGenerator) generateStmt(stmt semantic.TypedStatement, ctx *Typ
 	switch s := stmt.(type) {
 	case *semantic.TypedExprStmt:
 		return g.generateExpr(s.Expr, ctx, floatLiterals)
-	case *semantic.TypedPrintStmt:
-		return g.generatePrintStmt(s, ctx, floatLiterals)
 	case *semantic.TypedVarDeclStmt:
 		return g.generateVarDecl(s, ctx, floatLiterals)
 	case *semantic.TypedAssignStmt:
@@ -354,25 +369,6 @@ func (g *TypedCodeGenerator) generateReturnStmt(stmt *semantic.TypedReturnStmt, 
 	builder.WriteString("    mov sp, x29\n")
 	builder.WriteString("    ldp x29, x30, [sp], #16\n")
 	builder.WriteString("    ret\n")
-
-	return builder.String(), nil
-}
-
-func (g *TypedCodeGenerator) generatePrintStmt(stmt *semantic.TypedPrintStmt, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo) (string, error) {
-	builder := strings.Builder{}
-
-	code, err := g.generateExpr(stmt.Expr, ctx, floatLiterals)
-	if err != nil {
-		return "", err
-	}
-	builder.WriteString(code)
-
-	// For now, print only works with integers
-	builder.WriteString("    mov x0, x2\n")
-	builder.WriteString("    bl int_to_string\n\n")
-	builder.WriteString(generateWriteSyscall("x0", "x1"))
-	builder.WriteString("\n")
-	builder.WriteString(generateNewline())
 
 	return builder.String(), nil
 }
@@ -730,6 +726,8 @@ func (g *TypedCodeGenerator) generateBuiltinCall(call *semantic.TypedCallExpr, c
 	switch call.Name {
 	case "exit":
 		return g.generateExitBuiltin(call, ctx, floatLiterals)
+	case "print":
+		return g.generatePrintBuiltin(call, ctx, floatLiterals)
 	default:
 		return "", fmt.Errorf("unknown built-in function: %s", call.Name)
 	}
@@ -753,6 +751,32 @@ func (g *TypedCodeGenerator) generateExitBuiltin(call *semantic.TypedCallExpr, c
 	builder.WriteString("    mov x16, #1\n")
 	// Invoke syscall
 	builder.WriteString("    svc #0\n")
+
+	return builder.String(), nil
+}
+
+func (g *TypedCodeGenerator) generatePrintBuiltin(call *semantic.TypedCallExpr, ctx *TypedCodeGenContext, floatLiterals map[string]floatLiteralInfo) (string, error) {
+	builder := strings.Builder{}
+
+	// Generate code for the argument (result in x2)
+	if len(call.Arguments) > 0 {
+		code, err := g.generateExpr(call.Arguments[0], ctx, floatLiterals)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+	}
+
+	// Convert integer to string
+	builder.WriteString("    mov x0, x2\n")
+	builder.WriteString("    bl int_to_string\n\n")
+
+	// Write the string to stdout
+	builder.WriteString(generateWriteSyscall("x0", "x1"))
+	builder.WriteString("\n")
+
+	// Write a newline character
+	builder.WriteString(generateNewline())
 
 	return builder.String(), nil
 }

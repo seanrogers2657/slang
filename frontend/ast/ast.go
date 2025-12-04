@@ -126,16 +126,6 @@ func (e *ExprStmt) Pos() Position { return e.Expr.Pos() }
 func (e *ExprStmt) End() Position { return e.Expr.End() }
 func (e *ExprStmt) stmtNode()     {}
 
-// PrintStmt represents a print statement
-type PrintStmt struct {
-	Keyword Position   // position of 'print' keyword
-	Expr    Expression // expression to print
-}
-
-func (p *PrintStmt) Pos() Position { return p.Keyword }
-func (p *PrintStmt) End() Position { return p.Expr.End() }
-func (p *PrintStmt) stmtNode()     {}
-
 // BlockStmt represents a block of statements enclosed in braces
 type BlockStmt struct {
 	LeftBrace  Position    // position of '{'

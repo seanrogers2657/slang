@@ -108,7 +108,6 @@ Tests for type checking and semantic validation:
 - **TestAnalyzerComparison**: Type checking for comparison operators (==, !=, <, >, <=, >=)
 - **TestAnalyzerTypeErrors**: Detection of type mismatches
 - **TestAnalyzerMultiStatement**: Analysis of multi-statement programs
-- **TestAnalyzerPrintStatement**: Type checking for print statements
 - **TestAnalyzerMainFunction**: Validation of main function presence
 
 ### Code Generator Tests (`backend/as/as_test.go`)
@@ -401,9 +400,9 @@ Add example files to `_examples/` with `@test:` directives:
 **Slang E2E Test** (`_examples/slang/new_feature.sl`):
 ```slang
 // @test: exit_code=0
-fn main() {
+fn main(): void {
     val x = 42
-    print x
+    print(x)
 }
 ```
 

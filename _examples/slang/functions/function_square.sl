@@ -6,5 +6,5 @@ fn square(n: int): int {
 
 fn main(): void {
     val result = square(5)
-    print result
+    print(result)
 }

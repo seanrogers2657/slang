@@ -2,8 +2,8 @@
 // @test: stdout=42\n52\n
 fn main(): void {
     val x = 42
-    print x
+    print(x)
     val y = 10
     val z = x + y
-    print z
+    print(z)
 }

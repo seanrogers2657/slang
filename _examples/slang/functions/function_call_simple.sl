@@ -6,5 +6,5 @@ fn get_value(): int {
 
 fn main(): void {
     val result = get_value()
-    print result
+    print(result)
 }

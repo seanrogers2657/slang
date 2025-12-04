@@ -4,5 +4,5 @@ fn main(): void {
     val a: u32 = 10
     val b: u32 = 20
     val sum = a + b
-    print sum
+    print(sum)
 }

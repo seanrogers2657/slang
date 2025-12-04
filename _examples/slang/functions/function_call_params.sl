@@ -6,7 +6,7 @@ fn add(a: int, b: int): int {
 
 fn main(): void {
     val sum1 = add(3, 5)
-    print sum1
+    print(sum1)
     val sum2 = add(7, 8)
-    print sum2
+    print(sum2)
 }

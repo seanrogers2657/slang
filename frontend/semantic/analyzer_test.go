@@ -78,26 +78,6 @@ func TestAnalyzeProgram(t *testing.T) {
 		}
 	})
 
-	t.Run("valid print statement", func(t *testing.T) {
-		test := newTest(t)
-		errs, typedProgram := test.analyzer.Analyze(program(printStmt(intLit("42"))))
-
-		if len(errs) > 0 {
-			t.Errorf("expected no errors, got %d", len(errs))
-		}
-		if len(typedProgram.Statements) != 1 {
-			t.Errorf("expected 1 statement, got %d", len(typedProgram.Statements))
-		}
-
-		ps, ok := typedProgram.Statements[0].(*TypedPrintStmt)
-		if !ok {
-			t.Fatal("expected TypedPrintStmt")
-		}
-		if !ps.Expr.GetType().Equals(TypeInteger) {
-			t.Errorf("expected integer type, got %s", ps.Expr.GetType())
-		}
-	})
-
 	t.Run("type error", func(t *testing.T) {
 		test := newTest(t)
 		errs, _ := test.analyzer.Analyze(program(exprStmt(binExpr(strLit("hello"), "+", intLit("3")))))

@@ -25,7 +25,6 @@ const (
 	TokenTypeLessThanOrEqual
 	TokenTypeGreaterThanOrEqual
 	TokenTypeNewline
-	TokenTypePrint
 	TokenTypeFn
 	TokenTypeVal
 	TokenTypeVar
@@ -73,8 +72,6 @@ func (t TokenType) String() string {
 		return "GREATER_EQUAL"
 	case TokenTypeNewline:
 		return "NEWLINE"
-	case TokenTypePrint:
-		return "PRINT"
 	case TokenTypeFn:
 		return "FN"
 	case TokenTypeVal:
@@ -321,12 +318,6 @@ func (p *lexer) ParseIdentifierOrKeyword() {
 
 	// Check if it's a recognized keyword
 	switch ident {
-	case "print":
-		p.Tokens = append(p.Tokens, Token{
-			Type:  TokenTypePrint,
-			Value: ident,
-			Pos:   startPos,
-		})
 	case "fn":
 		p.Tokens = append(p.Tokens, Token{
 			Type:  TokenTypeFn,

@@ -591,10 +591,24 @@ func (a *Analyzer) analyzeBuiltinCall(call *ast.CallExpr, builtin BuiltinFunc) T
 		// Type check if we have a corresponding parameter
 		if i < len(builtin.ParamTypes) {
 			argType := typedArgs[i].GetType()
-			paramType := builtin.ParamTypes[i]
 
-			// Allow integer types to be passed to i64 parameters
-			if _, isErr := argType.(ErrorType); !isErr {
+			// Skip error types
+			if _, isErr := argType.(ErrorType); isErr {
+				continue
+			}
+
+			// Check if this parameter has AcceptedTypes (accepts multiple types)
+			if acceptedTypes, ok := builtin.AcceptedTypes[i]; ok {
+				if !isAcceptedType(argType, acceptedTypes) {
+					a.addError(
+						fmt.Sprintf("argument %d: expected one of %s, got %s",
+							i+1, formatAcceptedTypes(acceptedTypes), argType.String()),
+						arg.Pos(), arg.End(),
+					)
+				}
+			} else {
+				// Normal type checking against ParamTypes
+				paramType := builtin.ParamTypes[i]
 				if !paramType.Equals(argType) && !isCompatibleIntegerType(paramType, argType) {
 					a.addError(
 						fmt.Sprintf("argument %d: expected %s, got %s",
@@ -614,6 +628,42 @@ func (a *Analyzer) analyzeBuiltinCall(call *ast.CallExpr, builtin BuiltinFunc) T
 		Arguments:  typedArgs,
 		RightParen: call.RightParen,
 	}
+}
+
+// isAcceptedType checks if argType matches any of the accepted types
+func isAcceptedType(argType Type, acceptedTypes []Type) bool {
+	for _, accepted := range acceptedTypes {
+		if accepted.Equals(argType) {
+			return true
+		}
+		// Also allow compatible integer types when i64 is accepted
+		if _, isI64 := accepted.(I64Type); isI64 && isIntegerType(argType) {
+			return true
+		}
+	}
+	return false
+}
+
+// formatAcceptedTypes returns a human-readable list of accepted types
+func formatAcceptedTypes(types []Type) string {
+	if len(types) == 0 {
+		return "none"
+	}
+	if len(types) == 1 {
+		return types[0].String()
+	}
+	result := ""
+	for i, t := range types {
+		if i > 0 {
+			if i == len(types)-1 {
+				result += " or "
+			} else {
+				result += ", "
+			}
+		}
+		result += t.String()
+	}
+	return result
 }
 
 // isCompatibleIntegerType checks if argType can be passed to paramType

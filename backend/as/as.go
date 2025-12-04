@@ -400,14 +400,41 @@ func generateExitBuiltinAST(call *ast.CallExpr, ctx *CodeGenContext) (string, er
 func generatePrintBuiltinAST(call *ast.CallExpr, ctx *CodeGenContext) (string, error) {
 	builder := strings.Builder{}
 
-	// Generate code for the argument (result in x2)
-	if len(call.Arguments) > 0 {
-		code, err := GenerateExprWithContext(call.Arguments[0], ctx)
-		if err != nil {
-			return "", err
-		}
-		builder.WriteString(code)
+	if len(call.Arguments) == 0 {
+		return "", nil
 	}
+
+	arg := call.Arguments[0]
+
+	// Check if the argument is a string literal
+	if lit, ok := arg.(*ast.LiteralExpr); ok && lit.Kind == ast.LiteralTypeString {
+		// Handle string literal printing
+		label, exists := ctx.stringMap[lit]
+		if !exists {
+			return "", fmt.Errorf("string literal not found in string map: %s", lit.Value)
+		}
+
+		// Load string address
+		builder.WriteString(fmt.Sprintf("    adrp x1, %s@PAGE\n", label))
+		builder.WriteString(fmt.Sprintf("    add x1, x1, %s@PAGEOFF\n", label))
+		// Load string length
+		builder.WriteString(fmt.Sprintf("    mov x2, #%d\n", len(lit.Value)))
+		// Write to stdout (fd=1)
+		builder.WriteString("    mov x0, #1\n")
+		builder.WriteString("    mov x16, #4\n")
+		builder.WriteString("    svc #0x80\n")
+		// Write newline
+		builder.WriteString(generateNewline())
+
+		return builder.String(), nil
+	}
+
+	// Handle integer printing (existing logic)
+	code, err := GenerateExprWithContext(arg, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(code)
 
 	// Convert integer to string
 	builder.WriteString("    mov x0, x2\n")

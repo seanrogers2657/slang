@@ -80,12 +80,6 @@ func (e *Emitter) EmitProgramEntry() string {
 	panic("TODO: implement AMD64 EmitProgramEntry")
 }
 
-// EmitLegacyProgramEntry generates the _start entry point for legacy programs.
-// TODO: Implement for AMD64
-func (e *Emitter) EmitLegacyProgramEntry() string {
-	panic("TODO: implement AMD64 EmitLegacyProgramEntry")
-}
-
 // EmitFunctionLabel generates a function label.
 // TODO: Implement for AMD64
 func (e *Emitter) EmitFunctionLabel(name string) string {

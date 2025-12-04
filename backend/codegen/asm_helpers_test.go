@@ -250,25 +250,6 @@ func TestEmitProgramEntry(t *testing.T) {
 	}
 }
 
-func TestEmitLegacyProgramEntry(t *testing.T) {
-	var builder strings.Builder
-	EmitLegacyProgramEntry(&builder)
-	output := builder.String()
-
-	expected := []string{
-		".global _start",
-		".align 4",
-		"_start:",
-		"b main",
-	}
-
-	for _, exp := range expected {
-		if !strings.Contains(output, exp) {
-			t.Errorf("expected %q in output, got:\n%s", exp, output)
-		}
-	}
-}
-
 func TestEmitFunctionLabel(t *testing.T) {
 	var builder strings.Builder
 	EmitFunctionLabel(&builder, "myFunc")

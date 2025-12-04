@@ -687,9 +687,8 @@ func TestTypedCodeGenerator_NoFunctions(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for program with no functions")
 	}
-	// The typed generator rejects legacy programs (no declarations)
-	if !strings.Contains(err.Error(), "legacy") && !strings.Contains(err.Error(), "no functions") {
-		t.Errorf("expected error about legacy programs or no functions, got: %v", err)
+	if !strings.Contains(err.Error(), "no declarations") {
+		t.Errorf("expected error about no declarations, got: %v", err)
 	}
 }
 

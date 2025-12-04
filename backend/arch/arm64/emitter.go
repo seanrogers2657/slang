@@ -95,17 +95,6 @@ func (e *Emitter) EmitProgramEntry() string {
 	return b.String()
 }
 
-// EmitLegacyProgramEntry generates the _start entry point for legacy programs.
-func (e *Emitter) EmitLegacyProgramEntry() string {
-	var b strings.Builder
-	b.WriteString(".global _start\n")
-	b.WriteString(".align 4\n")
-	b.WriteString("_start:\n")
-	b.WriteString("    b main\n")
-	b.WriteString("\n")
-	return b.String()
-}
-
 // EmitFunctionLabel generates a function label with proper alignment.
 func (e *Emitter) EmitFunctionLabel(name string) string {
 	var b strings.Builder

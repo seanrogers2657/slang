@@ -114,10 +114,10 @@ Tests for type checking and semantic validation:
 
 Tests for ARM64 assembly generation:
 
-- **TestGenerateExprAddition**: Addition operation code generation
-- **TestGenerateExprUnsupportedOperations**: Error handling for unsupported operations
-- **TestAsGeneratorInterface**: AsGenerator interface testing
-- **TestGenerateExprStructure**: Verification of assembly structure
+- **TestAsGeneratorInterface**: AsGenerator interface testing with function declarations
+- **TestGenerateProgramMultipleStatements**: Multi-statement code generation
+- **TestGenerateVarDecl**: Variable declaration code generation
+- **TestGenerateAssignStmt**: Assignment statement code generation
 
 ### Integration Tests (`integration_test.go`)
 
@@ -353,16 +353,25 @@ Add tests to `backend/codegen/codegen_test.go`:
 ```go
 func TestCodegenNewFeature(t *testing.T) {
     tests := []struct {
-        name           string
-        expr           *parser.Expr
-        expectedOutput []string
+        name            string
+        statements      []ast.Statement
+        expectedContent []string
     }{
         // Add test cases
     }
 
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
-            output, err := GenerateExpr(tt.expr)
+            program := &ast.Program{
+                Declarations: []ast.Declaration{
+                    &ast.FunctionDecl{
+                        Name:       "main",
+                        ReturnType: "void",
+                        Body:       &ast.BlockStmt{Statements: tt.statements},
+                    },
+                },
+            }
+            output, err := GenerateProgram(program, nil)
             // Verify results
         })
     }

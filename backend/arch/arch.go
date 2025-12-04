@@ -14,7 +14,6 @@ type Emitter interface {
 	// Program structure
 	EmitDataSection(hasPrint bool) string
 	EmitProgramEntry() string
-	EmitLegacyProgramEntry() string
 	EmitFunctionLabel(name string) string
 
 	// Function structure

@@ -56,11 +56,6 @@ func EmitProgramEntry(builder *strings.Builder) {
 	builder.WriteString(defaultEmitter.EmitProgramEntry())
 }
 
-// EmitLegacyProgramEntry generates the _start entry point for legacy programs.
-func EmitLegacyProgramEntry(builder *strings.Builder) {
-	builder.WriteString(defaultEmitter.EmitLegacyProgramEntry())
-}
-
 // EmitFunctionLabel generates a function label with proper alignment.
 func EmitFunctionLabel(builder *strings.Builder, name string) {
 	builder.WriteString(defaultEmitter.EmitFunctionLabel(name))

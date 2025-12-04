@@ -30,13 +30,12 @@ func NewTypedCodeGenerator(program *semantic.TypedProgram, sourceLines []string)
 
 // Generate produces ARM64 assembly code from the typed program.
 func (g *TypedCodeGenerator) Generate() (string, error) {
-	builder := strings.Builder{}
-
-	if len(g.program.Declarations) > 0 {
-		return g.generateFunctionBasedProgram(&builder)
+	if len(g.program.Declarations) == 0 {
+		return "", fmt.Errorf("no declarations found: programs must have at least one function")
 	}
 
-	return g.generateLegacyProgram(&builder)
+	builder := strings.Builder{}
+	return g.generateFunctionBasedProgram(&builder)
 }
 
 func (g *TypedCodeGenerator) generateFunctionBasedProgram(builder *strings.Builder) (string, error) {
@@ -502,6 +501,3 @@ func (g *TypedCodeGenerator) generatePrintBuiltin(call *semantic.TypedCallExpr, 
 	return builder.String(), nil
 }
 
-func (g *TypedCodeGenerator) generateLegacyProgram(builder *strings.Builder) (string, error) {
-	return "", fmt.Errorf("legacy programs not supported with typed code generator")
-}

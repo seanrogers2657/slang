@@ -39,13 +39,12 @@ func (c *asGenerator) Generate() (string, error) {
 }
 
 func GenerateProgram(program *ast.Program, sourceLines []string) (string, error) {
-	builder := strings.Builder{}
-
-	if len(program.Declarations) > 0 {
-		return generateFunctionBasedProgram(program, &builder, sourceLines)
+	if len(program.Declarations) == 0 {
+		return "", fmt.Errorf("no declarations found: programs must have at least one function")
 	}
 
-	return generateLegacyProgram(program, &builder, sourceLines)
+	builder := strings.Builder{}
+	return generateFunctionBasedProgram(program, &builder, sourceLines)
 }
 
 func generateFunctionBasedProgram(program *ast.Program, builder *strings.Builder, sourceLines []string) (string, error) {
@@ -263,66 +262,6 @@ func generatePrintBuiltinAST(call *ast.CallExpr, ctx *BaseContext) (string, erro
 	return builder.String(), nil
 }
 
-func generateLegacyProgram(program *ast.Program, builder *strings.Builder, sourceLines []string) (string, error) {
-	statementsToProcess := program.Statements
-
-	// Collect literals
-	info := NewProgramInfo()
-	stringMap := make(map[*ast.LiteralExpr]string)
-
-	for _, stmt := range statementsToProcess {
-		if exprStmt, ok := stmt.(*ast.ExprStmt); ok {
-			info.collectFromASTExpr(exprStmt.Expr, stringMap, new(int))
-		}
-	}
-
-	if len(info.StringLiterals) > 0 || info.HasPrint {
-		EmitDataSection(builder, info.HasPrint)
-		for _, lit := range info.StringLiterals {
-			builder.WriteString(fmt.Sprintf("%s:\n", lit.Label))
-			builder.WriteString(fmt.Sprintf("    .asciz %q\n", lit.Value))
-		}
-		builder.WriteString("\n.text\n")
-	}
-
-	EmitLegacyProgramEntry(builder)
-
-	if info.HasPrint {
-		builder.WriteString(intToStringFunctionText())
-		builder.WriteString("\n")
-	}
-
-	builder.WriteString("main:\n")
-
-	ctx := NewBaseContext(sourceLines)
-	ctx.SetStringMap(stringMap)
-	varCount := CountVariables(statementsToProcess)
-
-	if varCount > 0 {
-		stackSize := varCount * StackAlignment
-		EmitFunctionPrologue(builder, stackSize)
-	}
-
-	for _, stmt := range statementsToProcess {
-		builder.WriteString(ctx.GetSourceLineComment(stmt.Pos()))
-		code, err := GenerateStmt(stmt, ctx)
-		if err != nil {
-			return "", err
-		}
-		builder.WriteString(code)
-	}
-
-	if varCount > 0 {
-		EmitFunctionEpilogue(builder, true)
-	}
-
-	EmitMoveImm(builder, "x0", "0")
-	builder.WriteString("    mov x16, #1\n")
-	builder.WriteString("    svc #0\n")
-
-	return builder.String(), nil
-}
-
 // GenerateVarDecl generates code for a variable declaration.
 func GenerateVarDecl(stmt *ast.VarDeclStmt, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
@@ -467,90 +406,6 @@ func generateOperandToReg(expr ast.Expression, reg string, ctx *BaseContext) (st
 	}
 
 	return builder.String(), nil
-}
-
-func GenerateExpr(expr *ast.BinaryExpr) (string, error) {
-	builder := strings.Builder{}
-
-	hasStrings := false
-	var leftLit, rightLit *ast.LiteralExpr
-
-	if left, ok := expr.Left.(*ast.LiteralExpr); ok {
-		leftLit = left
-		if left.Kind == ast.LiteralTypeString {
-			hasStrings = true
-		}
-	}
-
-	if right, ok := expr.Right.(*ast.LiteralExpr); ok {
-		rightLit = right
-		if right.Kind == ast.LiteralTypeString {
-			hasStrings = true
-		}
-	}
-
-	if hasStrings {
-		builder.WriteString(".data\n")
-		builder.WriteString(".align 3\n")
-
-		if leftLit != nil && leftLit.Kind == ast.LiteralTypeString {
-			builder.WriteString("str_left:\n")
-			builder.WriteString(fmt.Sprintf("    .asciz %q\n", leftLit.Value))
-		}
-
-		if rightLit != nil && rightLit.Kind == ast.LiteralTypeString {
-			builder.WriteString("str_right:\n")
-			builder.WriteString(fmt.Sprintf("    .asciz %q\n", rightLit.Value))
-		}
-
-		builder.WriteString("\n.text\n")
-	}
-
-	builder.WriteString(".global _start\n")
-	builder.WriteString(".align 4\n")
-	builder.WriteString("_start:\n")
-
-	if leftLit != nil {
-		if leftLit.Kind == ast.LiteralTypeString {
-			builder.WriteString("    adr x0, str_left\n")
-		} else {
-			EmitMoveImm(&builder, "x0", leftLit.Value)
-		}
-	}
-
-	if rightLit != nil {
-		if rightLit.Kind == ast.LiteralTypeString {
-			builder.WriteString("    adr x1, str_right\n")
-		} else {
-			EmitMoveImm(&builder, "x1", rightLit.Value)
-		}
-	}
-
-	opCode, err := IntOperation(expr.Op, true)
-	if err != nil {
-		return "", err
-	}
-	builder.WriteString(opCode)
-
-	EmitMoveImm(&builder, "x0", "0")
-	builder.WriteString("    mov x16, #1\n")
-	builder.WriteString("    svc #0\n")
-
-	return builder.String(), nil
-}
-
-// generateWriteSyscall creates assembly code to write data to stdout (legacy).
-func generateWriteSyscall(bufferReg, lengthReg string) string {
-	var builder strings.Builder
-	EmitWriteSyscall(&builder, bufferReg, lengthReg)
-	return builder.String()
-}
-
-// generateNewline creates assembly code to write a newline to stdout (legacy).
-func generateNewline() string {
-	var builder strings.Builder
-	EmitNewline(&builder)
-	return builder.String()
 }
 
 // intToStringFunctionText generates the int-to-string conversion routine.

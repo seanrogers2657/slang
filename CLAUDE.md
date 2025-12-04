@@ -349,7 +349,7 @@ When adding a new operator, you must update three files:
    - Add case in `ParseBinaryExpression()` switch statement
 
 3. **Code Generator** (`backend/codegen/codegen.go`):
-   - Add case in `GenerateExpr()` switch statement with ARM64 instructions
+   - Add case in `GenerateExprWithContext()` switch statement with ARM64 instructions
 
 4. **Tests**: Update test files for all three components
 

@@ -151,29 +151,6 @@ func TestEmitProgramEntry(t *testing.T) {
 	}
 }
 
-func TestEmitLegacyProgramEntry(t *testing.T) {
-	e := New()
-	output := e.EmitLegacyProgramEntry()
-
-	mustContain := []string{
-		".global _start",
-		".align 4",
-		"_start:",
-		"b main",
-	}
-
-	for _, s := range mustContain {
-		if !strings.Contains(output, s) {
-			t.Errorf("expected %q in output:\n%s", s, output)
-		}
-	}
-
-	// Should NOT have bl (branch-link), just b (branch)
-	if strings.Contains(output, "bl main") {
-		t.Errorf("expected 'b main' not 'bl main' in output:\n%s", output)
-	}
-}
-
 func TestEmitFunctionLabel(t *testing.T) {
 	e := New()
 

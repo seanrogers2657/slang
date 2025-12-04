@@ -30,9 +30,6 @@ type TestExpectation struct {
 	// Skip indicates this test should be skipped, with the reason
 	Skip string
 
-	// RequiresSystemAsm indicates this test needs the system assembler (as/ld)
-	RequiresSystemAsm bool
-
 	// ExpectError indicates this test expects a compilation error
 	ExpectError bool
 
@@ -126,9 +123,6 @@ func parseDirective(exp *TestExpectation, directive string) error {
 	case "skip":
 		exp.Skip = value
 
-	case "requires_system_asm":
-		exp.RequiresSystemAsm = value == "true"
-
 	case "expect_error":
 		exp.ExpectError = value == "true"
 
@@ -154,13 +148,31 @@ func unescapeString(s string) string {
 	return s
 }
 
-// DiscoverTestFiles finds all files matching the given pattern in a directory.
+// DiscoverTestFiles finds all files matching the given pattern in a directory,
+// recursively searching subdirectories.
 func DiscoverTestFiles(dir, pattern string) ([]string, error) {
-	fullPattern := filepath.Join(dir, pattern)
-	matches, err := filepath.Glob(fullPattern)
+	var matches []string
+
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		matched, err := filepath.Match(pattern, filepath.Base(path))
+		if err != nil {
+			return err
+		}
+		if matched {
+			matches = append(matches, path)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to glob %q: %w", fullPattern, err)
+		return nil, fmt.Errorf("failed to walk directory %q: %w", dir, err)
 	}
+
 	return matches, nil
 }
 
@@ -176,6 +188,14 @@ func LoadTestCases(dir, pattern string) ([]*TestExpectation, error) {
 		exp, err := ParseExpectations(file)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse %s: %w", file, err)
+		}
+		// Compute a relative name that includes subdirectory
+		relPath, err := filepath.Rel(dir, file)
+		if err == nil {
+			// Convert path separators to underscores and remove extension
+			name := strings.TrimSuffix(relPath, filepath.Ext(relPath))
+			name = strings.ReplaceAll(name, string(filepath.Separator), "/")
+			exp.Name = name
 		}
 		expectations = append(expectations, exp)
 	}

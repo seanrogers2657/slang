@@ -1,5 +1,5 @@
 // @test: exit_code=0
-fn main() {
+fn main(): void {
     2 + 5
     10 - 3
     4 * 7

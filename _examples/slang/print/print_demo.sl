@@ -1,7 +1,6 @@
 // @test: exit_code=0
 // @test: stdout=42\n0\n123\n42\n42\n42\n2\n1\n1\n1\n1\n
-// @test: requires_system_asm=true
-fn main() {
+fn main(): void {
     print 42
     print 0
     print 100 + 23

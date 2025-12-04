@@ -62,6 +62,21 @@ func (e *TypedIdentifierExpr) End() ast.Position { return e.EndPos }
 func (e *TypedIdentifierExpr) GetType() Type     { return e.Type }
 func (e *TypedIdentifierExpr) typedExprNode()    {}
 
+// TypedCallExpr represents a typed function call expression
+type TypedCallExpr struct {
+	Type       Type
+	Name       string
+	NamePos    ast.Position
+	LeftParen  ast.Position
+	Arguments  []TypedExpression
+	RightParen ast.Position
+}
+
+func (e *TypedCallExpr) Pos() ast.Position { return e.NamePos }
+func (e *TypedCallExpr) End() ast.Position { return e.RightParen }
+func (e *TypedCallExpr) GetType() Type     { return e.Type }
+func (e *TypedCallExpr) typedExprNode()    {}
+
 // ============================================================================
 // Typed Statements
 // ============================================================================
@@ -134,6 +149,22 @@ func (s *TypedAssignStmt) End() ast.Position { return s.Value.End() }
 func (s *TypedAssignStmt) GetType() Type     { return TypeVoid }
 func (s *TypedAssignStmt) typedStmtNode()    {}
 
+// TypedReturnStmt represents a typed return statement
+type TypedReturnStmt struct {
+	Keyword ast.Position
+	Value   TypedExpression // nil for void returns
+}
+
+func (s *TypedReturnStmt) Pos() ast.Position { return s.Keyword }
+func (s *TypedReturnStmt) End() ast.Position {
+	if s.Value != nil {
+		return s.Value.End()
+	}
+	return ast.Position{Line: s.Keyword.Line, Column: s.Keyword.Column + 6, Offset: s.Keyword.Offset + 6}
+}
+func (s *TypedReturnStmt) GetType() Type  { return TypeVoid }
+func (s *TypedReturnStmt) typedStmtNode() {}
+
 // ============================================================================
 // Typed Declarations
 // ============================================================================
@@ -144,19 +175,31 @@ type TypedDeclaration interface {
 	typedDeclNode()
 }
 
+// TypedParameter represents a typed function parameter
+type TypedParameter struct {
+	Name     string
+	NamePos  ast.Position
+	Colon    ast.Position
+	Type     Type
+	TypePos  ast.Position
+}
+
 // TypedFunctionDecl represents a typed function declaration
 type TypedFunctionDecl struct {
 	FnKeyword  ast.Position
 	Name       string
 	NamePos    ast.Position
 	LeftParen  ast.Position
+	Parameters []TypedParameter
 	RightParen ast.Position
+	ReturnType Type
+	ReturnPos  ast.Position
 	Body       *TypedBlockStmt
 }
 
 func (d *TypedFunctionDecl) Pos() ast.Position { return d.FnKeyword }
 func (d *TypedFunctionDecl) End() ast.Position { return d.Body.End() }
-func (d *TypedFunctionDecl) GetType() Type     { return TypeVoid }
+func (d *TypedFunctionDecl) GetType() Type     { return d.ReturnType }
 func (d *TypedFunctionDecl) typedDeclNode()    {}
 
 // ============================================================================

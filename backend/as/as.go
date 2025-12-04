@@ -59,80 +59,90 @@ func (c *asGenerator) Generate() (string, error) {
 func GenerateProgram(program *ast.Program) (string, error) {
 	builder := strings.Builder{}
 
-	// Determine which statements to process (function-based or legacy)
-	var statementsToProcess []ast.Statement
-
+	// Handle function-based programs with proper function support
 	if len(program.Declarations) > 0 {
-		// Function-based program: extract statements from main function
-		var mainFunc *ast.FunctionDecl
-		for _, decl := range program.Declarations {
-			if fn, ok := decl.(*ast.FunctionDecl); ok && fn.Name == "main" {
-				mainFunc = fn
-				break
-			}
-		}
-
-		if mainFunc == nil {
-			return "", fmt.Errorf("no main function found")
-		}
-
-		statementsToProcess = mainFunc.Body.Statements
-	} else {
-		// Legacy: use top-level statements
-		statementsToProcess = program.Statements
+		return generateFunctionBasedProgram(program, &builder)
 	}
 
-	// Check if we need a .data section for strings or print statements
-	hasStrings := false
+	// Legacy: use top-level statements
+	return generateLegacyProgram(program, &builder)
+}
+
+// generateFunctionBasedProgram generates code for programs with function declarations
+func generateFunctionBasedProgram(program *ast.Program, builder *strings.Builder) (string, error) {
+	// Collect all functions
+	functions := make([]*ast.FunctionDecl, 0)
+	for _, decl := range program.Declarations {
+		if fn, ok := decl.(*ast.FunctionDecl); ok {
+			functions = append(functions, fn)
+		}
+	}
+
+	if len(functions) == 0 {
+		return "", fmt.Errorf("no functions found")
+	}
+
+	// Check for print statements and collect string literals across all functions
 	hasPrint := false
 	stringIndex := 0
-	stringMap := make(map[*ast.LiteralExpr]string) // Map literals to their label names
+	stringMap := make(map[*ast.LiteralExpr]string)
 
-	// Helper function to collect string literals from an expression
-	var collectStrings func(ast.Expression)
-	collectStrings = func(expr ast.Expression) {
+	var collectStringsFromExpr func(ast.Expression)
+	collectStringsFromExpr = func(expr ast.Expression) {
+		if expr == nil {
+			return
+		}
 		switch e := expr.(type) {
 		case *ast.BinaryExpr:
-			collectStrings(e.Left)
-			collectStrings(e.Right)
+			collectStringsFromExpr(e.Left)
+			collectStringsFromExpr(e.Right)
 		case *ast.LiteralExpr:
 			if e.Kind == ast.LiteralTypeString {
-				hasStrings = true
 				if _, exists := stringMap[e]; !exists {
 					stringMap[e] = fmt.Sprintf("str_%d", stringIndex)
 					stringIndex++
 				}
 			}
+		case *ast.CallExpr:
+			for _, arg := range e.Arguments {
+				collectStringsFromExpr(arg)
+			}
 		}
 	}
 
-	for _, stmt := range statementsToProcess {
-		// Check for print statements
-		if _, ok := stmt.(*ast.PrintStmt); ok {
-			hasPrint = true
-		}
-
-		// Check for string literals in statements
+	var collectStringsFromStmt func(ast.Statement)
+	collectStringsFromStmt = func(stmt ast.Statement) {
 		switch s := stmt.(type) {
-		case *ast.ExprStmt:
-			collectStrings(s.Expr)
 		case *ast.PrintStmt:
-			collectStrings(s.Expr)
+			hasPrint = true
+			collectStringsFromExpr(s.Expr)
+		case *ast.ExprStmt:
+			collectStringsFromExpr(s.Expr)
+		case *ast.VarDeclStmt:
+			collectStringsFromExpr(s.Initializer)
+		case *ast.AssignStmt:
+			collectStringsFromExpr(s.Value)
+		case *ast.ReturnStmt:
+			collectStringsFromExpr(s.Value)
+		}
+	}
+
+	for _, fn := range functions {
+		for _, stmt := range fn.Body.Statements {
+			collectStringsFromStmt(stmt)
 		}
 	}
 
 	// Write .data section if needed
-	if hasStrings || hasPrint {
+	if len(stringMap) > 0 || hasPrint {
 		builder.WriteString(".data\n")
 		builder.WriteString(".align 3\n")
 
-		// Add buffer for print statements
 		if hasPrint {
 			builder.WriteString("buffer: .space 32\n")
 			builder.WriteString("newline: .byte 10\n")
 		}
 
-		// Define all unique string literals
 		for literal, label := range stringMap {
 			builder.WriteString(fmt.Sprintf("%s:\n", label))
 			builder.WriteString(fmt.Sprintf("    .asciz %q\n", literal.Value))
@@ -144,7 +154,9 @@ func GenerateProgram(program *ast.Program) (string, error) {
 	builder.WriteString(".global _start\n")
 	builder.WriteString(".align 4\n")
 	builder.WriteString("_start:\n")
-	builder.WriteString("    b main\n")
+	builder.WriteString("    bl _main\n")
+	builder.WriteString("    mov x16, #1\n")
+	builder.WriteString("    svc #0\n")
 	builder.WriteString("\n")
 
 	// Add int-to-string conversion function if we have print statements
@@ -153,56 +165,245 @@ func GenerateProgram(program *ast.Program) (string, error) {
 		builder.WriteString("\n")
 	}
 
-	builder.WriteString("main:\n")
+	// Generate code for each function
+	for _, fn := range functions {
+		code, err := GenerateFunction(fn, stringMap)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+		builder.WriteString("\n")
+	}
 
-	// Create code generation context
+	return builder.String(), nil
+}
+
+// GenerateFunction generates code for a single function
+func GenerateFunction(fn *ast.FunctionDecl, stringMap map[*ast.LiteralExpr]string) (string, error) {
+	builder := strings.Builder{}
+
+	// Function label (prefix with _ to avoid conflicts)
+	builder.WriteString(fmt.Sprintf(".align 4\n"))
+	builder.WriteString(fmt.Sprintf("_%s:\n", fn.Name))
+
+	// Create context for this function
 	ctx := newCodeGenContext(stringMap)
 
-	// Count variables to determine stack frame size
-	varCount := countVariables(statementsToProcess)
+	// Count locals (parameters + variables in body)
+	paramCount := len(fn.Parameters)
+	varCount := countVariables(fn.Body.Statements)
+	totalLocals := paramCount + varCount
 
-	// Generate function prologue if we have variables
-	if varCount > 0 {
-		// Save frame pointer and link register
-		builder.WriteString("    stp x29, x30, [sp, #-16]!\n")
-		builder.WriteString("    mov x29, sp\n")
+	// Function prologue - always save frame pointer and link register
+	builder.WriteString("    stp x29, x30, [sp, #-16]!\n")
+	builder.WriteString("    mov x29, sp\n")
 
-		// Allocate stack space for variables (16-byte aligned)
-		stackSize := varCount * 16
+	// Allocate stack space for locals if needed
+	if totalLocals > 0 {
+		stackSize := totalLocals * 16
 		builder.WriteString(fmt.Sprintf("    sub sp, sp, #%d\n", stackSize))
 	}
 
-	// Generate code for each statement
-	for _, stmt := range statementsToProcess {
-		var code string
-		var err error
+	// Store parameters from registers to stack
+	for i, param := range fn.Parameters {
+		offset := ctx.declareVariable(param.Name)
+		// Parameters come in x0-x7
+		builder.WriteString(fmt.Sprintf("    str x%d, [x29, #-%d]\n", i, offset))
+	}
 
-		switch s := stmt.(type) {
-		case *ast.ExprStmt:
-			code, err = GenerateExprWithContext(s.Expr, ctx)
-		case *ast.PrintStmt:
-			code, err = GeneratePrintStmtWithContext(s, ctx)
-		case *ast.VarDeclStmt:
-			code, err = GenerateVarDecl(s, ctx)
-		case *ast.AssignStmt:
-			code, err = GenerateAssignStmt(s, ctx)
-		default:
-			return "", fmt.Errorf("unknown statement type: %T", s)
-		}
-
+	// Generate code for function body
+	for _, stmt := range fn.Body.Statements {
+		code, err := GenerateStmt(stmt, ctx)
 		if err != nil {
 			return "", err
 		}
 		builder.WriteString(code)
 	}
 
-	// Generate function epilogue if we have variables
+	// If this is main and we didn't have an explicit return, add default return
+	if fn.Name == "main" && fn.ReturnType == "void" {
+		builder.WriteString("    mov x0, #0\n")
+	}
+
+	// Function epilogue
+	if totalLocals > 0 {
+		builder.WriteString("    mov sp, x29\n")
+	}
+	builder.WriteString("    ldp x29, x30, [sp], #16\n")
+	builder.WriteString("    ret\n")
+
+	return builder.String(), nil
+}
+
+// GenerateStmt generates code for a statement
+func GenerateStmt(stmt ast.Statement, ctx *CodeGenContext) (string, error) {
+	switch s := stmt.(type) {
+	case *ast.ExprStmt:
+		return GenerateExprWithContext(s.Expr, ctx)
+	case *ast.PrintStmt:
+		return GeneratePrintStmtWithContext(s, ctx)
+	case *ast.VarDeclStmt:
+		return GenerateVarDecl(s, ctx)
+	case *ast.AssignStmt:
+		return GenerateAssignStmt(s, ctx)
+	case *ast.ReturnStmt:
+		return GenerateReturnStmt(s, ctx)
+	default:
+		return "", fmt.Errorf("unknown statement type: %T", s)
+	}
+}
+
+// GenerateReturnStmt generates code for a return statement
+func GenerateReturnStmt(stmt *ast.ReturnStmt, ctx *CodeGenContext) (string, error) {
+	builder := strings.Builder{}
+
+	if stmt.Value != nil {
+		// Evaluate return expression (result in x2)
+		code, err := GenerateExprWithContext(stmt.Value, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+		// Move result to x0 (return register)
+		builder.WriteString("    mov x0, x2\n")
+	}
+
+	// Epilogue and return
+	builder.WriteString("    mov sp, x29\n")
+	builder.WriteString("    ldp x29, x30, [sp], #16\n")
+	builder.WriteString("    ret\n")
+
+	return builder.String(), nil
+}
+
+// GenerateCallExpr generates code for a function call expression
+func GenerateCallExpr(call *ast.CallExpr, ctx *CodeGenContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Evaluate each argument and store on stack temporarily
+	// We need to do this because evaluating arguments might clobber registers
+	argCount := len(call.Arguments)
+
+	if argCount > 0 {
+		// Save space for arguments on stack
+		builder.WriteString(fmt.Sprintf("    sub sp, sp, #%d\n", argCount*16))
+
+		// Evaluate each argument and store on stack
+		for i, arg := range call.Arguments {
+			code, err := GenerateExprWithContext(arg, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(code)
+			// Store result (in x2) to stack
+			builder.WriteString(fmt.Sprintf("    str x2, [sp, #%d]\n", i*16))
+		}
+
+		// Load arguments from stack into registers x0-x7
+		for i := 0; i < argCount && i < 8; i++ {
+			builder.WriteString(fmt.Sprintf("    ldr x%d, [sp, #%d]\n", i, i*16))
+		}
+
+		// Restore stack pointer
+		builder.WriteString(fmt.Sprintf("    add sp, sp, #%d\n", argCount*16))
+	}
+
+	// Call the function
+	builder.WriteString(fmt.Sprintf("    bl _%s\n", call.Name))
+
+	// Result is in x0, move to x2 (our convention)
+	builder.WriteString("    mov x2, x0\n")
+
+	return builder.String(), nil
+}
+
+// generateLegacyProgram generates code for legacy top-level statement programs
+func generateLegacyProgram(program *ast.Program, builder *strings.Builder) (string, error) {
+	statementsToProcess := program.Statements
+
+	// Check if we need a .data section for strings or print statements
+	hasPrint := false
+	stringIndex := 0
+	stringMap := make(map[*ast.LiteralExpr]string)
+
+	var collectStrings func(ast.Expression)
+	collectStrings = func(expr ast.Expression) {
+		switch e := expr.(type) {
+		case *ast.BinaryExpr:
+			collectStrings(e.Left)
+			collectStrings(e.Right)
+		case *ast.LiteralExpr:
+			if e.Kind == ast.LiteralTypeString {
+				if _, exists := stringMap[e]; !exists {
+					stringMap[e] = fmt.Sprintf("str_%d", stringIndex)
+					stringIndex++
+				}
+			}
+		}
+	}
+
+	for _, stmt := range statementsToProcess {
+		if _, ok := stmt.(*ast.PrintStmt); ok {
+			hasPrint = true
+		}
+		switch s := stmt.(type) {
+		case *ast.ExprStmt:
+			collectStrings(s.Expr)
+		case *ast.PrintStmt:
+			collectStrings(s.Expr)
+		}
+	}
+
+	if len(stringMap) > 0 || hasPrint {
+		builder.WriteString(".data\n")
+		builder.WriteString(".align 3\n")
+		if hasPrint {
+			builder.WriteString("buffer: .space 32\n")
+			builder.WriteString("newline: .byte 10\n")
+		}
+		for literal, label := range stringMap {
+			builder.WriteString(fmt.Sprintf("%s:\n", label))
+			builder.WriteString(fmt.Sprintf("    .asciz %q\n", literal.Value))
+		}
+		builder.WriteString("\n.text\n")
+	}
+
+	builder.WriteString(".global _start\n")
+	builder.WriteString(".align 4\n")
+	builder.WriteString("_start:\n")
+	builder.WriteString("    b main\n")
+	builder.WriteString("\n")
+
+	if hasPrint {
+		builder.WriteString(intToStringFunctionText())
+		builder.WriteString("\n")
+	}
+
+	builder.WriteString("main:\n")
+
+	ctx := newCodeGenContext(stringMap)
+	varCount := countVariables(statementsToProcess)
+
+	if varCount > 0 {
+		builder.WriteString("    stp x29, x30, [sp, #-16]!\n")
+		builder.WriteString("    mov x29, sp\n")
+		stackSize := varCount * 16
+		builder.WriteString(fmt.Sprintf("    sub sp, sp, #%d\n", stackSize))
+	}
+
+	for _, stmt := range statementsToProcess {
+		code, err := GenerateStmt(stmt, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+	}
+
 	if varCount > 0 {
 		builder.WriteString("    mov sp, x29\n")
 		builder.WriteString("    ldp x29, x30, [sp], #16\n")
 	}
 
-	// Exit syscall (only at the end)
 	builder.WriteString("    mov x0, #0\n")
 	builder.WriteString("    mov x16, #1\n")
 	builder.WriteString("    svc #0\n")
@@ -289,6 +490,15 @@ func GenerateExprWithContext(expr ast.Expression, ctx *CodeGenContext) (string, 
 			return "", fmt.Errorf("undefined variable: %s", e.Name)
 		}
 		builder.WriteString(fmt.Sprintf("    ldr x2, [x29, #-%d]\n", offset))
+		return builder.String(), nil
+
+	case *ast.CallExpr:
+		// Generate function call
+		code, err := GenerateCallExpr(e, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
 		return builder.String(), nil
 
 	case *ast.BinaryExpr:
@@ -433,6 +643,18 @@ func generateOperandToReg(expr ast.Expression, reg string, ctx *CodeGenContext) 
 		}
 		builder.WriteString(code)
 		// Move from x2 to target register
+		if reg != "x2" {
+			builder.WriteString(fmt.Sprintf("    mov %s, x2\n", reg))
+		}
+
+	case *ast.CallExpr:
+		// For function calls, evaluate and store result
+		code, err := GenerateCallExpr(e, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+		// Result is in x2, move to target register if needed
 		if reg != "x2" {
 			builder.WriteString(fmt.Sprintf("    mov %s, x2\n", reg))
 		}

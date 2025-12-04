@@ -152,6 +152,9 @@ func (p *parser) Parse() *ast.Program {
 			fnDecl := p.ParseFunctionDecl()
 			if fnDecl != nil {
 				program.Declarations = append(program.Declarations, fnDecl)
+			} else {
+				// If parsing failed, break to avoid infinite loop
+				break
 			}
 
 			// Skip newlines after function declaration
@@ -200,6 +203,11 @@ func (p *parser) ParseStatement() ast.Statement {
 	// Check if it's a print statement
 	if p.CurrentToken().Type == lexer.TokenTypePrint {
 		return p.ParsePrintStatement()
+	}
+
+	// Check if it's a return statement
+	if p.CurrentToken().Type == lexer.TokenTypeReturn {
+		return p.ParseReturnStatement()
 	}
 
 	// Check if it's an immutable variable declaration (val)
@@ -314,6 +322,24 @@ func (p *parser) ParsePrintStatement() ast.Statement {
 	}
 }
 
+// ParseReturnStatement parses a return statement: return <expr>
+func (p *parser) ParseReturnStatement() ast.Statement {
+	// Get position of 'return' keyword
+	keywordPos := p.CurrentToken().Pos
+	p.advance() // consume 'return'
+
+	// Check if there's a value to return (not newline or closing brace)
+	var value ast.Expression
+	if !p.isAtEnd() && p.CurrentToken().Type != lexer.TokenTypeNewline && p.CurrentToken().Type != lexer.TokenTypeRBrace {
+		value = p.parseExpression(precedenceLowest)
+	}
+
+	return &ast.ReturnStmt{
+		Keyword: keywordPos,
+		Value:   value,
+	}
+}
+
 func (p *parser) ParseLiteral() ast.Expression {
 	//spew.Dump("parsing literal")
 	if p.CurrentToken().Type == lexer.TokenTypeInteger {
@@ -393,19 +419,68 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 
 // parsePrimary parses primary expressions (literals, identifiers, grouping, etc.)
 func (p *parser) parsePrimary() ast.Expression {
-	// Check for identifier
+	// Check for identifier (could be variable reference or function call)
 	if p.CurrentToken().Type == lexer.TokenTypeIdentifier {
 		token := p.CurrentToken()
-		ident := &ast.IdentifierExpr{
+		p.advance() // consume identifier
+
+		// Check if this is a function call
+		if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeLParen {
+			return p.parseCallExpr(token.Value, token.Pos)
+		}
+
+		// Otherwise it's just an identifier
+		return &ast.IdentifierExpr{
 			Name:     token.Value,
 			StartPos: token.Pos,
 			EndPos:   ast.Position{Line: token.Pos.Line, Column: token.Pos.Column + len(token.Value), Offset: token.Pos.Offset + len(token.Value)},
 		}
-		p.Index++
-		return ident
 	}
 
 	return p.ParseLiteral()
+}
+
+// parseCallExpr parses a function call after the identifier has been consumed
+func (p *parser) parseCallExpr(name string, namePos ast.Position) ast.Expression {
+	leftParen := p.CurrentToken().Pos
+	p.advance() // consume '('
+
+	arguments := []ast.Expression{}
+
+	// Parse arguments
+	if !p.isAtEnd() && p.CurrentToken().Type != lexer.TokenTypeRParen {
+		// Parse first argument
+		arg := p.parseExpression(precedenceLowest)
+		if arg != nil {
+			arguments = append(arguments, arg)
+		}
+
+		// Parse remaining arguments
+		for !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeComma {
+			p.advance() // consume ','
+			arg := p.parseExpression(precedenceLowest)
+			if arg != nil {
+				arguments = append(arguments, arg)
+			}
+		}
+	}
+
+	// Expect ')'
+	if p.isAtEnd() || p.CurrentToken().Type != lexer.TokenTypeRParen {
+		p.Errors = append(p.Errors, fmt.Errorf("expected ')' after function arguments, got %s", p.CurrentToken().Value))
+		return nil
+	}
+
+	rightParen := p.CurrentToken().Pos
+	p.advance() // consume ')'
+
+	return &ast.CallExpr{
+		Name:       name,
+		NamePos:    namePos,
+		LeftParen:  leftParen,
+		Arguments:  arguments,
+		RightParen: rightParen,
+	}
 }
 
 // ParseBinaryExpression is kept for backward compatibility during transition
@@ -470,7 +545,7 @@ func (p *parser) ParseBlockStmt() *ast.BlockStmt {
 	}
 }
 
-// ParseFunctionDecl parses a function declaration: fn <name>() { <body> }
+// ParseFunctionDecl parses a function declaration: fn <name>(params): returnType { <body> }
 func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 	// Expect 'fn' keyword
 	if p.CurrentToken().Type != lexer.TokenTypeFn {
@@ -500,14 +575,34 @@ func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 	leftParen := p.CurrentToken().Pos
 	p.advance() // consume '('
 
-	// For now, we don't support parameters, so expect ')'
+	// Parse parameters
+	parameters := p.parseParameterList()
+
+	// Expect ')'
 	if p.CurrentToken().Type != lexer.TokenTypeRParen {
-		p.Errors = append(p.Errors, fmt.Errorf("expected ')' (parameters not yet supported), got %s", p.CurrentToken().Value))
+		p.Errors = append(p.Errors, fmt.Errorf("expected ')' after parameters, got %s", p.CurrentToken().Value))
 		return nil
 	}
 
 	rightParen := p.CurrentToken().Pos
 	p.advance() // consume ')'
+
+	// Expect ':' for return type
+	if p.CurrentToken().Type != lexer.TokenTypeColon {
+		p.Errors = append(p.Errors, fmt.Errorf("expected ':' after ')' for return type, got %s", p.CurrentToken().Value))
+		return nil
+	}
+	p.advance() // consume ':'
+
+	// Expect return type identifier
+	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+		p.Errors = append(p.Errors, fmt.Errorf("expected return type, got %s", p.CurrentToken().Value))
+		return nil
+	}
+
+	returnType := p.CurrentToken().Value
+	returnPos := p.CurrentToken().Pos
+	p.advance() // consume return type
 
 	// Skip newlines before body
 	p.skipNewlines()
@@ -523,7 +618,77 @@ func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 		Name:       name,
 		NamePos:    namePos,
 		LeftParen:  leftParen,
+		Parameters: parameters,
 		RightParen: rightParen,
+		ReturnType: returnType,
+		ReturnPos:  returnPos,
 		Body:       body,
+	}
+}
+
+// parseParameterList parses a comma-separated list of parameters: name: type, name: type, ...
+func (p *parser) parseParameterList() []ast.Parameter {
+	parameters := []ast.Parameter{}
+
+	// Check if there are no parameters
+	if p.CurrentToken().Type == lexer.TokenTypeRParen {
+		return parameters
+	}
+
+	// Parse first parameter
+	param := p.parseParameter()
+	if param != nil {
+		parameters = append(parameters, *param)
+	}
+
+	// Parse remaining parameters
+	for p.CurrentToken().Type == lexer.TokenTypeComma {
+		p.advance() // consume ','
+		param := p.parseParameter()
+		if param != nil {
+			parameters = append(parameters, *param)
+		}
+	}
+
+	return parameters
+}
+
+// parseParameter parses a single parameter: name: type
+func (p *parser) parseParameter() *ast.Parameter {
+	// Expect identifier (parameter name)
+	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+		p.Errors = append(p.Errors, fmt.Errorf("expected parameter name, got %s", p.CurrentToken().Value))
+		return nil
+	}
+
+	name := p.CurrentToken().Value
+	namePos := p.CurrentToken().Pos
+	p.advance() // consume identifier
+
+	// Expect ':'
+	if p.CurrentToken().Type != lexer.TokenTypeColon {
+		p.Errors = append(p.Errors, fmt.Errorf("expected ':' after parameter name, got %s", p.CurrentToken().Value))
+		return nil
+	}
+
+	colonPos := p.CurrentToken().Pos
+	p.advance() // consume ':'
+
+	// Expect type identifier
+	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+		p.Errors = append(p.Errors, fmt.Errorf("expected parameter type, got %s", p.CurrentToken().Value))
+		return nil
+	}
+
+	typeName := p.CurrentToken().Value
+	typePos := p.CurrentToken().Pos
+	p.advance() // consume type
+
+	return &ast.Parameter{
+		Name:     name,
+		NamePos:  namePos,
+		Colon:    colonPos,
+		TypeName: typeName,
+		TypePos:  typePos,
 	}
 }

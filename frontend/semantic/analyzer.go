@@ -54,19 +54,29 @@ func (s *Scope) lookup(name string) (VariableInfo, bool) {
 	return VariableInfo{}, false
 }
 
+// FunctionInfo holds information about a declared function
+type FunctionInfo struct {
+	ParamTypes []Type
+	ReturnType Type
+}
+
 // Analyzer performs semantic analysis on the AST
 type Analyzer struct {
-	filename     string
-	errors       []*errors.CompilerError
-	currentScope *Scope
+	filename          string
+	errors            []*errors.CompilerError
+	currentScope      *Scope
+	functions         map[string]FunctionInfo // function registry
+	currentReturnType Type                    // return type of current function being analyzed
 }
 
 // NewAnalyzer creates a new semantic analyzer
 func NewAnalyzer(filename string) *Analyzer {
 	return &Analyzer{
-		filename:     filename,
-		errors:       make([]*errors.CompilerError, 0),
-		currentScope: newScope(nil), // global scope
+		filename:          filename,
+		errors:            make([]*errors.CompilerError, 0),
+		currentScope:      newScope(nil), // global scope
+		functions:         make(map[string]FunctionInfo),
+		currentReturnType: nil,
 	}
 }
 
@@ -93,14 +103,11 @@ func (a *Analyzer) Analyze(program *ast.Program) ([]*errors.CompilerError, *Type
 
 	// Handle function-based programs
 	if len(program.Declarations) > 0 {
-		// Check that a main function exists
+		// First pass: collect all function signatures
 		hasMain := false
 		for _, decl := range program.Declarations {
-			typedDecl := a.analyzeDeclaration(decl)
-			typedProgram.Declarations = append(typedProgram.Declarations, typedDecl)
-
-			// Check if this is the main function
 			if fnDecl, ok := decl.(*ast.FunctionDecl); ok {
+				a.registerFunction(fnDecl)
 				if fnDecl.Name == "main" {
 					hasMain = true
 				}
@@ -111,6 +118,12 @@ func (a *Analyzer) Analyze(program *ast.Program) ([]*errors.CompilerError, *Type
 			// Add error if no main function found
 			a.addError("program must have a 'main' function", program.StartPos, program.EndPos)
 		}
+
+		// Second pass: analyze function bodies
+		for _, decl := range program.Declarations {
+			typedDecl := a.analyzeDeclaration(decl)
+			typedProgram.Declarations = append(typedProgram.Declarations, typedDecl)
+		}
 	} else {
 		// Handle legacy statement-based programs
 		for _, stmt := range program.Statements {
@@ -120,6 +133,35 @@ func (a *Analyzer) Analyze(program *ast.Program) ([]*errors.CompilerError, *Type
 	}
 
 	return a.errors, typedProgram
+}
+
+// registerFunction registers a function's signature in the function registry
+func (a *Analyzer) registerFunction(fn *ast.FunctionDecl) {
+	// Check for duplicate function
+	if _, exists := a.functions[fn.Name]; exists {
+		a.addError(fmt.Sprintf("function '%s' is already declared", fn.Name), fn.NamePos, fn.NamePos)
+		return
+	}
+
+	// Convert parameter types
+	paramTypes := make([]Type, len(fn.Parameters))
+	for i, param := range fn.Parameters {
+		paramTypes[i] = TypeFromName(param.TypeName)
+		if _, isErr := paramTypes[i].(ErrorType); isErr {
+			a.addError(fmt.Sprintf("unknown type '%s'", param.TypeName), param.TypePos, param.TypePos)
+		}
+	}
+
+	// Convert return type
+	returnType := TypeFromName(fn.ReturnType)
+	if _, isErr := returnType.(ErrorType); isErr {
+		a.addError(fmt.Sprintf("unknown type '%s'", fn.ReturnType), fn.ReturnPos, fn.ReturnPos)
+	}
+
+	a.functions[fn.Name] = FunctionInfo{
+		ParamTypes: paramTypes,
+		ReturnType: returnType,
+	}
 }
 
 // analyzeDeclaration performs semantic analysis on a declaration
@@ -146,8 +188,32 @@ func (a *Analyzer) analyzeDeclaration(decl ast.Declaration) TypedDeclaration {
 
 // analyzeFunctionDecl analyzes a function declaration
 func (a *Analyzer) analyzeFunctionDecl(fn *ast.FunctionDecl) TypedDeclaration {
+	// Get function info
+	fnInfo := a.functions[fn.Name]
+
+	// Set current return type for return statement checking
+	prevReturnType := a.currentReturnType
+	a.currentReturnType = fnInfo.ReturnType
+
 	// Enter a new scope for the function body
 	a.enterScope()
+
+	// Add parameters to scope
+	typedParams := make([]TypedParameter, len(fn.Parameters))
+	for i, param := range fn.Parameters {
+		paramType := fnInfo.ParamTypes[i]
+		typedParams[i] = TypedParameter{
+			Name:    param.Name,
+			NamePos: param.NamePos,
+			Colon:   param.Colon,
+			Type:    paramType,
+			TypePos: param.TypePos,
+		}
+		// Declare parameter in scope (immutable)
+		if !a.currentScope.declare(param.Name, paramType, false) {
+			a.addError(fmt.Sprintf("parameter '%s' is already declared", param.Name), param.NamePos, param.NamePos)
+		}
+	}
 
 	// Analyze the function body
 	typedBody := a.analyzeBlockStmt(fn.Body)
@@ -155,12 +221,18 @@ func (a *Analyzer) analyzeFunctionDecl(fn *ast.FunctionDecl) TypedDeclaration {
 	// Exit the function scope
 	a.exitScope()
 
+	// Restore previous return type
+	a.currentReturnType = prevReturnType
+
 	return &TypedFunctionDecl{
 		FnKeyword:  fn.FnKeyword,
 		Name:       fn.Name,
 		NamePos:    fn.NamePos,
 		LeftParen:  fn.LeftParen,
+		Parameters: typedParams,
 		RightParen: fn.RightParen,
+		ReturnType: fnInfo.ReturnType,
+		ReturnPos:  fn.ReturnPos,
 		Body:       typedBody,
 	}
 }
@@ -194,6 +266,8 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 		return a.analyzeVarDeclStatement(s)
 	case *ast.AssignStmt:
 		return a.analyzeAssignStatement(s)
+	case *ast.ReturnStmt:
+		return a.analyzeReturnStatement(s)
 	default:
 		a.addError("unknown statement type", stmt.Pos(), stmt.End())
 		return &TypedExprStmt{
@@ -282,6 +356,49 @@ func (a *Analyzer) analyzeAssignStatement(stmt *ast.AssignStmt) TypedStatement {
 	}
 }
 
+// analyzeReturnStatement analyzes a return statement
+func (a *Analyzer) analyzeReturnStatement(stmt *ast.ReturnStmt) TypedStatement {
+	// Check if we're in a function
+	if a.currentReturnType == nil {
+		a.addError("return statement outside of function", stmt.Keyword, stmt.Keyword)
+		return &TypedReturnStmt{
+			Keyword: stmt.Keyword,
+			Value:   nil,
+		}
+	}
+
+	// Analyze the return value if present
+	var typedValue TypedExpression
+	if stmt.Value != nil {
+		typedValue = a.analyzeExpression(stmt.Value)
+		valueType := typedValue.GetType()
+
+		// Check type matches expected return type
+		if _, isVoid := a.currentReturnType.(VoidType); isVoid {
+			a.addError("void function should not return a value", stmt.Value.Pos(), stmt.Value.End())
+		} else if _, isErr := valueType.(ErrorType); !isErr && !a.currentReturnType.Equals(valueType) {
+			a.addError(
+				fmt.Sprintf("return type mismatch: expected %s, got %s",
+					a.currentReturnType.String(), valueType.String()),
+				stmt.Value.Pos(), stmt.Value.End(),
+			)
+		}
+	} else {
+		// No return value
+		if _, isVoid := a.currentReturnType.(VoidType); !isVoid {
+			a.addError(
+				fmt.Sprintf("function expects return value of type %s", a.currentReturnType.String()),
+				stmt.Keyword, stmt.Keyword,
+			)
+		}
+	}
+
+	return &TypedReturnStmt{
+		Keyword: stmt.Keyword,
+		Value:   typedValue,
+	}
+}
+
 // analyzeExprStatement analyzes an expression statement
 func (a *Analyzer) analyzeExprStatement(stmt *ast.ExprStmt) TypedStatement {
 	typedExpr := a.analyzeExpression(stmt.Expr)
@@ -310,6 +427,8 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 		return a.analyzeBinaryExpression(e)
 	case *ast.IdentifierExpr:
 		return a.analyzeIdentifier(e)
+	case *ast.CallExpr:
+		return a.analyzeCallExpr(e)
 	default:
 		a.addError("unknown expression type", expr.Pos(), expr.End())
 		return &TypedLiteralExpr{
@@ -319,6 +438,68 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 			StartPos: expr.Pos(),
 			EndPos:   expr.End(),
 		}
+	}
+}
+
+// analyzeCallExpr analyzes a function call expression
+func (a *Analyzer) analyzeCallExpr(call *ast.CallExpr) TypedExpression {
+	// Look up the function
+	fnInfo, exists := a.functions[call.Name]
+	if !exists {
+		a.addError(
+			fmt.Sprintf("undefined function '%s'", call.Name),
+			call.NamePos, call.NamePos,
+		)
+		// Return error typed call
+		typedArgs := make([]TypedExpression, len(call.Arguments))
+		for i, arg := range call.Arguments {
+			typedArgs[i] = a.analyzeExpression(arg)
+		}
+		return &TypedCallExpr{
+			Type:       TypeError,
+			Name:       call.Name,
+			NamePos:    call.NamePos,
+			LeftParen:  call.LeftParen,
+			Arguments:  typedArgs,
+			RightParen: call.RightParen,
+		}
+	}
+
+	// Check argument count
+	if len(call.Arguments) != len(fnInfo.ParamTypes) {
+		a.addError(
+			fmt.Sprintf("function '%s' expects %d arguments, got %d",
+				call.Name, len(fnInfo.ParamTypes), len(call.Arguments)),
+			call.LeftParen, call.RightParen,
+		)
+	}
+
+	// Analyze arguments and check types
+	typedArgs := make([]TypedExpression, len(call.Arguments))
+	for i, arg := range call.Arguments {
+		typedArgs[i] = a.analyzeExpression(arg)
+
+		// Type check if we have a corresponding parameter
+		if i < len(fnInfo.ParamTypes) {
+			argType := typedArgs[i].GetType()
+			paramType := fnInfo.ParamTypes[i]
+			if _, isErr := argType.(ErrorType); !isErr && !paramType.Equals(argType) {
+				a.addError(
+					fmt.Sprintf("argument %d: expected %s, got %s",
+						i+1, paramType.String(), argType.String()),
+					arg.Pos(), arg.End(),
+				)
+			}
+		}
+	}
+
+	return &TypedCallExpr{
+		Type:       fnInfo.ReturnType,
+		Name:       call.Name,
+		NamePos:    call.NamePos,
+		LeftParen:  call.LeftParen,
+		Arguments:  typedArgs,
+		RightParen: call.RightParen,
 	}
 }
 

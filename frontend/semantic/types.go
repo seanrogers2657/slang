@@ -66,6 +66,39 @@ func (t ErrorType) Equals(other Type) bool {
 	return ok
 }
 
+// FunctionType represents a function type with parameter and return types
+type FunctionType struct {
+	ParamTypes []Type
+	ReturnType Type
+}
+
+func (t FunctionType) String() string {
+	params := ""
+	for i, p := range t.ParamTypes {
+		if i > 0 {
+			params += ", "
+		}
+		params += p.String()
+	}
+	return "fn(" + params + "): " + t.ReturnType.String()
+}
+
+func (t FunctionType) Equals(other Type) bool {
+	o, ok := other.(FunctionType)
+	if !ok {
+		return false
+	}
+	if len(t.ParamTypes) != len(o.ParamTypes) {
+		return false
+	}
+	for i, pt := range t.ParamTypes {
+		if !pt.Equals(o.ParamTypes[i]) {
+			return false
+		}
+	}
+	return t.ReturnType.Equals(o.ReturnType)
+}
+
 // Common type instances
 var (
 	TypeInteger = IntegerType{}
@@ -74,3 +107,19 @@ var (
 	TypeVoid    = VoidType{}
 	TypeError   = ErrorType{}
 )
+
+// TypeFromName converts a type name string to a Type
+func TypeFromName(name string) Type {
+	switch name {
+	case "int":
+		return TypeInteger
+	case "string":
+		return TypeString
+	case "bool":
+		return TypeBoolean
+	case "void":
+		return TypeVoid
+	default:
+		return TypeError
+	}
+}

@@ -2,6 +2,7 @@
 package sl_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/seanrogers2657/slang/assembler"
+	"github.com/seanrogers2657/slang/assembler/slasm"
 	"github.com/seanrogers2657/slang/backend/as"
 	slangErrors "github.com/seanrogers2657/slang/errors"
 	"github.com/seanrogers2657/slang/frontend/lexer"
@@ -121,60 +124,37 @@ func runSlangTest(t *testing.T, tc *testutil.TestExpectation) {
 		t.Fatalf("codegen error: %v", err)
 	}
 
-	// If this test requires system assembler for execution, run it
-	if tc.RequiresSystemAsm {
-		runWithSystemAssembler(t, tc, asmOutput)
+	// If stdout expectations exist, build and run with slasm
+	if tc.Stdout != "" || tc.ExitCode != 0 {
+		runWithSlasm(t, tc, asmOutput)
 	}
 }
 
-func runWithSystemAssembler(t *testing.T, tc *testutil.TestExpectation, asmOutput string) {
+func runWithSlasm(t *testing.T, tc *testutil.TestExpectation, asmOutput string) {
 	t.Helper()
 
-	tmpDir := t.TempDir()
-	asmFile := filepath.Join(tmpDir, "output.s")
-	objFile := filepath.Join(tmpDir, "output.o")
-	binFile := filepath.Join(tmpDir, "output")
+	// Create assembler and build
+	asm := slasm.New()
+	// Replace slashes with underscores to avoid creating subdirectories
+	safeName := strings.ReplaceAll(tc.Name, "/", "_")
+	outputPath := filepath.Join(t.TempDir(), fmt.Sprintf("test_%s", safeName))
 
-	// Write assembly to file
-	if err := os.WriteFile(asmFile, []byte(asmOutput), 0644); err != nil {
-		t.Fatalf("failed to write assembly: %v", err)
-	}
-
-	// Assemble
-	asCmd := exec.Command("as", "-arch", "arm64", "-o", objFile, asmFile)
-	if output, err := asCmd.CombinedOutput(); err != nil {
-		t.Fatalf("as failed: %v\n%s", err, output)
-	}
-
-	// Get SDK path
-	sdkCmd := exec.Command("xcrun", "-sdk", "macosx", "--show-sdk-path")
-	sdkPath, err := sdkCmd.Output()
+	err := asm.Build(asmOutput, assembler.BuildOptions{
+		OutputPath: outputPath,
+	})
 	if err != nil {
-		t.Fatalf("failed to get SDK path: %v", err)
+		t.Fatalf("slasm build failed: %v", err)
 	}
 
-	// Link
-	ldCmd := exec.Command("ld",
-		"-o", binFile,
-		objFile,
-		"-lSystem",
-		"-syslibroot", strings.TrimSpace(string(sdkPath)),
-		"-e", "_start",
-		"-arch", "arm64",
-	)
-	if output, err := ldCmd.CombinedOutput(); err != nil {
-		t.Fatalf("ld failed: %v\n%s", err, output)
-	}
-
-	// Execute
-	runCmd := exec.Command(binFile)
-	output, err := runCmd.CombinedOutput()
+	// Execute the built program
+	cmd := exec.Command(outputPath)
+	output, err := cmd.CombinedOutput()
 
 	actualExit := 0
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		actualExit = exitErr.ExitCode()
 	} else if err != nil {
-		t.Fatalf("failed to execute: %v", err)
+		t.Fatalf("failed to execute program: %v", err)
 	}
 
 	// Check exit code

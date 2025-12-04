@@ -756,25 +756,25 @@ func TestParserFunctionDeclaration(t *testing.T) {
 	}{
 		{
 			name:         "empty main function",
-			source:       "fn main() {}",
+			source:       "fn main(): void {}",
 			expectedName: "main",
 			expectedBody: 0,
 		},
 		{
 			name:         "main function with single statement",
-			source:       "fn main() {\n    print 42\n}",
+			source:       "fn main(): void {\n    print 42\n}",
 			expectedName: "main",
 			expectedBody: 1,
 		},
 		{
 			name:         "main function with multiple statements",
-			source:       "fn main() {\n    print 1\n    print 2\n}",
+			source:       "fn main(): void {\n    print 1\n    print 2\n}",
 			expectedName: "main",
 			expectedBody: 2,
 		},
 		{
 			name:         "function with expression statement",
-			source:       "fn main() {\n    5 + 3\n}",
+			source:       "fn main(): void {\n    5 + 3\n}",
 			expectedName: "main",
 			expectedBody: 1,
 		},
@@ -834,22 +834,22 @@ func TestParserVariableDeclaration(t *testing.T) {
 	}{
 		{
 			name:    "simple variable declaration",
-			source:  "fn main() {\n    val x = 5\n}",
+			source:  "fn main(): void {\n    val x = 5\n}",
 			varName: "x",
 		},
 		{
 			name:    "variable with expression",
-			source:  "fn main() {\n    val result = 10 + 20\n}",
+			source:  "fn main(): void {\n    val result = 10 + 20\n}",
 			varName: "result",
 		},
 		{
 			name:    "variable with underscore name",
-			source:  "fn main() {\n    val my_var = 42\n}",
+			source:  "fn main(): void {\n    val my_var = 42\n}",
 			varName: "my_var",
 		},
 		{
 			name:    "variable with digits in name",
-			source:  "fn main() {\n    val x1 = 100\n}",
+			source:  "fn main(): void {\n    val x1 = 100\n}",
 			varName: "x1",
 		},
 	}
@@ -911,19 +911,19 @@ func TestParserMutableVariableDeclaration(t *testing.T) {
 	}{
 		{
 			name:    "immutable variable with val",
-			source:  "fn main() {\n    val x = 5\n}",
+			source:  "fn main(): void {\n    val x = 5\n}",
 			varName: "x",
 			mutable: false,
 		},
 		{
 			name:    "mutable variable with var",
-			source:  "fn main() {\n    var x = 5\n}",
+			source:  "fn main(): void {\n    var x = 5\n}",
 			varName: "x",
 			mutable: true,
 		},
 		{
 			name:    "mutable variable with expression",
-			source:  "fn main() {\n    var result = 10 + 20\n}",
+			source:  "fn main(): void {\n    var result = 10 + 20\n}",
 			varName: "result",
 			mutable: true,
 		},
@@ -970,12 +970,12 @@ func TestParserAssignmentStatement(t *testing.T) {
 	}{
 		{
 			name:    "simple assignment",
-			source:  "fn main() {\n    var x = 5\n    x = 10\n}",
+			source:  "fn main(): void {\n    var x = 5\n    x = 10\n}",
 			varName: "x",
 		},
 		{
 			name:    "assignment with expression",
-			source:  "fn main() {\n    var x = 5\n    x = x + 10\n}",
+			source:  "fn main(): void {\n    var x = 5\n    x = x + 10\n}",
 			varName: "x",
 		},
 	}
@@ -1026,17 +1026,17 @@ func TestParserIdentifierExpression(t *testing.T) {
 	}{
 		{
 			name:         "simple identifier",
-			source:       "fn main() {\n    print x\n}",
+			source:       "fn main(): void {\n    print x\n}",
 			expectedName: "x",
 		},
 		{
 			name:         "identifier with underscore",
-			source:       "fn main() {\n    print my_var\n}",
+			source:       "fn main(): void {\n    print my_var\n}",
 			expectedName: "my_var",
 		},
 		{
 			name:         "identifier in binary expression",
-			source:       "fn main() {\n    val x = 5\n    print x + 10\n}",
+			source:       "fn main(): void {\n    val x = 5\n    print x + 10\n}",
 			expectedName: "x",
 		},
 	}
@@ -1085,7 +1085,7 @@ func TestParserIdentifierExpression(t *testing.T) {
 }
 
 func TestParserMultipleVariables(t *testing.T) {
-	source := `fn main() {
+	source := `fn main(): void {
     val x = 5
     val y = 10
     val z = x + y

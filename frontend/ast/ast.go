@@ -93,6 +93,19 @@ func (i *IdentifierExpr) Pos() Position { return i.StartPos }
 func (i *IdentifierExpr) End() Position { return i.EndPos }
 func (i *IdentifierExpr) exprNode()     {}
 
+// CallExpr represents a function call (e.g., add(1, 2))
+type CallExpr struct {
+	Name       string       // function name
+	NamePos    Position     // position of function name
+	LeftParen  Position     // position of '('
+	Arguments  []Expression // list of argument expressions
+	RightParen Position     // position of ')'
+}
+
+func (c *CallExpr) Pos() Position { return c.NamePos }
+func (c *CallExpr) End() Position { return c.RightParen }
+func (c *CallExpr) exprNode()     {}
+
 // ============================================================================
 // Statements
 // ============================================================================
@@ -159,6 +172,21 @@ func (a *AssignStmt) Pos() Position { return a.NamePos }
 func (a *AssignStmt) End() Position { return a.Value.End() }
 func (a *AssignStmt) stmtNode()     {}
 
+// ReturnStmt represents a return statement (e.g., return x + 1)
+type ReturnStmt struct {
+	Keyword Position   // position of 'return' keyword
+	Value   Expression // return value (nil for void return)
+}
+
+func (r *ReturnStmt) Pos() Position { return r.Keyword }
+func (r *ReturnStmt) End() Position {
+	if r.Value != nil {
+		return r.Value.End()
+	}
+	return Position{Line: r.Keyword.Line, Column: r.Keyword.Column + 6, Offset: r.Keyword.Offset + 6}
+}
+func (r *ReturnStmt) stmtNode() {}
+
 // ============================================================================
 // Declarations
 // ============================================================================
@@ -169,14 +197,31 @@ type Declaration interface {
 	declNode() // marker method
 }
 
+// Parameter represents a function parameter (e.g., x: int)
+type Parameter struct {
+	Name     string   // parameter name
+	NamePos  Position // position of parameter name
+	Colon    Position // position of ':'
+	TypeName string   // type name (e.g., "int", "void")
+	TypePos  Position // position of type name
+}
+
+func (p *Parameter) Pos() Position { return p.NamePos }
+func (p *Parameter) End() Position {
+	return Position{Line: p.TypePos.Line, Column: p.TypePos.Column + len(p.TypeName), Offset: p.TypePos.Offset + len(p.TypeName)}
+}
+
 // FunctionDecl represents a function declaration
 type FunctionDecl struct {
-	FnKeyword  Position  // position of 'fn' keyword
-	Name       string    // function name
-	NamePos    Position  // position of function name
-	LeftParen  Position  // position of '('
-	RightParen Position  // position of ')'
-	Body       *BlockStmt // function body
+	FnKeyword  Position    // position of 'fn' keyword
+	Name       string      // function name
+	NamePos    Position    // position of function name
+	LeftParen  Position    // position of '('
+	Parameters []Parameter // function parameters
+	RightParen Position    // position of ')'
+	ReturnType string      // return type (e.g., "int", "void")
+	ReturnPos  Position    // position of return type
+	Body       *BlockStmt  // function body
 }
 
 func (f *FunctionDecl) Pos() Position { return f.FnKeyword }

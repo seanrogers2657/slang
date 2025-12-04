@@ -38,14 +38,12 @@ _start:
 			name: "multiple directives",
 			content: `// @test: exit_code=0
 // @test: stdout=hello\nworld
-// @test: requires_system_asm=true
 fn main() {
 `,
 			expected: TestExpectation{
-				Name:              "test",
-				ExitCode:          0,
-				Stdout:            "hello\nworld",
-				RequiresSystemAsm: true,
+				Name:     "test",
+				ExitCode: 0,
+				Stdout:   "hello\nworld",
 			},
 		},
 		{
@@ -117,9 +115,6 @@ fn main() {
 			}
 			if exp.Skip != tt.expected.Skip {
 				t.Errorf("Skip: got %q, want %q", exp.Skip, tt.expected.Skip)
-			}
-			if exp.RequiresSystemAsm != tt.expected.RequiresSystemAsm {
-				t.Errorf("RequiresSystemAsm: got %v, want %v", exp.RequiresSystemAsm, tt.expected.RequiresSystemAsm)
 			}
 			if exp.ExpectError != tt.expected.ExpectError {
 				t.Errorf("ExpectError: got %v, want %v", exp.ExpectError, tt.expected.ExpectError)

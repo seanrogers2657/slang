@@ -34,6 +34,9 @@ const (
 	TokenTypeLBrace
 	TokenTypeRBrace
 	TokenTypeIdentifier
+	TokenTypeComma
+	TokenTypeColon
+	TokenTypeReturn
 )
 
 // String returns a human-readable name for the token type
@@ -87,6 +90,12 @@ func (t TokenType) String() string {
 		return "RBRACE"
 	case TokenTypeIdentifier:
 		return "IDENTIFIER"
+	case TokenTypeComma:
+		return "COMMA"
+	case TokenTypeColon:
+		return "COLON"
+	case TokenTypeReturn:
+		return "RETURN"
 	default:
 		return "UNKNOWN"
 	}
@@ -277,6 +286,12 @@ func (p *lexer) ParseIdentifierOrKeyword() {
 			Value: ident,
 			Pos:   startPos,
 		})
+	case "return":
+		p.Tokens = append(p.Tokens, Token{
+			Type:  TokenTypeReturn,
+			Value: ident,
+			Pos:   startPos,
+		})
 	default:
 		p.Tokens = append(p.Tokens, Token{
 			Type:  TokenTypeIdentifier,
@@ -320,6 +335,14 @@ func (p *lexer) Parse() {
 		} else if b == '}' {
 			pos := p.currentPos()
 			p.Tokens = append(p.Tokens, Token{Type: TokenTypeRBrace, Value: "}", Pos: pos})
+			p.advance()
+		} else if b == ',' {
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeComma, Value: ",", Pos: pos})
+			p.advance()
+		} else if b == ':' {
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeColon, Value: ":", Pos: pos})
 			p.advance()
 		} else if b == '+' {
 			// spew.Dump("is plus")

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/seanrogers2657/slang/assembler"
@@ -61,7 +62,9 @@ func runAssemblyTest(t *testing.T, tc *testutil.TestExpectation) {
 
 	// Create assembler and build
 	asm := slasm.New()
-	outputPath := filepath.Join(t.TempDir(), fmt.Sprintf("test_%s", tc.Name))
+	// Replace slashes with underscores since test names now include subdirectory paths
+	safeName := strings.ReplaceAll(tc.Name, "/", "_")
+	outputPath := filepath.Join(t.TempDir(), fmt.Sprintf("test_%s", safeName))
 
 	err = asm.Build(string(source), assembler.BuildOptions{
 		OutputPath: outputPath,

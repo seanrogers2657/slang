@@ -550,10 +550,12 @@ func main() {
 					cmd.Stdout = os.Stdout
 					cmd.Stderr = os.Stderr
 					if err := cmd.Run(); err != nil {
-						if exitErr, ok := err.(*exec.ExitError); ok {
-							return fmt.Errorf("program exited with code %d", exitErr.ExitCode())
+						if verbose {
+							if exitErr, ok := err.(*exec.ExitError); ok {
+								return fmt.Errorf("program exited with code %d", exitErr.ExitCode())
+							}
+							return fmt.Errorf("execution failed: %w", err)
 						}
-						return fmt.Errorf("execution failed: %w", err)
 					}
 
 					return nil

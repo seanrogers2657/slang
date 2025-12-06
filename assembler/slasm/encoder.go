@@ -45,12 +45,24 @@ func (e *Encoder) Encode(inst *Instruction, address uint64) ([]byte, error) {
 	switch inst.Mnemonic {
 	case "mov":
 		return e.encodeMov(inst)
+	case "movz":
+		return e.encodeMovz(inst)
+	case "movk":
+		return e.encodeMovk(inst)
 	case "add":
 		return e.encodeAdd(inst)
+	case "adds":
+		return e.encodeAdds(inst)
 	case "sub":
 		return e.encodeSub(inst)
+	case "subs":
+		return e.encodeSubs(inst)
 	case "mul":
 		return e.encodeMul(inst)
+	case "smulh":
+		return e.encodeSmulh(inst)
+	case "umulh":
+		return e.encodeUmulh(inst)
 	case "sdiv":
 		return e.encodeSdiv(inst)
 	case "udiv":
@@ -76,6 +88,10 @@ func (e *Encoder) Encode(inst *Instruction, address uint64) ([]byte, error) {
 		return e.encodeBranchConditional(inst, address)
 	case "ret":
 		return e.encodeRet(inst)
+	case "cbz":
+		return e.encodeCbz(inst, address)
+	case "cbnz":
+		return e.encodeCbnz(inst, address)
 	case "ldr":
 		return e.encodeLdr(inst)
 	case "str":
@@ -172,6 +188,128 @@ func (e *Encoder) encodeMov(inst *Instruction) ([]byte, error) {
 	return EncodeLittleEndian(encoding), nil
 }
 
+func (e *Encoder) encodeMovz(inst *Instruction) ([]byte, error) {
+	// MOVZ Xd, #imm16, LSL #shift - Move with zero
+	// Encoding: sf 10 100101 hw imm16 Rd
+	// sf=1 for X registers, hw=shift/16 (00=0, 01=16, 10=32, 11=48)
+
+	if len(inst.Operands) < 2 || len(inst.Operands) > 3 {
+		return nil, fmt.Errorf("line %d:%d: movz requires 2-3 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	rd, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: movz destination: %w", inst.Line, inst.Column, err)
+	}
+
+	if inst.Operands[1].Type != OperandImmediate {
+		return nil, fmt.Errorf("line %d:%d: movz requires immediate operand", inst.Line, inst.Column)
+	}
+
+	immVal, err := e.ResolveImmediate(inst.Operands[1].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: movz immediate: %w", inst.Line, inst.Column, err)
+	}
+	imm := uint32(immVal)
+
+	if imm > 0xFFFF {
+		return nil, fmt.Errorf("line %d:%d: immediate %d too large for MOVZ (max 65535)",
+			inst.Line, inst.Column, imm)
+	}
+
+	// Parse optional shift (lsl #N)
+	hw := uint32(0)
+	if len(inst.Operands) == 3 {
+		if inst.Operands[2].Type != OperandShift {
+			return nil, fmt.Errorf("line %d:%d: movz third operand must be shift", inst.Line, inst.Column)
+		}
+		shiftVal, err := ParseInt(inst.Operands[2].Value)
+		if err != nil {
+			return nil, fmt.Errorf("line %d:%d: movz shift: %w", inst.Line, inst.Column, err)
+		}
+		switch shiftVal {
+		case 0:
+			hw = 0
+		case 16:
+			hw = 1
+		case 32:
+			hw = 2
+		case 48:
+			hw = 3
+		default:
+			return nil, fmt.Errorf("line %d:%d: movz shift must be 0, 16, 32, or 48", inst.Line, inst.Column)
+		}
+	}
+
+	sf := uint32(1) // X registers (64-bit)
+	// MOVZ: sf 10 100101 hw imm16 Rd = 0xD2800000
+	encoding := (sf << 31) | (0b10100101 << 23) | (hw << 21) | (imm << 5) | uint32(rd)
+
+	return EncodeLittleEndian(encoding), nil
+}
+
+func (e *Encoder) encodeMovk(inst *Instruction) ([]byte, error) {
+	// MOVK Xd, #imm16, LSL #shift - Move with keep
+	// Encoding: sf 11 100101 hw imm16 Rd
+	// sf=1 for X registers, hw=shift/16 (00=0, 01=16, 10=32, 11=48)
+
+	if len(inst.Operands) < 2 || len(inst.Operands) > 3 {
+		return nil, fmt.Errorf("line %d:%d: movk requires 2-3 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	rd, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: movk destination: %w", inst.Line, inst.Column, err)
+	}
+
+	if inst.Operands[1].Type != OperandImmediate {
+		return nil, fmt.Errorf("line %d:%d: movk requires immediate operand", inst.Line, inst.Column)
+	}
+
+	immVal, err := e.ResolveImmediate(inst.Operands[1].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: movk immediate: %w", inst.Line, inst.Column, err)
+	}
+	imm := uint32(immVal)
+
+	if imm > 0xFFFF {
+		return nil, fmt.Errorf("line %d:%d: immediate %d too large for MOVK (max 65535)",
+			inst.Line, inst.Column, imm)
+	}
+
+	// Parse required shift (lsl #N) for MOVK
+	hw := uint32(0)
+	if len(inst.Operands) == 3 {
+		if inst.Operands[2].Type != OperandShift {
+			return nil, fmt.Errorf("line %d:%d: movk third operand must be shift", inst.Line, inst.Column)
+		}
+		shiftVal, err := ParseInt(inst.Operands[2].Value)
+		if err != nil {
+			return nil, fmt.Errorf("line %d:%d: movk shift: %w", inst.Line, inst.Column, err)
+		}
+		switch shiftVal {
+		case 0:
+			hw = 0
+		case 16:
+			hw = 1
+		case 32:
+			hw = 2
+		case 48:
+			hw = 3
+		default:
+			return nil, fmt.Errorf("line %d:%d: movk shift must be 0, 16, 32, or 48", inst.Line, inst.Column)
+		}
+	}
+
+	sf := uint32(1) // X registers (64-bit)
+	// MOVK: sf 11 100101 hw imm16 Rd = 0xF2800000
+	encoding := (sf << 31) | (0b11100101 << 23) | (hw << 21) | (imm << 5) | uint32(rd)
+
+	return EncodeLittleEndian(encoding), nil
+}
+
 func (e *Encoder) encodeAdd(inst *Instruction) ([]byte, error) {
     // ADD Xd, Xn, #imm12
     // Encoding: sf 0 0 10001 shift imm12 Rn Rd
@@ -246,6 +384,57 @@ func (e *Encoder) encodeAdd(inst *Instruction) ([]byte, error) {
     return EncodeLittleEndian(encoding), nil
 }
 
+func (e *Encoder) encodeAdds(inst *Instruction) ([]byte, error) {
+	// ADDS Xd, Xn, #imm12 or ADDS Xd, Xn, Xm (add with flags)
+	// Same as ADD but with S=1 to set flags
+
+	if len(inst.Operands) != 3 {
+		return nil, fmt.Errorf("line %d:%d: adds requires 3 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	rd, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: adds destination: %w", inst.Line, inst.Column, err)
+	}
+
+	rn, err := ParseRegister(inst.Operands[1].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: adds operand 1: %w", inst.Line, inst.Column, err)
+	}
+
+	if inst.Operands[2].Type == OperandImmediate {
+		immVal, err := ParseInt(inst.Operands[2].Value)
+		if err != nil {
+			return nil, fmt.Errorf("line %d:%d: adds immediate: %w", inst.Line, inst.Column, err)
+		}
+		imm := uint32(immVal)
+
+		if imm > 0xFFF {
+			return nil, fmt.Errorf("line %d:%d: immediate %d too large for ADDS (max 4095)",
+				inst.Line, inst.Column, imm)
+		}
+
+		// ADDS (immediate): sf 0 1 10001 shift imm12 Rn Rd
+		// sf=1 for 64-bit, op=0 (ADD), S=1 (set flags)
+		// 0xB1000000 = 10110001 00000000 00000000 00000000
+		encoding := uint32(0xB1000000) | (imm << 10) | (uint32(rn) << 5) | uint32(rd)
+		return EncodeLittleEndian(encoding), nil
+	}
+
+	// Register form: ADDS Xd, Xn, Xm
+	rm, err := ParseRegister(inst.Operands[2].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: adds operand 2: %w", inst.Line, inst.Column, err)
+	}
+
+	// ADDS (shifted register): sf 0 1 01011 shift 0 Rm imm6 Rn Rd
+	// sf=1, op=0, S=1 => 10101011...
+	// 0xAB000000 = 10101011 00000000 00000000 00000000
+	encoding := uint32(0xAB000000) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	return EncodeLittleEndian(encoding), nil
+}
+
 func (e *Encoder) encodeSub(inst *Instruction) ([]byte, error) {
     // SUB Xd, Xn, #imm12 or SUB Xd, Xn, Xm
     // Similar to ADD but opc = 10 instead of 00
@@ -294,6 +483,57 @@ func (e *Encoder) encodeSub(inst *Instruction) ([]byte, error) {
     return EncodeLittleEndian(encoding), nil
 }
 
+func (e *Encoder) encodeSubs(inst *Instruction) ([]byte, error) {
+	// SUBS Xd, Xn, #imm12 or SUBS Xd, Xn, Xm (subtract with flags)
+	// Same as SUB but with S=1 to set flags
+
+	if len(inst.Operands) != 3 {
+		return nil, fmt.Errorf("line %d:%d: subs requires 3 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	rd, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: subs destination: %w", inst.Line, inst.Column, err)
+	}
+
+	rn, err := ParseRegister(inst.Operands[1].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: subs operand 1: %w", inst.Line, inst.Column, err)
+	}
+
+	if inst.Operands[2].Type == OperandImmediate {
+		immVal, err := ParseInt(inst.Operands[2].Value)
+		if err != nil {
+			return nil, fmt.Errorf("line %d:%d: subs immediate: %w", inst.Line, inst.Column, err)
+		}
+		imm := uint32(immVal)
+
+		if imm > 0xFFF {
+			return nil, fmt.Errorf("line %d:%d: immediate %d too large for SUBS (max 4095)",
+				inst.Line, inst.Column, imm)
+		}
+
+		// SUBS (immediate): sf 1 1 10001 shift imm12 Rn Rd
+		// sf=1 for 64-bit, op=1 (SUB), S=1 (set flags)
+		// 0xF1000000 = 11110001 00000000 00000000 00000000
+		encoding := uint32(0xF1000000) | (imm << 10) | (uint32(rn) << 5) | uint32(rd)
+		return EncodeLittleEndian(encoding), nil
+	}
+
+	// Register form: SUBS Xd, Xn, Xm
+	rm, err := ParseRegister(inst.Operands[2].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: subs operand 2: %w", inst.Line, inst.Column, err)
+	}
+
+	// SUBS (shifted register): sf 1 1 01011 shift 0 Rm imm6 Rn Rd
+	// sf=1, op=1, S=1 => 11101011...
+	// 0xEB000000 = 11101011 00000000 00000000 00000000
+	encoding := uint32(0xEB000000) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	return EncodeLittleEndian(encoding), nil
+}
+
 func (e *Encoder) encodeMul(inst *Instruction) ([]byte, error) {
     // MADD Xd, Xn, Xm, XZR (MUL is an alias)
     // Encoding: sf 0 011011 000 Rm 0 Ra Rn Rd
@@ -324,6 +564,68 @@ func (e *Encoder) encodeMul(inst *Instruction) ([]byte, error) {
     encoding := (sf << 31) | (0b0011011 << 24) | (uint32(rm) << 16) | (ra << 10) | (uint32(rn) << 5) | uint32(rd)
 
     return EncodeLittleEndian(encoding), nil
+}
+
+func (e *Encoder) encodeSmulh(inst *Instruction) ([]byte, error) {
+	// SMULH Xd, Xn, Xm - Signed multiply high (upper 64 bits of 128-bit result)
+	// Encoding: 1 0011011 010 Rm 0 11111 Rn Rd
+	// = 0x9B400000 | (Rm << 16) | (0x1F << 10) | (Rn << 5) | Rd
+
+	if len(inst.Operands) != 3 {
+		return nil, fmt.Errorf("line %d:%d: smulh requires 3 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	rd, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: smulh destination: %w", inst.Line, inst.Column, err)
+	}
+
+	rn, err := ParseRegister(inst.Operands[1].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: smulh operand 1: %w", inst.Line, inst.Column, err)
+	}
+
+	rm, err := ParseRegister(inst.Operands[2].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: smulh operand 2: %w", inst.Line, inst.Column, err)
+	}
+
+	// SMULH: 1 00 11011 010 Rm 0 11111 Rn Rd
+	// 0x9B407C00 = base with Ra=11111
+	encoding := uint32(0x9B407C00) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	return EncodeLittleEndian(encoding), nil
+}
+
+func (e *Encoder) encodeUmulh(inst *Instruction) ([]byte, error) {
+	// UMULH Xd, Xn, Xm - Unsigned multiply high (upper 64 bits of 128-bit result)
+	// Encoding: 1 0011011 110 Rm 0 11111 Rn Rd
+	// = 0x9BC00000 | (Rm << 16) | (0x1F << 10) | (Rn << 5) | Rd
+
+	if len(inst.Operands) != 3 {
+		return nil, fmt.Errorf("line %d:%d: umulh requires 3 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	rd, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: umulh destination: %w", inst.Line, inst.Column, err)
+	}
+
+	rn, err := ParseRegister(inst.Operands[1].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: umulh operand 1: %w", inst.Line, inst.Column, err)
+	}
+
+	rm, err := ParseRegister(inst.Operands[2].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: umulh operand 2: %w", inst.Line, inst.Column, err)
+	}
+
+	// UMULH: 1 00 11011 110 Rm 0 11111 Rn Rd
+	// 0x9BC07C00 = base with Ra=11111
+	encoding := uint32(0x9BC07C00) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	return EncodeLittleEndian(encoding), nil
 }
 
 func (e *Encoder) encodeSdiv(inst *Instruction) ([]byte, error) {
@@ -453,47 +755,78 @@ func (e *Encoder) encodeNeg(inst *Instruction) ([]byte, error) {
 }
 
 func (e *Encoder) encodeCmp(inst *Instruction) ([]byte, error) {
-    // CMP Xn, #imm or CMP Xn, Xm
-    // This is SUBS XZR, Xn, operand
+	// CMP Xn, #imm or CMP Xn, Xm or CMP Xn, Xm, shift #amount
+	// This is SUBS XZR, Xn, operand
 
-    if len(inst.Operands) != 2 {
-        return nil, fmt.Errorf("line %d:%d: cmp requires 2 operands, got %d",
-            inst.Line, inst.Column, len(inst.Operands))
-    }
+	if len(inst.Operands) < 2 || len(inst.Operands) > 3 {
+		return nil, fmt.Errorf("line %d:%d: cmp requires 2-3 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
 
-    rn, err := ParseRegister(inst.Operands[0].Value)
-    if err != nil {
-        return nil, fmt.Errorf("line %d:%d: cmp operand 1: %w", inst.Line, inst.Column, err)
-    }
-    rd := uint32(31) // XZR
+	rn, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: cmp operand 1: %w", inst.Line, inst.Column, err)
+	}
+	rd := uint32(31) // XZR
 
-    if inst.Operands[1].Type == OperandImmediate {
-        immVal, err := e.ResolveImmediate(inst.Operands[1].Value)
-        if err != nil {
-            return nil, fmt.Errorf("line %d:%d: cmp immediate: %w", inst.Line, inst.Column, err)
-        }
-        imm := uint32(immVal)
-        if imm > 0xFFF {
-            return nil, fmt.Errorf("line %d:%d: immediate %d too large for CMP (max 4095)",
-                inst.Line, inst.Column, imm)
-        }
+	if inst.Operands[1].Type == OperandImmediate {
+		immVal, err := e.ResolveImmediate(inst.Operands[1].Value)
+		if err != nil {
+			return nil, fmt.Errorf("line %d:%d: cmp immediate: %w", inst.Line, inst.Column, err)
+		}
+		imm := uint32(immVal)
+		if imm > 0xFFF {
+			return nil, fmt.Errorf("line %d:%d: immediate %d too large for CMP (max 4095)",
+				inst.Line, inst.Column, imm)
+		}
 
-        sf := uint32(1)
-        // SUBS (immediate): sf 1 1 10001 shift imm12 Rn Rd
-        encoding := (sf << 31) | (0b1110001 << 24) | (imm << 10) | (uint32(rn) << 5) | rd
-        return EncodeLittleEndian(encoding), nil
-    }
+		sf := uint32(1)
+		// SUBS (immediate): sf 1 1 10001 shift imm12 Rn Rd
+		encoding := (sf << 31) | (0b1110001 << 24) | (imm << 10) | (uint32(rn) << 5) | rd
+		return EncodeLittleEndian(encoding), nil
+	}
 
-    // Register form
-    rm, err := ParseRegister(inst.Operands[1].Value)
-    if err != nil {
-        return nil, fmt.Errorf("line %d:%d: cmp operand 2: %w", inst.Line, inst.Column, err)
-    }
-    sf := uint32(1)
-    // SUBS (register): sf 1 1 01011 shift 0 Rm imm6 Rn Rd
-    encoding := (sf << 31) | (0b1101011 << 24) | (uint32(rm) << 16) | (uint32(rn) << 5) | rd
+	// Register form
+	rm, err := ParseRegister(inst.Operands[1].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: cmp operand 2: %w", inst.Line, inst.Column, err)
+	}
 
-    return EncodeLittleEndian(encoding), nil
+	// Parse optional shift
+	shiftType := uint32(0) // LSL
+	shiftAmount := uint32(0)
+	if len(inst.Operands) == 3 {
+		if inst.Operands[2].Type != OperandShift {
+			return nil, fmt.Errorf("line %d:%d: cmp third operand must be shift", inst.Line, inst.Column)
+		}
+		switch inst.Operands[2].ShiftType {
+		case "lsl":
+			shiftType = 0b00
+		case "lsr":
+			shiftType = 0b01
+		case "asr":
+			shiftType = 0b10
+		default:
+			return nil, fmt.Errorf("line %d:%d: cmp unsupported shift type: %s",
+				inst.Line, inst.Column, inst.Operands[2].ShiftType)
+		}
+		amount, err := ParseInt(inst.Operands[2].Value)
+		if err != nil {
+			return nil, fmt.Errorf("line %d:%d: cmp shift amount: %w", inst.Line, inst.Column, err)
+		}
+		if amount < 0 || amount > 63 {
+			return nil, fmt.Errorf("line %d:%d: cmp shift amount must be 0-63, got %d",
+				inst.Line, inst.Column, amount)
+		}
+		shiftAmount = uint32(amount)
+	}
+
+	sf := uint32(1)
+	// SUBS (shifted register): sf 1 1 01011 shift(2) 0 Rm imm6(6) Rn Rd
+	encoding := (sf << 31) | (0b1101011 << 24) | (shiftType << 22) |
+		(uint32(rm) << 16) | (shiftAmount << 10) | (uint32(rn) << 5) | rd
+
+	return EncodeLittleEndian(encoding), nil
 }
 
 func (e *Encoder) encodeCset(inst *Instruction) ([]byte, error) {
@@ -719,6 +1052,102 @@ func (e *Encoder) encodeRet(inst *Instruction) ([]byte, error) {
 	// RET is an alias for BR X30
 	// Encoding: 1101011 00101 11111 00000 011110 00000
 	return EncodeLittleEndian(0xd65f03c0), nil
+}
+
+func (e *Encoder) encodeCbz(inst *Instruction, address uint64) ([]byte, error) {
+	// CBZ Xn, label - Compare and branch if zero
+	// Encoding: sf 0 11010 0 imm19 Rt
+	// sf=1 for X registers (64-bit)
+
+	if len(inst.Operands) != 2 {
+		return nil, fmt.Errorf("line %d:%d: cbz requires 2 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	if inst.Operands[0].Type != OperandRegister {
+		return nil, fmt.Errorf("line %d:%d: cbz first operand must be a register",
+			inst.Line, inst.Column)
+	}
+	rt, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: cbz register: %w", inst.Line, inst.Column, err)
+	}
+
+	if inst.Operands[1].Type != OperandLabel {
+		return nil, fmt.Errorf("line %d:%d: cbz second operand must be a label",
+			inst.Line, inst.Column)
+	}
+
+	labelName := inst.Operands[1].Value
+	symbol, found := e.symbolTable.Lookup(labelName)
+	if !found {
+		return nil, fmt.Errorf("line %d:%d: undefined label '%s'",
+			inst.Line, inst.Column, labelName)
+	}
+
+	// Calculate offset in instructions
+	targetAddr := symbol.Address
+	offset := (int64(targetAddr) - int64(address)) / 4
+
+	// Check if offset fits in 19 bits (signed)
+	if offset < -0x40000 || offset > 0x3FFFF {
+		return nil, fmt.Errorf("line %d:%d: cbz target '%s' is too far away (offset %d)",
+			inst.Line, inst.Column, labelName, offset)
+	}
+
+	// CBZ (64-bit): 1 011010 0 imm19 Rt = 0xB4000000
+	imm19 := uint32(offset) & 0x7FFFF
+	encoding := uint32(0xB4000000) | (imm19 << 5) | uint32(rt)
+
+	return EncodeLittleEndian(encoding), nil
+}
+
+func (e *Encoder) encodeCbnz(inst *Instruction, address uint64) ([]byte, error) {
+	// CBNZ Xn, label - Compare and branch if not zero
+	// Encoding: sf 0 11010 1 imm19 Rt
+	// sf=1 for X registers (64-bit)
+
+	if len(inst.Operands) != 2 {
+		return nil, fmt.Errorf("line %d:%d: cbnz requires 2 operands, got %d",
+			inst.Line, inst.Column, len(inst.Operands))
+	}
+
+	if inst.Operands[0].Type != OperandRegister {
+		return nil, fmt.Errorf("line %d:%d: cbnz first operand must be a register",
+			inst.Line, inst.Column)
+	}
+	rt, err := ParseRegister(inst.Operands[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("line %d:%d: cbnz register: %w", inst.Line, inst.Column, err)
+	}
+
+	if inst.Operands[1].Type != OperandLabel {
+		return nil, fmt.Errorf("line %d:%d: cbnz second operand must be a label",
+			inst.Line, inst.Column)
+	}
+
+	labelName := inst.Operands[1].Value
+	symbol, found := e.symbolTable.Lookup(labelName)
+	if !found {
+		return nil, fmt.Errorf("line %d:%d: undefined label '%s'",
+			inst.Line, inst.Column, labelName)
+	}
+
+	// Calculate offset in instructions
+	targetAddr := symbol.Address
+	offset := (int64(targetAddr) - int64(address)) / 4
+
+	// Check if offset fits in 19 bits (signed)
+	if offset < -0x40000 || offset > 0x3FFFF {
+		return nil, fmt.Errorf("line %d:%d: cbnz target '%s' is too far away (offset %d)",
+			inst.Line, inst.Column, labelName, offset)
+	}
+
+	// CBNZ (64-bit): 1 011010 1 imm19 Rt = 0xB5000000
+	imm19 := uint32(offset) & 0x7FFFF
+	encoding := uint32(0xB5000000) | (imm19 << 5) | uint32(rt)
+
+	return EncodeLittleEndian(encoding), nil
 }
 
 func (e *Encoder) encodeLdr(inst *Instruction) ([]byte, error) {
@@ -1559,20 +1988,74 @@ func (e *Encoder) EncodeData(data *DataDeclaration) ([]byte, error) {
 	}
 }
 
-// encodeByteValues encodes comma-separated integer values to bytes
+// encodeByteValues encodes comma-separated integer values or labels to bytes
 func (e *Encoder) encodeByteValues(value string, size int) ([]byte, error) {
+	bytes, _, err := e.encodeByteValuesWithRelocations(value, size, 0)
+	return bytes, err
+}
+
+// EncodeDataWithRelocations encodes a data declaration and returns relocations for label references
+func (e *Encoder) EncodeDataWithRelocations(data *DataDeclaration, baseOffset uint64) ([]byte, []DataRelocation, error) {
+	switch data.Type {
+	case "byte":
+		return e.encodeByteValuesWithRelocations(data.Value, 1, baseOffset)
+	case "2byte", "hword":
+		return e.encodeByteValuesWithRelocations(data.Value, 2, baseOffset)
+	case "4byte", "word":
+		return e.encodeByteValuesWithRelocations(data.Value, 4, baseOffset)
+	case "8byte", "quad":
+		return e.encodeByteValuesWithRelocations(data.Value, 8, baseOffset)
+	case "space", "zero":
+		size, err := ParseInt(data.Value)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid size for .%s: %w", data.Type, err)
+		}
+		return make([]byte, size), nil, nil
+	case "asciz", "string":
+		s := unescapeDataString(data.Value)
+		result := make([]byte, len(s)+1)
+		copy(result, s)
+		result[len(s)] = 0
+		return result, nil, nil
+	case "ascii":
+		s := unescapeDataString(data.Value)
+		return []byte(s), nil, nil
+	default:
+		return nil, nil, fmt.Errorf("unsupported data directive: .%s", data.Type)
+	}
+}
+
+// encodeByteValuesWithRelocations encodes comma-separated integer values or labels to bytes
+// and returns relocation info for any label references
+func (e *Encoder) encodeByteValuesWithRelocations(value string, size int, baseOffset uint64) ([]byte, []DataRelocation, error) {
 	if value == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	parts := strings.Split(value, ",")
 	result := make([]byte, 0, len(parts)*size)
+	var relocations []DataRelocation
 
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
+		currentOffset := baseOffset + uint64(len(result))
+
+		// First try to parse as integer
 		val, err := ParseInt64(part)
+		isLabel := false
 		if err != nil {
-			return nil, fmt.Errorf("invalid value '%s': %w", part, err)
+			// Not an integer, try as a label reference
+			if e.symbolTable != nil {
+				symbol, found := e.symbolTable.Lookup(part)
+				if found {
+					val = int64(symbol.Address)
+					isLabel = true
+				} else {
+					return nil, nil, fmt.Errorf("invalid value '%s': not a number or known label", part)
+				}
+			} else {
+				return nil, nil, fmt.Errorf("invalid value '%s': %w", part, err)
+			}
 		}
 
 		bytes := make([]byte, size)
@@ -1587,9 +2070,18 @@ func (e *Encoder) encodeByteValues(value string, size int) ([]byte, error) {
 			binary.LittleEndian.PutUint64(bytes, uint64(val))
 		}
 		result = append(result, bytes...)
+
+		// If this was a label reference, record a relocation
+		if isLabel && size >= 4 {
+			relocations = append(relocations, DataRelocation{
+				Offset:     currentOffset,
+				Size:       size,
+				TargetAddr: uint64(val),
+			})
+		}
 	}
 
-	return result, nil
+	return result, relocations, nil
 }
 
 // unescapeDataString converts escape sequences in a string (same as in layout.go)

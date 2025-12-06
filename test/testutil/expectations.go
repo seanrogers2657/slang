@@ -27,6 +27,9 @@ type TestExpectation struct {
 	// Stderr is the expected stderr output (optional)
 	Stderr string
 
+	// StderrContains is a substring that should appear in stderr (optional)
+	StderrContains string
+
 	// Skip indicates this test should be skipped, with the reason
 	Skip string
 
@@ -38,6 +41,9 @@ type TestExpectation struct {
 
 	// ErrorContains is a substring that should appear in the error message
 	ErrorContains string
+
+	// RequiresSystemAsm indicates this test requires the system assembler instead of slasm
+	RequiresSystemAsm bool
 }
 
 // ParseExpectations reads a file and extracts test expectations from @test: comments.
@@ -120,6 +126,9 @@ func parseDirective(exp *TestExpectation, directive string) error {
 	case "stderr":
 		exp.Stderr = unescapeString(value)
 
+	case "stderr_contains":
+		exp.StderrContains = unescapeString(value)
+
 	case "skip":
 		exp.Skip = value
 
@@ -131,6 +140,9 @@ func parseDirective(exp *TestExpectation, directive string) error {
 
 	case "error_contains":
 		exp.ErrorContains = unescapeString(value)
+
+	case "requires_system_asm":
+		exp.RequiresSystemAsm = value == "true"
 
 	default:
 		return fmt.Errorf("unknown directive key: %s", key)

@@ -194,10 +194,12 @@ func TestTypedCodeGenerator_VarDeclWithExpression(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	// Now uses checked addition with overflow detection
 	expected := []string{
 		"mov x0, #10",
 		"mov x1, #20",
-		"add x2, x0, x1",
+		"adds x2, x0, x1", // checked add with flags
+		"b.vs _panic",     // branch on overflow
 		"str x2, [x29, #-16]",
 	}
 
@@ -209,16 +211,17 @@ func TestTypedCodeGenerator_VarDeclWithExpression(t *testing.T) {
 }
 
 func TestTypedCodeGenerator_BinaryExpr_AllIntOperations(t *testing.T) {
+	// All arithmetic operations now include runtime overflow/division-by-zero checks
 	tests := []struct {
 		name     string
 		op       string
 		expected []string
 	}{
-		{"addition", "+", []string{"add x2, x0, x1"}},
-		{"subtraction", "-", []string{"sub x2, x0, x1"}},
-		{"multiplication", "*", []string{"mul x2, x0, x1"}},
-		{"division", "/", []string{"sdiv x2, x0, x1"}},
-		{"modulo", "%", []string{"sdiv x3, x0, x1", "msub x2, x3, x1, x0"}},
+		{"addition", "+", []string{"adds x2, x0, x1", "b.vs"}},                // checked add
+		{"subtraction", "-", []string{"subs x2, x0, x1", "b.vs"}},             // checked sub
+		{"multiplication", "*", []string{"mul x2, x0, x1", "smulh x3, x0, x1"}}, // checked mul
+		{"division", "/", []string{"cbz x1", "sdiv x2, x0, x1"}},              // div-by-zero check
+		{"modulo", "%", []string{"cbz x1", "sdiv x3, x0, x1", "msub x2, x3, x1, x0"}},
 		{"equal", "==", []string{"cmp x0, x1", "cset x2, eq"}},
 		{"not equal", "!=", []string{"cmp x0, x1", "cset x2, ne"}},
 		{"less than", "<", []string{"cmp x0, x1", "cset x2, lt"}},
@@ -480,7 +483,7 @@ func TestTypedCodeGenerator_FunctionWithParameters(t *testing.T) {
 		"str x1, [x29, #-32]", // store param b
 		"ldr x0, [x29, #-16]", // load a
 		"ldr x1, [x29, #-32]", // load b
-		"add x2, x0, x1",
+		"adds x2, x0, x1",     // checked add with overflow detection
 	}
 
 	for _, exp := range expected {
@@ -604,9 +607,10 @@ func TestTypedCodeGenerator_NestedBinaryExpr(t *testing.T) {
 	}
 
 	// Should compute 2+3 first, then multiply by 4
+	// Both operations now use checked versions
 	expected := []string{
-		"add x2, x0, x1", // 2 + 3
-		"mul x2, x0, x1", // result * 4
+		"adds x2, x0, x1", // 2 + 3 (checked)
+		"mul x2, x0, x1",  // result * 4 (mul is part of checked sequence)
 	}
 
 	for _, exp := range expected {
@@ -1100,7 +1104,7 @@ func TestTypedCodeGenerator_OperandToReg_CallExpr(t *testing.T) {
 
 	expected := []string{
 		"bl _foo",
-		"add x2, x0, x1",
+		"adds x2, x0, x1", // checked addition
 	}
 
 	for _, exp := range expected {

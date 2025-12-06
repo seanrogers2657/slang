@@ -3,6 +3,7 @@ package arm64
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/seanrogers2657/slang/backend/arch"
@@ -243,8 +244,49 @@ func (e *Emitter) EmitMoveReg(dst, src string) string {
 }
 
 // EmitMoveImm generates an immediate value load.
+// For values that fit in 16 bits, uses a simple MOV.
+// For larger values, uses MOVZ/MOVK sequence to build the value in chunks.
 func (e *Emitter) EmitMoveImm(reg, value string) string {
-	return fmt.Sprintf("    mov %s, #%s\n", reg, value)
+	// Try to parse as int64 to determine if we need extended loading
+	val, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		// If parsing fails, just emit a simple mov (may fail at assembly time)
+		return fmt.Sprintf("    mov %s, #%s\n", reg, value)
+	}
+
+	// For small positive values that fit in 16 bits, use simple mov
+	if val >= 0 && val <= 65535 {
+		return fmt.Sprintf("    mov %s, #%d\n", reg, val)
+	}
+
+	// For larger values, use MOVZ/MOVK sequence
+	var b strings.Builder
+	uval := uint64(val)
+
+	// Find the first non-zero 16-bit chunk
+	firstChunk := true
+	for shift := 0; shift <= 48; shift += 16 {
+		chunk := (uval >> shift) & 0xFFFF
+		if chunk != 0 || (shift == 0 && uval == 0) {
+			if firstChunk {
+				b.WriteString(fmt.Sprintf("    movz %s, #%d", reg, chunk))
+				if shift > 0 {
+					b.WriteString(fmt.Sprintf(", lsl #%d", shift))
+				}
+				b.WriteString("\n")
+				firstChunk = false
+			} else {
+				b.WriteString(fmt.Sprintf("    movk %s, #%d, lsl #%d\n", reg, chunk, shift))
+			}
+		}
+	}
+
+	// If value is 0 and we haven't written anything, emit mov #0
+	if firstChunk {
+		return fmt.Sprintf("    mov %s, #0\n", reg)
+	}
+
+	return b.String()
 }
 
 // EmitStoreToStack stores a register value to the stack relative to frame pointer.

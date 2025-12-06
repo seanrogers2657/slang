@@ -46,640 +46,191 @@ func (w *MachOWriter) WriteObjectFile(outputPath string, code []byte, data []byt
 	return nil
 }
 
-// WriteExecutable writes a Mach-O executable
-func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byte, symbols *SymbolTable, entryPoint string) error {
+// WriteExecutable writes a Mach-O executable to the specified path.
+func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byte, relocations []DataRelocation, symbols *SymbolTable, entryPoint string) error {
+	// Calculate layout
+	layout := w.calculateLayout(code, data, relocations)
+
+	// Build load commands
+	cmds := w.buildLoadCommands(layout, code, data)
+
+	// Create file
 	file, err := os.Create(outputPath)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	// Calculate offsets and sizes
-	headerSize := uint64(32)        // mach_header_64
-	segmentCmdSize := uint64(72)    // segment_command_64
-	sectionHeaderSize := uint64(80) // section_64
-	entryPointCmdSize := uint64(24) // entry_point_command
-	dylinkerPath := "/usr/lib/dyld"
-	dylinkerCmdSize := uint64(12 + len(dylinkerPath) + 1) // command header + path + null
-	dylinkerCmdSize = (dylinkerCmdSize + 7) & ^uint64(7)  // Align to 8 bytes
-
-	dylibPath := "/usr/lib/libSystem.B.dylib"
-	dylibCmdSize := uint64(24 + len(dylibPath) + 1) // LC_LOAD_DYLIB header (24 bytes) + path + null
-	dylibCmdSize = (dylibCmdSize + 7) & ^uint64(7)  // Align to 8 bytes
-
-	uuidCmdSize := uint64(24)             // LC_UUID command (8 + 16 bytes)
-	buildVersionCmdSize := uint64(32)     // LC_BUILD_VERSION command (with 1 tool entry)
-	sourceVersionCmdSize := uint64(16)    // LC_SOURCE_VERSION command
-	chainedFixupsCmdSize := uint64(16)    // LC_DYLD_CHAINED_FIXUPS command
-	exportsTrieCmdSize := uint64(16)      // LC_DYLD_EXPORTS_TRIE command
-	symtabCmdSize := uint64(24)           // LC_SYMTAB command
-	dysymtabCmdSize := uint64(80)         // LC_DYSYMTAB command
-	functionStartsCmdSize := uint64(16)   // LC_FUNCTION_STARTS command
-	dataInCodeCmdSize := uint64(16)       // LC_DATA_IN_CODE command
-
-	// Add __PAGEZERO segment (important for memory protection)
-	pagezeroSize := uint64(72) // segment_command_64 without sections
-
-	// Add __DATA segment (for writable data like buffers)
-	dataSegmentCmdSize := uint64(72) // segment_command_64
-	dataSectionSize := uint64(80)    // section_64 for __data
-	hasDataSection := len(data) > 0
-
-	// Add __LINKEDIT segment (required for code signatures)
-	linkeditSegmentSize := uint64(72) // segment_command_64 without sections
-
-	// LC_CODE_SIGNATURE command size (we now write this ourselves)
-	codeSignatureCmdSize := uint64(16)
-	// Calculate total size of all load commands (including LC_CODE_SIGNATURE)
-	loadCmdsSize := pagezeroSize + segmentCmdSize + sectionHeaderSize + linkeditSegmentSize +
-		dylinkerCmdSize + dylibCmdSize + entryPointCmdSize + uuidCmdSize +
-		buildVersionCmdSize + sourceVersionCmdSize +
-		chainedFixupsCmdSize + exportsTrieCmdSize +
-		symtabCmdSize + dysymtabCmdSize +
-		functionStartsCmdSize + dataInCodeCmdSize +
-		codeSignatureCmdSize
-
-	// Add __DATA segment size if we have data
-	if hasDataSection {
-		loadCmdsSize += dataSegmentCmdSize + dataSectionSize
-	}
-
-	// Place code right after load commands, aligned to 8 bytes
-	// (like the system linker does - no page alignment for code offset)
-	codeOffset := headerSize + loadCmdsSize
-	codeOffset = ((codeOffset + 7) / 8) * 8 // Align to 8 bytes
-
-	// Calculate machine code size
-	machineCodeSize := uint64(len(code))
-
-	// Virtual memory base address
-	vmAddr := uint64(0x100000000) // Standard base for ARM64 executables
-
-	// Calculate __TEXT segment file size and VM size
-	// Match the system linker layout: use 0x4000 (16KB) minimum for __TEXT
-	// This ensures proper alignment and matches macOS conventions
-	textSegmentFileSize := uint64(0x4000) // 16KB like system linker
-	if (codeOffset + machineCodeSize) > textSegmentFileSize {
-		textSegmentFileSize = ((codeOffset + machineCodeSize + 0xFFF) / 0x1000) * 0x1000
-	}
-	textVMSize := textSegmentFileSize // VM size matches file size
-
-	// Calculate __DATA segment location (if we have data)
-	dataSize := uint64(len(data))
-	dataOffset := textSegmentFileSize // Right after __TEXT in file
-	dataVMAddr := vmAddr + textVMSize // Right after __TEXT in VM
-	dataSegmentFileSize := uint64(0)
-	dataVMSize := uint64(0)
-	if hasDataSection {
-		// Use 16KB minimum for data segment to match macOS ARM64 page size
-		// and match system linker behavior
-		dataSegmentFileSize = uint64(0x4000) // 16KB minimum like system linker
-		if dataSize > dataSegmentFileSize {
-			dataSegmentFileSize = ((dataSize + 0x3FFF) / 0x4000) * 0x4000
-		}
-		dataVMSize = dataSegmentFileSize
-	}
-
-	// Calculate __LINKEDIT segment location
-	// It comes right after the __DATA segment (or __TEXT if no data)
-	linkeditOffset := textSegmentFileSize + dataSegmentFileSize
-	linkeditVMAddr := vmAddr + textVMSize + dataVMSize
-
-	// Calculate __LINKEDIT content sizes (before signature)
-	chainedFixupsDataSize := uint64(56)
-	exportsTrieSize := uint64(48)
-	numSymbols := uint32(1)
-	symbolSize := uint64(16)
-	symbolDataSize := uint64(numSymbols) * symbolSize
-	stringTableSize := uint64(16)
-	functionStartsDataSize := uint64(8)
-
-	// Total __LINKEDIT data before signature
-	linkeditDataBeforeSig := chainedFixupsDataSize + exportsTrieSize + symbolDataSize + stringTableSize + functionStartsDataSize
-
-	// Calculate code signature size
-	// fileSizeForSig is the file size up to (but not including) the signature
-	fileSizeForSig := int64(linkeditOffset + linkeditDataBeforeSig)
-	signatureID := "slasm-binary"
-	signatureSize := codesign.Size(fileSizeForSig, signatureID)
-	// Align signature size to 16 bytes
-	signatureSize = (signatureSize + 15) &^ 15
-
-	// Total __LINKEDIT size includes signature
-	linkeditSize := linkeditDataBeforeSig + uint64(signatureSize)
-	// Align to page boundary for VM size
-	linkeditVMSize := ((linkeditSize + 0xFFF) / 0x1000) * 0x1000
-	if linkeditVMSize < 0x1000 {
-		linkeditVMSize = 0x1000
-	}
-
-	// Build Mach-O header
-	// Load commands: __PAGEZERO, __TEXT, [__DATA], __LINKEDIT
-	// + LC_LOAD_DYLINKER, LC_LOAD_DYLIB, LC_MAIN, LC_UUID
-	// + LC_BUILD_VERSION, LC_SOURCE_VERSION
-	// + LC_DYLD_CHAINED_FIXUPS, LC_DYLD_EXPORTS_TRIE
-	// + LC_SYMTAB, LC_DYSYMTAB
-	// + LC_FUNCTION_STARTS, LC_DATA_IN_CODE
-	// + LC_CODE_SIGNATURE
-	// Total: 16 load commands (17 if __DATA is present)
-	numCmds := uint32(16)
-	if hasDataSection {
-		numCmds = 17
-	}
-	header := machHeader64{
-		Magic:      MH_MAGIC_64,
-		CPUType:    CPU_TYPE_ARM64,
-		CPUSubtype: CPU_SUBTYPE_ARM64,
-		FileType:   MH_EXECUTE,
-		NCmds:      numCmds,
-		SizeofCmds: uint32(loadCmdsSize),
-		Flags:      MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL | MH_PIE,
-		Reserved:   0,
-	}
-
-	// Build __TEXT segment command with __text section
-	// The __TEXT segment should start at file offset 0 and include the header and load commands
-	var segname [16]byte
-	copy(segname[:], "__TEXT")
-
-	segment := segmentCommand64{
-		Cmd:      LC_SEGMENT_64,
-		Cmdsize:  uint32(segmentCmdSize + sectionHeaderSize),
-		Segname:  segname,
-		VMAddr:   vmAddr,
-		VMSize:   textVMSize,
-		FileOff:  0,                       // Start at beginning of file
-		FileSize: textSegmentFileSize,     // Include header, load commands, and code
-		MaxProt:  VM_PROT_READ | VM_PROT_EXECUTE,
-		InitProt: VM_PROT_READ | VM_PROT_EXECUTE,
-		NSects:   1,
-		Flags:    0,
-	}
-
-	// Build __text section
-	var sectname [16]byte
-	copy(sectname[:], "__text")
-
-	section := section64{
-		Sectname:  sectname,
-		Segname:   segname,
-		Addr:      vmAddr + codeOffset, // VM address where code will be loaded
-		Size:      machineCodeSize,
-		Offset:    uint32(codeOffset),
-		Align:     2, // 2^2 = 4 byte alignment
-		Reloff:    0,
-		Nreloc:    0,
-		Flags:     0x80000400, // S_REGULAR | S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS
-		Reserved1: 0,
-		Reserved2: 0,
-		Reserved3: 0,
-	}
-
-	// Build LC_MAIN command (entry point)
-	entryCmd := entryPointCommand{
-		Cmd:       LC_MAIN,
-		Cmdsize:   uint32(entryPointCmdSize),
-		EntryOff:  codeOffset, // Entry point file offset
-		StackSize: 0,          // Use default stack size
-	}
-
-	// Build __PAGEZERO segment (protects against null pointer dereferences)
-	var pagezeroName [16]byte
-	copy(pagezeroName[:], "__PAGEZERO")
-
-	pagezero := segmentCommand64{
-		Cmd:      LC_SEGMENT_64,
-		Cmdsize:  uint32(pagezeroSize),
-		Segname:  pagezeroName,
-		VMAddr:   0,
-		VMSize:   0x100000000, // 4GB
-		FileOff:  0,
-		FileSize: 0,
-		MaxProt:  0,
-		InitProt: 0,
-		NSects:   0,
-		Flags:    0,
-	}
-
-	// Build __DATA segment (for writable data like buffers)
-	var dataSegname [16]byte
-	copy(dataSegname[:], "__DATA")
-	var dataSectname [16]byte
-	copy(dataSectname[:], "__data")
-
-	dataSegment := segmentCommand64{
-		Cmd:      LC_SEGMENT_64,
-		Cmdsize:  uint32(dataSegmentCmdSize + dataSectionSize),
-		Segname:  dataSegname,
-		VMAddr:   dataVMAddr,
-		VMSize:   dataVMSize,
-		FileOff:  dataOffset,
-		FileSize: dataSegmentFileSize,
-		MaxProt:  VM_PROT_READ | VM_PROT_WRITE,
-		InitProt: VM_PROT_READ | VM_PROT_WRITE,
-		NSects:   1,
-		Flags:    0,
-	}
-
-	dataSection := section64{
-		Sectname:  dataSectname,
-		Segname:   dataSegname,
-		Addr:      dataVMAddr,    // VM address of data section
-		Size:      dataSize,      // Size of actual data
-		Offset:    uint32(dataOffset),
-		Align:     3, // 2^3 = 8 byte alignment (for 64-bit data)
-		Reloff:    0,
-		Nreloc:    0,
-		Flags:     0, // S_REGULAR
-		Reserved1: 0,
-		Reserved2: 0,
-		Reserved3: 0,
-	}
-
-	// Build __LINKEDIT segment (for code signatures and other link-edit data)
-	var linkeditName [16]byte
-	copy(linkeditName[:], "__LINKEDIT")
-
-	linkedit := segmentCommand64{
-		Cmd:      LC_SEGMENT_64,
-		Cmdsize:  uint32(linkeditSegmentSize),
-		Segname:  linkeditName,
-		VMAddr:   linkeditVMAddr,
-		VMSize:   linkeditVMSize,
-		FileOff:  linkeditOffset,
-		FileSize: linkeditSize,
-		MaxProt:  VM_PROT_READ,
-		InitProt: VM_PROT_READ,
-		NSects:   0,
-		Flags:    0,
-	}
-
-	// Build dylinker load command
-	dylinkerCmd := dylinkerCommand{
-		Cmd:     LC_LOAD_DYLINKER,
-		Cmdsize: uint32(dylinkerCmdSize),
-		NameOff: 12, // Offset from start of command (after cmd, cmdsize, nameoff)
-	}
-
-	// Build dylib load command for libSystem
-	dylibCmd := dylibCommand{
-		Cmd:                  LC_LOAD_DYLIB,
-		Cmdsize:              uint32(dylibCmdSize),
-		NameOff:              24,         // Offset from start of command (after the header fields)
-		Timestamp:            2,          // Standard value
-		CurrentVersion:       0x050c6400, // 1292.100.0 (common libSystem version)
-		CompatibilityVersion: 0x00010000, // 1.0.0
-	}
-
-	// Build LC_UUID command
-	// Generate a simple UUID (in production, this should be unique)
-	// For now, we'll use a deterministic UUID based on code content
-	uuidCmd := uuidCommand{
-		Cmd:     LC_UUID,
-		Cmdsize: uint32(uuidCmdSize),
-		UUID: [16]byte{
-			0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-			0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-		},
-	}
-
-	// Build LC_BUILD_VERSION command
-	// Platform: macOS (1)
-	// Minimum OS: 11.0.0 (Big Sur) encoded as 11 << 16 | 0 << 8 | 0
-	// SDK: 15.0.0 (macOS 15) encoded as 15 << 16 | 0 << 8 | 0
-	buildVersionCmd := buildVersionCommand{
-		Cmd:      LC_BUILD_VERSION,
-		Cmdsize:  uint32(buildVersionCmdSize),
-		Platform: PLATFORM_MACOS,
-		Minos:    0x000b0000, // 11.0.0
-		Sdk:      0x000f0000, // 15.0.0
-		Ntools:   1,          // Include 1 tool entry
-	}
-
-	// Tool entry: LD (linker) version 1167.0
-	buildToolEntry := buildToolVersion{
-		Tool:    3,          // 3 = LD (linker)
-		Version: 0x048f0000, // 1167.0 encoded as (1167 << 16)
-	}
-
-	// Build LC_SOURCE_VERSION command
-	// Version 1.0.0.0.0 encoded as (1 << 40)
-	sourceVersionCmd := sourceVersionCommand{
-		Cmd:     LC_SOURCE_VERSION,
-		Cmdsize: uint32(sourceVersionCmdSize),
-		Version: 0x0001000000000000, // Version 1.0.0.0.0
-	}
-
-	// Build LC_DYLD_CHAINED_FIXUPS command
-	// Modern format required by newer macOS versions
-	chainedFixupsCmd := linkeditDataCommand{
-		Cmd:      LC_DYLD_CHAINED_FIXUPS,
-		Cmdsize:  uint32(chainedFixupsCmdSize),
-		DataOff:  uint32(linkeditOffset),
-		DataSize: uint32(chainedFixupsDataSize),
-	}
-
-	// Build LC_DYLD_EXPORTS_TRIE command
-	exportsTrieCmd := linkeditDataCommand{
-		Cmd:      LC_DYLD_EXPORTS_TRIE,
-		Cmdsize:  uint32(exportsTrieCmdSize),
-		DataOff:  uint32(linkeditOffset + chainedFixupsDataSize),
-		DataSize: uint32(exportsTrieSize),
-	}
-
-	// Build LC_SYMTAB command
-	// Place symbol table after chained fixups and exports trie in __LINKEDIT
-	symtabOffset := linkeditOffset + chainedFixupsDataSize + exportsTrieSize
-	symtabCmd := symtabCommand{
-		Cmd:     LC_SYMTAB,
-		Cmdsize: uint32(symtabCmdSize),
-		Symoff:  uint32(symtabOffset),
-		Nsyms:   numSymbols,
-		Stroff:  uint32(symtabOffset + symbolDataSize),
-		Strsize: uint32(stringTableSize),
-	}
-
-	// Build LC_DYSYMTAB command
-	dysymtabCmd := dysymtabCommand{
-		Cmd:            LC_DYSYMTAB,
-		Cmdsize:        uint32(dysymtabCmdSize),
-		Ilocalsym:      0,
-		Nlocalsym:      0,
-		Iextdefsym:     0,
-		Nextdefsym:     numSymbols,
-		Iundefsym:      numSymbols,
-		Nundefsym:      0,
-		Tocoff:         0,
-		Ntoc:           0,
-		Modtaboff:      0,
-		Nmodtab:        0,
-		Extrefsymoff:   0,
-		Nextrefsyms:    0,
-		Indirectsymoff: 0,
-		Nindirectsyms:  0,
-		Extreloff:      0,
-		Nextrel:        0,
-		Locreloff:      0,
-		Nlocrel:        0,
-	}
-
-	// Build LC_FUNCTION_STARTS command
-	// Function starts data comes after string table
-	functionStartsOffset := symtabOffset + symbolDataSize + stringTableSize
-	functionStartsCmd := linkeditDataCommand{
-		Cmd:      LC_FUNCTION_STARTS,
-		Cmdsize:  uint32(functionStartsCmdSize),
-		DataOff:  uint32(functionStartsOffset),
-		DataSize: uint32(functionStartsDataSize),
-	}
-
-	// Build LC_DATA_IN_CODE command
-	// Data in code comes after function starts, but we have no data in code (size 0)
-	dataInCodeOffset := functionStartsOffset + functionStartsDataSize
-	dataInCodeCmd := linkeditDataCommand{
-		Cmd:      LC_DATA_IN_CODE,
-		Cmdsize:  uint32(dataInCodeCmdSize),
-		DataOff:  uint32(dataInCodeOffset),
-		DataSize: 0, // No data in code
-	}
-
-	// Build LC_CODE_SIGNATURE command
-	// Signature data comes at the end of __LINKEDIT
-	signatureOffset := linkeditOffset + linkeditDataBeforeSig
-	codeSignatureCmd := codeSignatureCommand{
-		Cmd:      LC_CODE_SIGNATURE,
-		Cmdsize:  uint32(codeSignatureCmdSize),
-		DataOff:  uint32(signatureOffset),
-		DataSize: uint32(signatureSize),
-	}
-
-	// Write everything to file
-	if err := writeStruct(file, &header); err != nil {
-		return err
-	}
-	// Write __PAGEZERO first
-	if err := writeStruct(file, &pagezero); err != nil {
-		return err
-	}
-	if err := writeStruct(file, &segment); err != nil {
-		return err
-	}
-	if err := writeStruct(file, &section); err != nil {
-		return err
-	}
-	// Write __DATA segment (if we have data)
-	if hasDataSection {
-		if err := writeStruct(file, &dataSegment); err != nil {
-			return err
-		}
-		if err := writeStruct(file, &dataSection); err != nil {
-			return err
-		}
-	}
-	// Write __LINKEDIT segment
-	if err := writeStruct(file, &linkedit); err != nil {
-		return err
-	}
-	// Write dylinker command
-	if err := writeStruct(file, &dylinkerCmd); err != nil {
-		return err
-	}
-	// Write dylinker path (null-terminated, padded to alignment)
-	dylinkerPathBytes := make([]byte, dylinkerCmdSize-12)
-	copy(dylinkerPathBytes, dylinkerPath)
-	if _, err := file.Write(dylinkerPathBytes); err != nil {
+	// Write header and load commands
+	if err := w.writeHeaderAndCommands(file, layout, cmds); err != nil {
 		return err
 	}
 
-	// Write dylib command
-	if err := writeStruct(file, &dylibCmd); err != nil {
-		return err
-	}
-	// Write dylib path (null-terminated, padded to alignment)
-	dylibPathBytes := make([]byte, dylibCmdSize-24)
-	copy(dylibPathBytes, dylibPath)
-	if _, err := file.Write(dylibPathBytes); err != nil {
+	// Write segment data
+	if err := w.writeSegmentData(file, layout, code, data, relocations); err != nil {
 		return err
 	}
 
-	if err := writeStruct(file, &entryCmd); err != nil {
-		return err
-	}
-	// Write LC_UUID command
-	if err := writeStruct(file, &uuidCmd); err != nil {
-		return err
-	}
-	// Write LC_BUILD_VERSION command
-	if err := writeStruct(file, &buildVersionCmd); err != nil {
-		return err
-	}
-	// Write tool entry for LC_BUILD_VERSION
-	if err := writeStruct(file, &buildToolEntry); err != nil {
-		return err
-	}
-	// Write LC_SOURCE_VERSION command
-	if err := writeStruct(file, &sourceVersionCmd); err != nil {
-		return err
-	}
-	// Write LC_DYLD_CHAINED_FIXUPS command
-	if err := writeStruct(file, &chainedFixupsCmd); err != nil {
-		return err
-	}
-	// Write LC_DYLD_EXPORTS_TRIE command
-	if err := writeStruct(file, &exportsTrieCmd); err != nil {
-		return err
-	}
-	// Write LC_SYMTAB command
-	if err := writeStruct(file, &symtabCmd); err != nil {
-		return err
-	}
-	// Write LC_DYSYMTAB command
-	if err := writeStruct(file, &dysymtabCmd); err != nil {
-		return err
-	}
-	// Write LC_FUNCTION_STARTS command
-	if err := writeStruct(file, &functionStartsCmd); err != nil {
-		return err
-	}
-	// Write LC_DATA_IN_CODE command
-	if err := writeStruct(file, &dataInCodeCmd); err != nil {
-		return err
-	}
-	// Write LC_CODE_SIGNATURE command
-	if err := writeStruct(file, &codeSignatureCmd); err != nil {
+	// Generate and write code signature
+	if err := w.writeCodeSignature(file, layout); err != nil {
 		return err
 	}
 
-	// Print Mach-O structure information (only if verbose logging is enabled)
-	w.logger.Printf("\nMach-O Structure:\n")
-	w.logger.Printf("  Header:            size=%d bytes\n", headerSize)
-	w.logger.Printf("  Load commands:     size=%d bytes, count=%d\n", loadCmdsSize, header.NCmds)
-	w.logger.Printf("  Code offset:       0x%x (%d bytes)\n", codeOffset, codeOffset)
-	w.logger.Printf("  Code size:         %d bytes\n", machineCodeSize)
-	w.logger.Printf("\nSegments:\n")
-	w.logger.Printf("  __PAGEZERO:        vm=0x%x-0x%x (size=0x%x)\n", uint64(0), uint64(0x100000000), uint64(0x100000000))
-	w.logger.Printf("  __TEXT:            vm=0x%x-0x%x (size=0x%x), file=0x%x-0x%x\n",
-		vmAddr, vmAddr+textVMSize, textVMSize, uint64(0), textSegmentFileSize)
-	w.logger.Printf("    __text section:  vm=0x%x-0x%x (size=0x%x), file=0x%x\n",
-		vmAddr+codeOffset, vmAddr+codeOffset+machineCodeSize, machineCodeSize, codeOffset)
-	if hasDataSection {
-		w.logger.Printf("  __DATA:            vm=0x%x-0x%x (size=0x%x), file=0x%x-0x%x\n",
-			dataVMAddr, dataVMAddr+dataVMSize, dataVMSize, dataOffset, dataOffset+dataSegmentFileSize)
-		w.logger.Printf("    __data section:  vm=0x%x-0x%x (size=0x%x), file=0x%x\n",
-			dataVMAddr, dataVMAddr+dataSize, dataSize, dataOffset)
-	}
-	w.logger.Printf("  __LINKEDIT:        vm=0x%x-0x%x (size=0x%x), file=0x%x\n",
-		linkeditVMAddr, linkeditVMAddr+linkeditVMSize, linkeditVMSize, linkeditOffset)
-	w.logger.Printf("\nEntry point:         0x%x (file offset 0x%x)\n", vmAddr+codeOffset, codeOffset)
-	w.logger.Printf("Total file size:     %d bytes\n", linkeditOffset+linkeditSize)
+	// Log structure info
+	w.logLayout(layout)
 
-	// Seek to code offset (leave room for codesign to add LC_CODE_SIGNATURE)
-	if _, err := file.Seek(int64(codeOffset), 0); err != nil {
+	return nil
+}
+
+// writeHeaderAndCommands writes the Mach-O header and all load commands.
+func (w *MachOWriter) writeHeaderAndCommands(file *os.File, layout *executableLayout, cmds *loadCommands) error {
+	bw := newBinaryWriter(file)
+
+	// Header
+	bw.write(&cmds.header)
+
+	// Segments and sections
+	bw.write(&cmds.pagezero)
+	bw.write(&cmds.textSegment)
+	bw.write(&cmds.textSection)
+	if layout.hasDataSection {
+		bw.write(&cmds.dataSegment)
+		bw.write(&cmds.dataSection)
+	}
+	bw.write(&cmds.linkedit)
+
+	// Dylinker
+	bw.write(&cmds.dylinker)
+	bw.writeBytes(cmds.dylinkerPath)
+
+	// Dylib
+	bw.write(&cmds.dylib)
+	bw.writeBytes(cmds.dylibPath)
+
+	// Other commands
+	bw.write(&cmds.entryPoint)
+	bw.write(&cmds.uuid)
+	bw.write(&cmds.buildVersion)
+	bw.write(&cmds.buildTool)
+	bw.write(&cmds.sourceVersion)
+	bw.write(&cmds.chainedFixups)
+	bw.write(&cmds.exportsTrie)
+	bw.write(&cmds.symtab)
+	bw.write(&cmds.dysymtab)
+	bw.write(&cmds.functionStarts)
+	bw.write(&cmds.dataInCode)
+	bw.write(&cmds.codeSignature)
+
+	return bw.error()
+}
+
+// writeSegmentData writes the actual segment content (code, data, linkedit).
+func (w *MachOWriter) writeSegmentData(file *os.File, layout *executableLayout, code, data []byte, relocations []DataRelocation) error {
+	// Seek to code offset
+	if _, err := file.Seek(int64(layout.codeOffset), 0); err != nil {
 		return err
 	}
+
+	bw := newBinaryWriter(file)
 
 	// Write code
-	_, err = file.Write(code)
-	if err != nil {
-		return err
+	bw.writeBytes(code)
+
+	// Pad __TEXT segment
+	textPadding := int(layout.textSegmentFileSize - layout.codeOffset - layout.codeSize)
+	bw.writePadding(textPadding)
+
+	// Write __DATA segment
+	if layout.hasDataSection {
+		// Generate chained fixups (this modifies data in-place)
+		chainedFixupsData := generateChainedFixupsWithRelocations(data, relocations, layout.dataVMAddr, layout.textVMAddr)
+		bw.writeBytes(data)
+		dataPadding := int(layout.dataSegmentFileSize - layout.dataSize)
+		bw.writePadding(dataPadding)
+
+		// Write __LINKEDIT contents
+		bw.writeBytes(chainedFixupsData)
+	} else {
+		// Write minimal chained fixups
+		chainedFixupsData := generateMinimalChainedFixups()
+		bw.writeBytes(chainedFixupsData)
 	}
 
-	// Pad the __TEXT segment to match file size
-	// The __TEXT segment starts at file offset 0 and should have filesize = textSegmentFileSize
-	currentPos := codeOffset + machineCodeSize
-	textPadding := textSegmentFileSize - currentPos
-	if textPadding > 0 {
-		padding := make([]byte, textPadding)
-		if _, err := file.Write(padding); err != nil {
-			return err
-		}
-	}
+	// Write exports trie
+	exportsTrieData := generateMinimalExportsTrie(layout.codeOffset)
+	bw.writeBytes(exportsTrieData)
 
-	// Write __DATA segment data (if we have data)
-	if hasDataSection {
-		// We're now at dataOffset (which equals textSegmentFileSize)
-		if _, err := file.Write(data); err != nil {
-			return err
-		}
-		// Pad to fill the data segment
-		dataPadding := dataSegmentFileSize - dataSize
-		if dataPadding > 0 {
-			padding := make([]byte, dataPadding)
-			if _, err := file.Write(padding); err != nil {
-				return err
-			}
-		}
-	}
-
-	// Write __LINKEDIT segment data
-	// First, write the chained fixups data (56 bytes)
-	chainedFixupsData := generateMinimalChainedFixups()
-	if _, err := file.Write(chainedFixupsData); err != nil {
-		return err
-	}
-
-	// Write the exports trie data
-	exportsTrieData := generateMinimalExportsTrie(codeOffset)
-	if _, err := file.Write(exportsTrieData); err != nil {
-		return err
-	}
-
-	// Write symbol table (nlist_64 entries)
-	// For _start symbol at address 0 in __text section
-	symbolEntry := make([]byte, 16)
-	binary.LittleEndian.PutUint32(symbolEntry[0:4], 1) // n_strx = 1 (offset in string table, after initial \0)
-	symbolEntry[4] = 0x0f                               // n_type = N_SECT | N_EXT (external symbol in a section)
-	symbolEntry[5] = 1                                  // n_sect = 1 (__text section)
-	binary.LittleEndian.PutUint16(symbolEntry[6:8], 0)  // n_desc = 0
-	binary.LittleEndian.PutUint64(symbolEntry[8:16], vmAddr+codeOffset) // n_value = VM address of _start
-	if _, err := file.Write(symbolEntry); err != nil {
-		return err
-	}
+	// Write symbol table entry
+	symbolEntry := make([]byte, Nlist64Size)
+	binary.LittleEndian.PutUint32(symbolEntry[0:4], 1)
+	symbolEntry[4] = 0x0f
+	symbolEntry[5] = 1
+	binary.LittleEndian.PutUint64(symbolEntry[8:16], layout.textVMAddr+layout.codeOffset)
+	bw.writeBytes(symbolEntry)
 
 	// Write string table
-	stringTable := make([]byte, 16)
-	stringTable[0] = ' '                // Initial space (standard practice)
-	copy(stringTable[1:], "_start\x00") // Symbol name + null terminator
-	// Rest is padding (already zero)
-	if _, err := file.Write(stringTable); err != nil {
-		return err
-	}
+	stringTable := make([]byte, StringTableSize)
+	stringTable[0] = ' '
+	copy(stringTable[1:], "_start\x00")
+	bw.writeBytes(stringTable)
 
-	// Write function starts data
-	// ULEB128 encoding of offset from __TEXT segment to first function
-	// For our case, the first (and only) function is at offset codeOffset
-	functionStartsData := generateFunctionStarts(codeOffset)
-	if _, err := file.Write(functionStartsData); err != nil {
-		return err
-	}
+	// Write function starts
+	functionStartsData := generateFunctionStarts(layout.codeOffset)
+	bw.writeBytes(functionStartsData)
 
-	// Now generate and write the code signature
-	// First, seek back to the beginning to read the file content for hashing
+	return bw.error()
+}
+
+// writeCodeSignature generates and writes the code signature.
+func (w *MachOWriter) writeCodeSignature(file *os.File, layout *executableLayout) error {
+	// Read file content for signing
 	if _, err := file.Seek(0, 0); err != nil {
 		return err
 	}
 
-	// Read the file content up to the signature offset
+	fileSizeForSig := int64(layout.signatureOffset)
 	fileContent := make([]byte, fileSizeForSig)
 	if _, err := io.ReadFull(file, fileContent); err != nil {
 		return err
 	}
 
-	// Generate the signature
-	signatureData := make([]byte, signatureSize)
-	codesign.Sign(signatureData, bytes.NewReader(fileContent), signatureID, fileSizeForSig, 0, int64(textSegmentFileSize), true)
+	// Generate signature
+	signatureID := "slasm-binary"
+	signatureData := make([]byte, layout.signatureSize)
+	codesign.Sign(signatureData, bytes.NewReader(fileContent), signatureID, fileSizeForSig, 0, int64(layout.textSegmentFileSize), true)
 
-	// Seek to the signature offset and write the signature
-	if _, err := file.Seek(int64(signatureOffset), 0); err != nil {
+	// Write signature
+	if _, err := file.Seek(int64(layout.signatureOffset), 0); err != nil {
 		return err
 	}
-	if _, err := file.Write(signatureData); err != nil {
-		return err
+	_, err := file.Write(signatureData)
+	return err
+}
+
+// logLayout logs the Mach-O structure information.
+func (w *MachOWriter) logLayout(layout *executableLayout) {
+	w.logger.Printf("\nMach-O Structure:\n")
+	w.logger.Printf("  Header:            size=%d bytes\n", layout.headerSize)
+	w.logger.Printf("  Load commands:     size=%d bytes, count=%d\n", layout.loadCmdsSize, layout.numLoadCmds)
+	w.logger.Printf("  Code offset:       0x%x (%d bytes)\n", layout.codeOffset, layout.codeOffset)
+	w.logger.Printf("  Code size:         %d bytes\n", layout.codeSize)
+	w.logger.Printf("\nSegments:\n")
+	w.logger.Printf("  __PAGEZERO:        vm=0x%x-0x%x (size=0x%x)\n", uint64(0), uint64(PageZeroSize), uint64(PageZeroSize))
+	w.logger.Printf("  __TEXT:            vm=0x%x-0x%x (size=0x%x), file=0x%x-0x%x\n",
+		layout.textVMAddr, layout.textVMAddr+layout.textVMSize, layout.textVMSize, uint64(0), layout.textSegmentFileSize)
+	w.logger.Printf("    __text section:  vm=0x%x-0x%x (size=0x%x), file=0x%x\n",
+		layout.textVMAddr+layout.codeOffset, layout.textVMAddr+layout.codeOffset+layout.codeSize, layout.codeSize, layout.codeOffset)
+	if layout.hasDataSection {
+		w.logger.Printf("  __DATA:            vm=0x%x-0x%x (size=0x%x), file=0x%x-0x%x\n",
+			layout.dataVMAddr, layout.dataVMAddr+layout.dataVMSize, layout.dataVMSize, layout.dataOffset, layout.dataOffset+layout.dataSegmentFileSize)
+		w.logger.Printf("    __data section:  vm=0x%x-0x%x (size=0x%x), file=0x%x\n",
+			layout.dataVMAddr, layout.dataVMAddr+layout.dataSize, layout.dataSize, layout.dataOffset)
 	}
-
-	w.logger.Printf("  Code signature:    offset=0x%x, size=%d bytes\n", signatureOffset, signatureSize)
-
-	return nil
+	w.logger.Printf("  __LINKEDIT:        vm=0x%x-0x%x (size=0x%x), file=0x%x\n",
+		layout.linkeditVMAddr, layout.linkeditVMAddr+layout.linkeditVMSize, layout.linkeditVMSize, layout.linkeditOffset)
+	w.logger.Printf("\nEntry point:         0x%x (file offset 0x%x)\n", layout.textVMAddr+layout.codeOffset, layout.codeOffset)
+	w.logger.Printf("Total file size:     %d bytes\n", layout.linkeditOffset+layout.linkeditSize)
+	w.logger.Printf("  Code signature:    offset=0x%x, size=%d bytes\n", layout.signatureOffset, layout.signatureSize)
 }
 
 // Mach-O constants and structures
@@ -704,7 +255,6 @@ const (
 	LC_MAIN                 = 0x80000028
 	LC_DYLD_CHAINED_FIXUPS  = 0x80000034
 	LC_DYLD_EXPORTS_TRIE    = 0x80000033
-	LC_DYLD_INFO_ONLY       = 0x80000022
 	LC_FUNCTION_STARTS      = 0x26
 	LC_DATA_IN_CODE         = 0x29
 
@@ -720,6 +270,76 @@ const (
 
 	// Platform types for LC_BUILD_VERSION
 	PLATFORM_MACOS = 0x1
+)
+
+// Memory layout constants
+const (
+	// VMBaseAddress is the standard base address for ARM64 macOS executables
+	VMBaseAddress = 0x100000000
+
+	// PageSize is the memory page size on ARM64 macOS (16KB)
+	PageSize = 0x4000
+
+	// PageZeroSize is the size of the __PAGEZERO segment (4GB null guard)
+	PageZeroSize = 0x100000000
+
+	// MinSegmentFileSize is the minimum file size for segments (matches system linker)
+	MinSegmentFileSize = 0x4000
+)
+
+// Structure sizes (in bytes)
+const (
+	MachHeader64Size      = 32
+	SegmentCommand64Size  = 72
+	Section64Size         = 80
+	EntryPointCmdSize     = 24
+	DylinkerCmdBaseSize   = 12 // Without path
+	DylibCmdBaseSize      = 24 // Without path
+	UUIDCmdSize           = 24
+	BuildVersionCmdSize   = 32 // With 1 tool entry
+	SourceVersionCmdSize  = 16
+	LinkeditDataCmdSize   = 16 // For chained fixups, exports trie, etc.
+	SymtabCmdSize         = 24
+	DysymtabCmdSize       = 80
+	CodeSignatureCmdSize  = 16
+	BuildToolVersionSize  = 8
+	Nlist64Size           = 16
+	FunctionStartsSize    = 8
+	StringTableSize       = 16
+	ExportsTrieSize       = 48
+)
+
+// Version constants
+const (
+	// MacOSMinVersion is the minimum macOS version (11.0.0 Big Sur)
+	MacOSMinVersion = 0x000b0000
+
+	// MacOSSDKVersion is the SDK version (15.0.0)
+	MacOSSDKVersion = 0x000f0000
+
+	// LibSystemVersion is the current libSystem version (1292.100.0)
+	LibSystemVersion = 0x050c6400
+
+	// LibSystemCompatVersion is the libSystem compatibility version (1.0.0)
+	LibSystemCompatVersion = 0x00010000
+
+	// LinkerToolVersion is the LD tool version for LC_BUILD_VERSION (1167.0)
+	LinkerToolVersion = 0x048f0000
+
+	// SourceVersionValue is the source version (1.0.0.0.0)
+	SourceVersionValue = 0x0001000000000000
+)
+
+// Section flags
+const (
+	// SectionFlagPureInstructions marks a section as containing only machine instructions
+	SectionFlagPureInstructions = 0x80000400
+)
+
+// Dyld paths
+const (
+	DylinkerPath  = "/usr/lib/dyld"
+	LibSystemPath = "/usr/lib/libSystem.B.dylib"
 )
 
 // machHeader64 represents the Mach-O file header
@@ -870,20 +490,509 @@ type dysymtabCommand struct {
 	Nlocrel        uint32 // Number of local relocation entries
 }
 
-// dyldInfoCommand represents the LC_DYLD_INFO_ONLY load command
-type dyldInfoCommand struct {
-	Cmd          uint32
-	Cmdsize      uint32
-	RebaseOff    uint32 // File offset to rebase info
-	RebaseSize   uint32 // Size of rebase info
-	BindOff      uint32 // File offset to binding info
-	BindSize     uint32 // Size of binding info
-	WeakBindOff  uint32 // File offset to weak binding info
-	WeakBindSize uint32 // Size of weak binding info
-	LazyBindOff  uint32 // File offset to lazy binding info
-	LazyBindSize uint32 // Size of lazy binding info
-	ExportOff    uint32 // File offset to export info
-	ExportSize   uint32 // Size of export info
+// binaryWriter wraps an io.Writer with deferred error handling for binary writes.
+// Once an error occurs, subsequent writes become no-ops.
+type binaryWriter struct {
+	w   io.Writer
+	err error
+}
+
+// newBinaryWriter creates a new binaryWriter wrapping the given writer.
+func newBinaryWriter(w io.Writer) *binaryWriter {
+	return &binaryWriter{w: w}
+}
+
+// write writes a fixed-size value in little-endian format.
+// If a previous write failed, this is a no-op.
+func (b *binaryWriter) write(data any) {
+	if b.err != nil {
+		return
+	}
+	b.err = binary.Write(b.w, binary.LittleEndian, data)
+}
+
+// writeBytes writes raw bytes.
+// If a previous write failed, this is a no-op.
+func (b *binaryWriter) writeBytes(data []byte) {
+	if b.err != nil {
+		return
+	}
+	_, b.err = b.w.Write(data)
+}
+
+// writePadding writes n zero bytes.
+// If a previous write failed, this is a no-op.
+func (b *binaryWriter) writePadding(n int) {
+	if b.err != nil || n <= 0 {
+		return
+	}
+	_, b.err = b.w.Write(make([]byte, n))
+}
+
+// error returns the first error that occurred, or nil.
+func (b *binaryWriter) error() error {
+	return b.err
+}
+
+// executableLayout holds all computed offsets and sizes for a Mach-O executable.
+type executableLayout struct {
+	// Header and load commands
+	headerSize   uint64
+	loadCmdsSize uint64
+	numLoadCmds  uint32
+
+	// __TEXT segment
+	codeOffset          uint64
+	codeSize            uint64
+	textSegmentFileOff  uint64
+	textSegmentFileSize uint64
+	textVMAddr          uint64
+	textVMSize          uint64
+
+	// __DATA segment (zero if no data)
+	hasDataSection      bool
+	dataOffset          uint64
+	dataSize            uint64
+	dataSegmentFileSize uint64
+	dataVMAddr          uint64
+	dataVMSize          uint64
+
+	// __LINKEDIT segment
+	linkeditOffset uint64
+	linkeditSize   uint64
+	linkeditVMAddr uint64
+	linkeditVMSize uint64
+
+	// Linkedit contents
+	chainedFixupsOffset  uint64
+	chainedFixupsSize    uint64
+	exportsTrieOffset    uint64
+	exportsTrieSize      uint64
+	symtabOffset         uint64
+	symtabSize           uint64
+	stringTableOffset    uint64
+	stringTableSize      uint64
+	functionStartsOffset uint64
+	functionStartsSize   uint64
+
+	// Code signature
+	signatureOffset uint64
+	signatureSize   uint64
+
+	// Dynamic library command sizes (for path alignment)
+	dylinkerCmdSize uint64
+	dylibCmdSize    uint64
+}
+
+// calculateLayout computes all offsets and sizes for the executable.
+func (w *MachOWriter) calculateLayout(code, data []byte, relocations []DataRelocation) *executableLayout {
+	layout := &executableLayout{}
+
+	// Fixed sizes
+	layout.headerSize = MachHeader64Size
+	layout.codeSize = uint64(len(code))
+	layout.dataSize = uint64(len(data))
+	layout.hasDataSection = len(data) > 0
+
+	// Dynamic library command sizes (path + null + alignment)
+	layout.dylinkerCmdSize = uint64(DylinkerCmdBaseSize + len(DylinkerPath) + 1)
+	layout.dylinkerCmdSize = (layout.dylinkerCmdSize + 7) &^ 7 // Align to 8 bytes
+
+	layout.dylibCmdSize = uint64(DylibCmdBaseSize + len(LibSystemPath) + 1)
+	layout.dylibCmdSize = (layout.dylibCmdSize + 7) &^ 7
+
+	// Calculate total load commands size
+	// Base commands: __PAGEZERO, __TEXT+section, __LINKEDIT, dylinker, dylib,
+	//                entry, uuid, build_version, source_version,
+	//                chained_fixups, exports_trie, symtab, dysymtab,
+	//                function_starts, data_in_code, code_signature
+	layout.loadCmdsSize = SegmentCommand64Size + // __PAGEZERO
+		SegmentCommand64Size + Section64Size + // __TEXT + __text
+		SegmentCommand64Size + // __LINKEDIT
+		layout.dylinkerCmdSize +
+		layout.dylibCmdSize +
+		EntryPointCmdSize +
+		UUIDCmdSize +
+		BuildVersionCmdSize +
+		SourceVersionCmdSize +
+		LinkeditDataCmdSize + // chained fixups
+		LinkeditDataCmdSize + // exports trie
+		SymtabCmdSize +
+		DysymtabCmdSize +
+		LinkeditDataCmdSize + // function starts
+		LinkeditDataCmdSize + // data in code
+		CodeSignatureCmdSize
+
+	layout.numLoadCmds = 16
+
+	// Add __DATA segment if needed
+	if layout.hasDataSection {
+		layout.loadCmdsSize += SegmentCommand64Size + Section64Size
+		layout.numLoadCmds++
+	}
+
+	// Code placement (after header + load commands, 8-byte aligned)
+	layout.codeOffset = layout.headerSize + layout.loadCmdsSize
+	layout.codeOffset = (layout.codeOffset + 7) &^ 7
+
+	// __TEXT segment: starts at file offset 0, includes header + code
+	layout.textSegmentFileOff = 0
+	layout.textVMAddr = VMBaseAddress
+	layout.textSegmentFileSize = MinSegmentFileSize
+	if (layout.codeOffset + layout.codeSize) > layout.textSegmentFileSize {
+		layout.textSegmentFileSize = ((layout.codeOffset + layout.codeSize + 0xFFF) / 0x1000) * 0x1000
+	}
+	layout.textVMSize = layout.textSegmentFileSize
+
+	// __DATA segment (if present)
+	if layout.hasDataSection {
+		layout.dataOffset = layout.textSegmentFileSize
+		layout.dataVMAddr = layout.textVMAddr + layout.textVMSize
+		layout.dataSegmentFileSize = MinSegmentFileSize
+		if layout.dataSize > layout.dataSegmentFileSize {
+			layout.dataSegmentFileSize = ((layout.dataSize + PageSize - 1) / PageSize) * PageSize
+		}
+		layout.dataVMSize = layout.dataSegmentFileSize
+	}
+
+	// __LINKEDIT segment
+	layout.linkeditOffset = layout.textSegmentFileSize + layout.dataSegmentFileSize
+	layout.linkeditVMAddr = layout.textVMAddr + layout.textVMSize + layout.dataVMSize
+
+	// Calculate chained fixups size (without modifying data)
+	dataCopy := make([]byte, len(data))
+	copy(dataCopy, data)
+	chainedFixupsData := generateChainedFixupsWithRelocations(dataCopy, relocations, layout.dataVMAddr, layout.textVMAddr)
+	layout.chainedFixupsSize = uint64(len(chainedFixupsData))
+	layout.chainedFixupsOffset = layout.linkeditOffset
+
+	layout.exportsTrieSize = ExportsTrieSize
+	layout.exportsTrieOffset = layout.chainedFixupsOffset + layout.chainedFixupsSize
+
+	layout.symtabSize = Nlist64Size // 1 symbol
+	layout.symtabOffset = layout.exportsTrieOffset + layout.exportsTrieSize
+
+	layout.stringTableSize = StringTableSize
+	layout.stringTableOffset = layout.symtabOffset + layout.symtabSize
+
+	layout.functionStartsSize = FunctionStartsSize
+	layout.functionStartsOffset = layout.stringTableOffset + layout.stringTableSize
+
+	// Code signature
+	linkeditDataBeforeSig := layout.chainedFixupsSize + layout.exportsTrieSize +
+		layout.symtabSize + layout.stringTableSize + layout.functionStartsSize
+	fileSizeForSig := int64(layout.linkeditOffset + linkeditDataBeforeSig)
+	signatureID := "slasm-binary"
+	layout.signatureSize = uint64(codesign.Size(fileSizeForSig, signatureID))
+	layout.signatureSize = (layout.signatureSize + 15) &^ 15 // Align to 16
+	layout.signatureOffset = layout.linkeditOffset + linkeditDataBeforeSig
+
+	// Total linkedit size
+	layout.linkeditSize = linkeditDataBeforeSig + layout.signatureSize
+	layout.linkeditVMSize = ((layout.linkeditSize + 0xFFF) / 0x1000) * 0x1000
+	if layout.linkeditVMSize < 0x1000 {
+		layout.linkeditVMSize = 0x1000
+	}
+
+	return layout
+}
+
+// loadCommands holds all Mach-O load commands for an executable.
+type loadCommands struct {
+	header         machHeader64
+	pagezero       segmentCommand64
+	textSegment    segmentCommand64
+	textSection    section64
+	dataSegment    segmentCommand64
+	dataSection    section64
+	linkedit       segmentCommand64
+	dylinker       dylinkerCommand
+	dylinkerPath   []byte
+	dylib          dylibCommand
+	dylibPath      []byte
+	entryPoint     entryPointCommand
+	uuid           uuidCommand
+	buildVersion   buildVersionCommand
+	buildTool      buildToolVersion
+	sourceVersion  sourceVersionCommand
+	chainedFixups  linkeditDataCommand
+	exportsTrie    linkeditDataCommand
+	symtab         symtabCommand
+	dysymtab       dysymtabCommand
+	functionStarts linkeditDataCommand
+	dataInCode     linkeditDataCommand
+	codeSignature  codeSignatureCommand
+}
+
+// buildLoadCommands constructs all Mach-O structures from the layout.
+func (w *MachOWriter) buildLoadCommands(layout *executableLayout, code, data []byte) *loadCommands {
+	cmds := &loadCommands{}
+
+	// Header
+	cmds.header = machHeader64{
+		Magic:      MH_MAGIC_64,
+		CPUType:    CPU_TYPE_ARM64,
+		CPUSubtype: CPU_SUBTYPE_ARM64,
+		FileType:   MH_EXECUTE,
+		NCmds:      layout.numLoadCmds,
+		SizeofCmds: uint32(layout.loadCmdsSize),
+		Flags:      MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL | MH_PIE,
+		Reserved:   0,
+	}
+
+	// __PAGEZERO
+	var pagezeroName [16]byte
+	copy(pagezeroName[:], "__PAGEZERO")
+	cmds.pagezero = segmentCommand64{
+		Cmd:      LC_SEGMENT_64,
+		Cmdsize:  SegmentCommand64Size,
+		Segname:  pagezeroName,
+		VMAddr:   0,
+		VMSize:   PageZeroSize,
+		FileOff:  0,
+		FileSize: 0,
+		MaxProt:  0,
+		InitProt: 0,
+		NSects:   0,
+		Flags:    0,
+	}
+
+	// __TEXT segment
+	var textSegname [16]byte
+	copy(textSegname[:], "__TEXT")
+	cmds.textSegment = segmentCommand64{
+		Cmd:      LC_SEGMENT_64,
+		Cmdsize:  uint32(SegmentCommand64Size + Section64Size),
+		Segname:  textSegname,
+		VMAddr:   layout.textVMAddr,
+		VMSize:   layout.textVMSize,
+		FileOff:  0,
+		FileSize: layout.textSegmentFileSize,
+		MaxProt:  VM_PROT_READ | VM_PROT_EXECUTE,
+		InitProt: VM_PROT_READ | VM_PROT_EXECUTE,
+		NSects:   1,
+		Flags:    0,
+	}
+
+	// __text section
+	var textSectname [16]byte
+	copy(textSectname[:], "__text")
+	cmds.textSection = section64{
+		Sectname:  textSectname,
+		Segname:   textSegname,
+		Addr:      layout.textVMAddr + layout.codeOffset,
+		Size:      layout.codeSize,
+		Offset:    uint32(layout.codeOffset),
+		Align:     2,
+		Reloff:    0,
+		Nreloc:    0,
+		Flags:     SectionFlagPureInstructions,
+		Reserved1: 0,
+		Reserved2: 0,
+		Reserved3: 0,
+	}
+
+	// __DATA segment (if present)
+	if layout.hasDataSection {
+		var dataSegname [16]byte
+		copy(dataSegname[:], "__DATA")
+		var dataSectname [16]byte
+		copy(dataSectname[:], "__data")
+
+		cmds.dataSegment = segmentCommand64{
+			Cmd:      LC_SEGMENT_64,
+			Cmdsize:  uint32(SegmentCommand64Size + Section64Size),
+			Segname:  dataSegname,
+			VMAddr:   layout.dataVMAddr,
+			VMSize:   layout.dataVMSize,
+			FileOff:  layout.dataOffset,
+			FileSize: layout.dataSegmentFileSize,
+			MaxProt:  VM_PROT_READ | VM_PROT_WRITE,
+			InitProt: VM_PROT_READ | VM_PROT_WRITE,
+			NSects:   1,
+			Flags:    0,
+		}
+
+		cmds.dataSection = section64{
+			Sectname:  dataSectname,
+			Segname:   dataSegname,
+			Addr:      layout.dataVMAddr,
+			Size:      layout.dataSize,
+			Offset:    uint32(layout.dataOffset),
+			Align:     3,
+			Reloff:    0,
+			Nreloc:    0,
+			Flags:     0,
+			Reserved1: 0,
+			Reserved2: 0,
+			Reserved3: 0,
+		}
+	}
+
+	// __LINKEDIT segment
+	var linkeditName [16]byte
+	copy(linkeditName[:], "__LINKEDIT")
+	cmds.linkedit = segmentCommand64{
+		Cmd:      LC_SEGMENT_64,
+		Cmdsize:  SegmentCommand64Size,
+		Segname:  linkeditName,
+		VMAddr:   layout.linkeditVMAddr,
+		VMSize:   layout.linkeditVMSize,
+		FileOff:  layout.linkeditOffset,
+		FileSize: layout.linkeditSize,
+		MaxProt:  VM_PROT_READ,
+		InitProt: VM_PROT_READ,
+		NSects:   0,
+		Flags:    0,
+	}
+
+	// Dylinker
+	cmds.dylinker = dylinkerCommand{
+		Cmd:     LC_LOAD_DYLINKER,
+		Cmdsize: uint32(layout.dylinkerCmdSize),
+		NameOff: DylinkerCmdBaseSize,
+	}
+	cmds.dylinkerPath = make([]byte, layout.dylinkerCmdSize-DylinkerCmdBaseSize)
+	copy(cmds.dylinkerPath, DylinkerPath)
+
+	// Dylib
+	cmds.dylib = dylibCommand{
+		Cmd:                  LC_LOAD_DYLIB,
+		Cmdsize:              uint32(layout.dylibCmdSize),
+		NameOff:              DylibCmdBaseSize,
+		Timestamp:            2,
+		CurrentVersion:       LibSystemVersion,
+		CompatibilityVersion: LibSystemCompatVersion,
+	}
+	cmds.dylibPath = make([]byte, layout.dylibCmdSize-DylibCmdBaseSize)
+	copy(cmds.dylibPath, LibSystemPath)
+
+	// Entry point
+	cmds.entryPoint = entryPointCommand{
+		Cmd:       LC_MAIN,
+		Cmdsize:   EntryPointCmdSize,
+		EntryOff:  layout.codeOffset,
+		StackSize: 0,
+	}
+
+	// UUID (content-based)
+	cmds.uuid = uuidCommand{
+		Cmd:     LC_UUID,
+		Cmdsize: UUIDCmdSize,
+		UUID:    generateContentUUID(code, data),
+	}
+
+	// Build version
+	cmds.buildVersion = buildVersionCommand{
+		Cmd:      LC_BUILD_VERSION,
+		Cmdsize:  BuildVersionCmdSize,
+		Platform: PLATFORM_MACOS,
+		Minos:    MacOSMinVersion,
+		Sdk:      MacOSSDKVersion,
+		Ntools:   1,
+	}
+	cmds.buildTool = buildToolVersion{
+		Tool:    3, // LD
+		Version: LinkerToolVersion,
+	}
+
+	// Source version
+	cmds.sourceVersion = sourceVersionCommand{
+		Cmd:     LC_SOURCE_VERSION,
+		Cmdsize: SourceVersionCmdSize,
+		Version: SourceVersionValue,
+	}
+
+	// Chained fixups
+	cmds.chainedFixups = linkeditDataCommand{
+		Cmd:      LC_DYLD_CHAINED_FIXUPS,
+		Cmdsize:  LinkeditDataCmdSize,
+		DataOff:  uint32(layout.chainedFixupsOffset),
+		DataSize: uint32(layout.chainedFixupsSize),
+	}
+
+	// Exports trie
+	cmds.exportsTrie = linkeditDataCommand{
+		Cmd:      LC_DYLD_EXPORTS_TRIE,
+		Cmdsize:  LinkeditDataCmdSize,
+		DataOff:  uint32(layout.exportsTrieOffset),
+		DataSize: uint32(layout.exportsTrieSize),
+	}
+
+	// Symtab
+	cmds.symtab = symtabCommand{
+		Cmd:     LC_SYMTAB,
+		Cmdsize: SymtabCmdSize,
+		Symoff:  uint32(layout.symtabOffset),
+		Nsyms:   1,
+		Stroff:  uint32(layout.stringTableOffset),
+		Strsize: uint32(layout.stringTableSize),
+	}
+
+	// Dysymtab
+	cmds.dysymtab = dysymtabCommand{
+		Cmd:        LC_DYSYMTAB,
+		Cmdsize:    DysymtabCmdSize,
+		Ilocalsym:  0,
+		Nlocalsym:  0,
+		Iextdefsym: 0,
+		Nextdefsym: 1,
+		Iundefsym:  1,
+		Nundefsym:  0,
+		// All other fields zero
+	}
+
+	// Function starts
+	cmds.functionStarts = linkeditDataCommand{
+		Cmd:      LC_FUNCTION_STARTS,
+		Cmdsize:  LinkeditDataCmdSize,
+		DataOff:  uint32(layout.functionStartsOffset),
+		DataSize: uint32(layout.functionStartsSize),
+	}
+
+	// Data in code
+	cmds.dataInCode = linkeditDataCommand{
+		Cmd:      LC_DATA_IN_CODE,
+		Cmdsize:  LinkeditDataCmdSize,
+		DataOff:  uint32(layout.functionStartsOffset + layout.functionStartsSize),
+		DataSize: 0,
+	}
+
+	// Code signature
+	cmds.codeSignature = codeSignatureCommand{
+		Cmd:      LC_CODE_SIGNATURE,
+		Cmdsize:  CodeSignatureCmdSize,
+		DataOff:  uint32(layout.signatureOffset),
+		DataSize: uint32(layout.signatureSize),
+	}
+
+	return cmds
+}
+
+// generateContentUUID generates a deterministic UUID from code and data content.
+func generateContentUUID(code, data []byte) [16]byte {
+	var uuid [16]byte
+
+	// Simple FNV-1a inspired hash
+	hash := uint64(14695981039346656037)
+	for _, b := range code {
+		hash ^= uint64(b)
+		hash *= 1099511628211
+	}
+	for _, b := range data {
+		hash ^= uint64(b)
+		hash *= 1099511628211
+	}
+
+	// Fill UUID with hash bytes
+	binary.LittleEndian.PutUint64(uuid[0:8], hash)
+	binary.LittleEndian.PutUint64(uuid[8:16], hash*1099511628211)
+
+	// Set UUID version 4 and variant 1
+	uuid[6] = (uuid[6] & 0x0f) | 0x40
+	uuid[8] = (uuid[8] & 0x3f) | 0x80
+
+	return uuid
 }
 
 // generateMinimalChainedFixups creates a minimal chained fixups data structure
@@ -909,6 +1018,183 @@ func generateMinimalChainedFixups() []byte {
 	// bytes 48-55: zeros (empty imports/symbols)
 
 	return buf
+}
+
+// Chained fixup constants
+const (
+	DYLD_CHAINED_PTR_64_OFFSET = 6 // pointer_format for 64-bit rebase-only fixups
+)
+
+// generateChainedFixupsWithRelocations creates chained fixups data for data section relocations.
+// It modifies the data bytes in-place to use chained pointer format (DYLD_CHAINED_PTR_64_OFFSET)
+// and generates proper chained fixups metadata for dyld to process at load time.
+//
+// The chained pointer format encodes:
+//   - bits 0-35:  target offset from image base
+//   - bits 36-43: high8 (high 8 bits of target, for addresses > 36 bits)
+//   - bits 44-50: reserved (must be 0)
+//   - bits 51-62: next (delta to next pointer in chain, in 4-byte units)
+//   - bit 63:     bind (0 for rebase, 1 for bind)
+func generateChainedFixupsWithRelocations(data []byte, relocations []DataRelocation, dataVMAddr uint64, imageBase uint64) []byte {
+	// If no relocations, return minimal fixups
+	if len(relocations) == 0 {
+		return generateMinimalChainedFixups()
+	}
+
+	// Sort relocations by offset to build the chain correctly
+	sortedRelocs := make([]DataRelocation, len(relocations))
+	copy(sortedRelocs, relocations)
+	sortDataRelocations(sortedRelocs)
+
+	// Group relocations by page (16KB pages on ARM64 macOS)
+	pageRelocs := make(map[uint64][]DataRelocation)
+	for _, reloc := range sortedRelocs {
+		pageNum := reloc.Offset / PageSize
+		pageRelocs[pageNum] = append(pageRelocs[pageNum], reloc)
+	}
+
+	// Find max page number
+	var maxPage uint64
+	for pageNum := range pageRelocs {
+		if pageNum > maxPage {
+			maxPage = pageNum
+		}
+	}
+	pageCount := int(maxPage + 1)
+
+	// Calculate sizes for the chained fixups structure
+	// Header: 32 bytes (dyld_chained_fixups_header with padding)
+	// starts_in_image: 4 + 4*4 = 20 bytes (seg_count + 4 segment offsets)
+	// starts_in_segment for DATA: 22 + 2*pageCount bytes (struct size)
+	headerSize := 32
+	startsInImageSize := 4 + 4*4 // seg_count + 4 segment offsets
+
+	// dyld_chained_starts_in_segment structure:
+	// size (4) + page_size (2) + pointer_format (2) + segment_offset (8) +
+	// max_valid_pointer (4) + page_count (2) + page_start[pageCount] (2*n)
+	// = 22 + 2*pageCount bytes
+	startsInSegmentSize := 22 + 2*pageCount
+
+	// Align startsInSegmentSize to 4 bytes for the structure padding
+	startsInSegmentSizeAligned := startsInSegmentSize
+	if startsInSegmentSizeAligned%4 != 0 {
+		startsInSegmentSizeAligned += 4 - (startsInSegmentSizeAligned % 4)
+	}
+
+	totalSize := headerSize + startsInImageSize + startsInSegmentSizeAligned
+	// Add padding to align to 8 bytes
+	if totalSize%8 != 0 {
+		totalSize += 8 - (totalSize % 8)
+	}
+
+	buf := make([]byte, totalSize)
+
+	// Offsets within the buffer
+	startsOffset := uint32(headerSize)
+	dataSegmentStartsOffset := uint32(startsInImageSize) // Relative to starts_in_image
+	importsOffset := uint32(totalSize - 8)
+	symbolsOffset := importsOffset
+
+	// dyld_chained_fixups_header (offset 0)
+	binary.LittleEndian.PutUint32(buf[0:4], 0)             // fixups_version = 0
+	binary.LittleEndian.PutUint32(buf[4:8], startsOffset)  // starts_offset
+	binary.LittleEndian.PutUint32(buf[8:12], importsOffset)
+	binary.LittleEndian.PutUint32(buf[12:16], symbolsOffset)
+	binary.LittleEndian.PutUint32(buf[16:20], 0) // imports_count = 0
+	binary.LittleEndian.PutUint32(buf[20:24], 1) // imports_format = 1 (DYLD_CHAINED_IMPORT)
+	// bytes 24-31: zeros (symbols_format = 0, padding)
+
+	// dyld_chained_starts_in_image (at startsOffset)
+	off := int(startsOffset)
+	binary.LittleEndian.PutUint32(buf[off:off+4], 4) // seg_count = 4 (PAGEZERO, TEXT, DATA, LINKEDIT)
+	off += 4
+	binary.LittleEndian.PutUint32(buf[off:off+4], 0) // seg_info_offset[0] = 0 (PAGEZERO - no fixups)
+	off += 4
+	binary.LittleEndian.PutUint32(buf[off:off+4], 0) // seg_info_offset[1] = 0 (TEXT - no fixups)
+	off += 4
+	binary.LittleEndian.PutUint32(buf[off:off+4], dataSegmentStartsOffset) // seg_info_offset[2] = offset to DATA starts
+	off += 4
+	binary.LittleEndian.PutUint32(buf[off:off+4], 0) // seg_info_offset[3] = 0 (LINKEDIT - no fixups)
+	off += 4
+
+	// dyld_chained_starts_in_segment for DATA (follows starts_in_image)
+	segmentStartsOff := int(startsOffset) + int(dataSegmentStartsOffset)
+	// size field is the actual structure size (not aligned)
+	binary.LittleEndian.PutUint32(buf[segmentStartsOff:segmentStartsOff+4], uint32(startsInSegmentSize)) // size
+	binary.LittleEndian.PutUint16(buf[segmentStartsOff+4:segmentStartsOff+6], PageSize)                   // page_size
+	binary.LittleEndian.PutUint16(buf[segmentStartsOff+6:segmentStartsOff+8], DYLD_CHAINED_PTR_64_OFFSET) // pointer_format
+	// segment_offset: VM offset from image base to the data segment
+	// For ARM64 macOS, the __DATA segment typically starts at 0x4000 (16KB) after __TEXT
+	binary.LittleEndian.PutUint64(buf[segmentStartsOff+8:segmentStartsOff+16], dataVMAddr-imageBase) // segment_offset
+	binary.LittleEndian.PutUint32(buf[segmentStartsOff+16:segmentStartsOff+20], 0)                   // max_valid_pointer (0 for 64-bit)
+	binary.LittleEndian.PutUint16(buf[segmentStartsOff+20:segmentStartsOff+22], uint16(pageCount))   // page_count
+
+	// page_start array
+	pageStartOff := segmentStartsOff + 22
+	for i := 0; i < pageCount; i++ {
+		relocs, hasRelocs := pageRelocs[uint64(i)]
+		if hasRelocs && len(relocs) > 0 {
+			// First relocation's offset within the page
+			firstOffset := relocs[0].Offset % PageSize
+			binary.LittleEndian.PutUint16(buf[pageStartOff+i*2:pageStartOff+i*2+2], uint16(firstOffset))
+		} else {
+			// DYLD_CHAINED_PTR_START_NONE = 0xFFFF
+			binary.LittleEndian.PutUint16(buf[pageStartOff+i*2:pageStartOff+i*2+2], 0xFFFF)
+		}
+	}
+
+	// Now modify the data bytes to use chained pointer format
+	// and link the pointers in each page together
+	for pageNum, relocs := range pageRelocs {
+		for i, reloc := range relocs {
+			// Calculate the target offset from image base
+			// The original TargetAddr is an absolute VM address
+			targetOffset := reloc.TargetAddr - imageBase
+
+			// Calculate delta to next pointer (in 4-byte units)
+			var nextDelta uint64 = 0
+			if i+1 < len(relocs) {
+				nextReloc := relocs[i+1]
+				// Both should be in the same page
+				if nextReloc.Offset/PageSize == pageNum {
+					delta := nextReloc.Offset - reloc.Offset
+					nextDelta = delta / 4 // Convert to 4-byte units
+				}
+			}
+
+			// Encode as DYLD_CHAINED_PTR_64_OFFSET
+			// bits 0-35:  target (36 bits)
+			// bits 36-43: high8 (8 bits)
+			// bits 44-50: reserved (7 bits, must be 0)
+			// bits 51-62: next (12 bits)
+			// bit 63:     bind (1 bit, 0 for rebase)
+			var encoded uint64
+			encoded |= targetOffset & 0xFFFFFFFFF        // bits 0-35: target (36 bits)
+			encoded |= (targetOffset >> 36) << 36 & 0xFF // bits 36-43: high8 (but target should fit in 36 bits)
+			// bits 44-50: reserved = 0
+			encoded |= (nextDelta & 0xFFF) << 51 // bits 51-62: next
+			// bit 63: bind = 0
+
+			// Write the encoded pointer back to data
+			binary.LittleEndian.PutUint64(data[reloc.Offset:reloc.Offset+8], encoded)
+		}
+	}
+
+	return buf
+}
+
+// sortDataRelocations sorts relocations by offset in ascending order
+func sortDataRelocations(relocs []DataRelocation) {
+	// Simple insertion sort (relocations list is typically small)
+	for i := 1; i < len(relocs); i++ {
+		key := relocs[i]
+		j := i - 1
+		for j >= 0 && relocs[j].Offset > key.Offset {
+			relocs[j+1] = relocs[j]
+			j--
+		}
+		relocs[j+1] = key
+	}
 }
 
 // generateMinimalExportsTrie creates a minimal exports trie for _start and _mh_execute_header
@@ -977,9 +1263,4 @@ func generateFunctionStarts(entryOffset uint64) []byte {
 	}
 	// Terminator (0) is already zero-initialized
 	return buf
-}
-
-// Helper function to write structs in little-endian format
-func writeStruct(file *os.File, data any) error {
-	return binary.Write(file, binary.LittleEndian, data)
 }

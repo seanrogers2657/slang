@@ -230,6 +230,7 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	encoder := NewEncoder(layout.GetSymbolTable(), layout.GetConstants())
 	var codeBytes []byte
 	var dataBytes []byte
+	var dataRelocations []DataRelocation
 	instructionCount := 0
 	dataItemCount := 0
 
@@ -288,18 +289,39 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 			}
 		} else if section.Type == SectionData {
 			for _, item := range section.Items {
-				if data, ok := item.(*DataDeclaration); ok {
+				switch v := item.(type) {
+				case *DataDeclaration:
 					currentAddr := uint64(len(dataBytes))
-					bytes, err := encoder.EncodeData(data)
+					bytes, relocs, err := encoder.EncodeDataWithRelocations(v, currentAddr)
 					if err != nil {
-						return fmt.Errorf("encoding error for data '.%s': %w", data.Type, err)
+						return fmt.Errorf("encoding error for data '.%s': %w", v.Type, err)
 					}
 
 					a.Logger.Printf("  [0x%04x] .%-10s %-20s -> %d bytes\n",
-						currentAddr, data.Type, truncateValue(data.Value, 20), len(bytes))
+						currentAddr, v.Type, truncateValue(v.Value, 20), len(bytes))
 
 					dataBytes = append(dataBytes, bytes...)
+					dataRelocations = append(dataRelocations, relocs...)
 					dataItemCount++
+
+				case *Directive:
+					// Handle alignment directives by emitting zero padding
+					if v.Name == "align" && len(v.Args) > 0 {
+						alignValue := parseAlignment(v.Args[0])
+						if alignValue > 0 {
+							alignment := uint64(1 << alignValue) // 2^n
+							currentAddr := uint64(len(dataBytes))
+							padding := alignmentPadding(currentAddr, alignment)
+							if padding > 0 {
+								a.Logger.Printf("  [0x%04x] .align %d -> %d bytes padding\n",
+									currentAddr, alignValue, padding)
+								// Emit zero padding for data section alignment
+								for i := uint64(0); i < padding; i++ {
+									dataBytes = append(dataBytes, 0)
+								}
+							}
+						}
+					}
 				}
 			}
 		}
@@ -316,7 +338,7 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 
 
 	writer := NewMachOWriter(a.Arch, a.Logger)
-	err = writer.WriteExecutable(opts.OutputPath, codeBytes, dataBytes, layout.GetSymbolTable(), a.EntryPoint)
+	err = writer.WriteExecutable(opts.OutputPath, codeBytes, dataBytes, dataRelocations, layout.GetSymbolTable(), a.EntryPoint)
 	if err != nil {
 		return fmt.Errorf("mach-o generation error: %w", err)
 	}

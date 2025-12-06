@@ -394,8 +394,8 @@ func compileSource(filename string, verbose bool, timer *timing.Timer) (string, 
 	if timer != nil {
 		timer.Start("Code Generation")
 	}
-	// Use typed code generator for type-aware code generation
-	typedCodeGenerator := codegen.NewTypedCodeGenerator(typedAST, sourceLines)
+	// Use typed code generator for type-aware code generation with filename for stack traces
+	typedCodeGenerator := codegen.NewTypedCodeGeneratorWithFilename(typedAST, sourceLines, filename)
 	assemblyOutput, err := typedCodeGenerator.Generate()
 	if err != nil {
 		return "", fmt.Errorf("code generation failed: %w", err)

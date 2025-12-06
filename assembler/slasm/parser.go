@@ -326,8 +326,21 @@ func (p *Parser) parseOperand() (*Operand, error) {
 		}, nil
 
 	case TokenIdentifier:
-		// Could be a label reference or part of @PAGE/@PAGEOFF
+		// Could be a shift modifier (lsl, asr), label reference, or @PAGE/@PAGEOFF
 		p.advance()
+
+		// Check if it's a shift modifier (lsl #N, asr #N, etc.)
+		if (tok.Value == "lsl" || tok.Value == "asr" || tok.Value == "lsr") && p.peek().Type == TokenHash {
+			shiftType := tok.Value
+			p.advance() // consume #
+			shiftAmount := p.advance()
+			return &Operand{
+				Type:      OperandShift,
+				Value:     shiftAmount.Value,
+				ShiftType: shiftType,
+			}, nil
+		}
+
 		operand := &Operand{
 			Type:  OperandLabel,
 			Value: tok.Value,

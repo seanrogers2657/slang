@@ -95,7 +95,7 @@ func runSlangTest(t *testing.T, tc *testutil.TestExpectation) {
 
 	// Semantic analysis stage
 	analyzer := semantic.NewAnalyzer("<test>")
-	semanticErrors, _ := analyzer.Analyze(program)
+	semanticErrors, typedAST := analyzer.Analyze(program)
 
 	if len(semanticErrors) > 0 {
 		if tc.ExpectError && tc.ErrorStage == "semantic" {
@@ -110,9 +110,9 @@ func runSlangTest(t *testing.T, tc *testutil.TestExpectation) {
 		t.Fatalf("expected %s error but compilation succeeded", tc.ErrorStage)
 	}
 
-	// Code generation stage - uses raw AST, not typed AST
+	// Code generation stage - uses typed AST for runtime checks
 	sourceLines := strings.Split(string(source), "\n")
-	generator := codegen.NewAsGenerator(program, sourceLines)
+	generator := codegen.NewTypedCodeGeneratorWithFilename(typedAST, sourceLines, tc.FilePath)
 	asmOutput, err := generator.Generate()
 
 	if err != nil {
@@ -125,9 +125,13 @@ func runSlangTest(t *testing.T, tc *testutil.TestExpectation) {
 		t.Fatalf("codegen error: %v", err)
 	}
 
-	// If stdout expectations exist, build and run with slasm
-	if tc.Stdout != "" || tc.ExitCode != 0 {
-		runWithSlasm(t, tc, asmOutput)
+	// If stdout expectations exist, build and run
+	if tc.Stdout != "" || tc.ExitCode != 0 || tc.StderrContains != "" {
+		if tc.RequiresSystemAsm {
+			runWithSystemAsm(t, tc, asmOutput)
+		} else {
+			runWithSlasm(t, tc, asmOutput)
+		}
 	}
 }
 
@@ -147,9 +151,54 @@ func runWithSlasm(t *testing.T, tc *testutil.TestExpectation, asmOutput string) 
 		t.Fatalf("slasm build failed: %v", err)
 	}
 
+	runAndCheck(t, tc, outputPath)
+}
+
+func runWithSystemAsm(t *testing.T, tc *testutil.TestExpectation, asmOutput string) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	safeName := strings.ReplaceAll(tc.Name, "/", "_")
+	asmPath := filepath.Join(tmpDir, fmt.Sprintf("%s.s", safeName))
+	objPath := filepath.Join(tmpDir, fmt.Sprintf("%s.o", safeName))
+	outputPath := filepath.Join(tmpDir, fmt.Sprintf("test_%s", safeName))
+
+	// Write assembly to file
+	if err := os.WriteFile(asmPath, []byte(asmOutput), 0644); err != nil {
+		t.Fatalf("failed to write asm file: %v", err)
+	}
+
+	// Assemble with system assembler
+	asCmd := exec.Command("as", "-arch", "arm64", "-o", objPath, asmPath)
+	if output, err := asCmd.CombinedOutput(); err != nil {
+		t.Fatalf("system assembler failed: %v\n%s", err, output)
+	}
+
+	// Link
+	ldCmd := exec.Command("ld",
+		"-o", outputPath,
+		"-lSystem",
+		"-syslibroot", "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+		"-e", "_start",
+		"-arch", "arm64",
+		objPath,
+	)
+	if output, err := ldCmd.CombinedOutput(); err != nil {
+		t.Fatalf("linker failed: %v\n%s", err, output)
+	}
+
+	runAndCheck(t, tc, outputPath)
+}
+
+func runAndCheck(t *testing.T, tc *testutil.TestExpectation, outputPath string) {
+	t.Helper()
+
 	// Execute the built program
 	cmd := exec.Command(outputPath)
-	output, err := cmd.CombinedOutput()
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
 
 	actualExit := 0
 	if exitErr, ok := err.(*exec.ExitError); ok {
@@ -160,13 +209,27 @@ func runWithSlasm(t *testing.T, tc *testutil.TestExpectation, asmOutput string) 
 
 	// Check exit code
 	if actualExit != tc.ExitCode {
-		t.Errorf("exit code: got %d, want %d", actualExit, tc.ExitCode)
+		t.Errorf("exit code: got %d, want %d\nstdout: %s\nstderr: %s", actualExit, tc.ExitCode, stdout.String(), stderr.String())
 	}
 
 	// Check stdout if specified
 	if tc.Stdout != "" {
-		if string(output) != tc.Stdout {
-			t.Errorf("stdout:\ngot:  %q\nwant: %q", string(output), tc.Stdout)
+		if stdout.String() != tc.Stdout {
+			t.Errorf("stdout:\ngot:  %q\nwant: %q", stdout.String(), tc.Stdout)
+		}
+	}
+
+	// Check stderr if specified
+	if tc.Stderr != "" {
+		if stderr.String() != tc.Stderr {
+			t.Errorf("stderr:\ngot:  %q\nwant: %q", stderr.String(), tc.Stderr)
+		}
+	}
+
+	// Check stderr_contains if specified
+	if tc.StderrContains != "" {
+		if !strings.Contains(stderr.String(), tc.StderrContains) {
+			t.Errorf("stderr should contain %q, got: %q", tc.StderrContains, stderr.String())
 		}
 	}
 }

@@ -14,17 +14,30 @@ import (
 //   - Signed vs unsigned operations (sdiv vs udiv, etc.)
 //   - Float literals in the data section
 //   - String literal handling
+//   - Runtime boundary checks with panic on overflow/division-by-zero
+//   - Symbol table generation for stack traces
 type TypedCodeGenerator struct {
 	program     *semantic.TypedProgram
 	sourceLines []string
 	info        *ProgramInfo
+	filename    string
+	symtab      *SymbolTable
+	checkGen    *CheckGenerator
 }
 
 // NewTypedCodeGenerator creates a new typed code generator.
 func NewTypedCodeGenerator(program *semantic.TypedProgram, sourceLines []string) *TypedCodeGenerator {
+	return NewTypedCodeGeneratorWithFilename(program, sourceLines, "")
+}
+
+// NewTypedCodeGeneratorWithFilename creates a new typed code generator with source filename.
+func NewTypedCodeGeneratorWithFilename(program *semantic.TypedProgram, sourceLines []string, filename string) *TypedCodeGenerator {
 	return &TypedCodeGenerator{
 		program:     program,
 		sourceLines: sourceLines,
+		filename:    filename,
+		symtab:      NewSymbolTable(filename),
+		checkGen:    NewCheckGenerator(filename),
 	}
 }
 
@@ -54,6 +67,11 @@ func (g *TypedCodeGenerator) generateFunctionBasedProgram(builder *strings.Build
 	g.info = NewProgramInfo()
 	for _, fn := range functions {
 		g.info.CollectFromTypedFunction(fn)
+	}
+
+	// Register functions in symbol table for stack traces
+	for _, fn := range functions {
+		g.symtab.AddFunction(fn.Name, fn.FnKeyword.Line)
 	}
 
 	// Write .data section if needed
@@ -94,6 +112,12 @@ func (g *TypedCodeGenerator) generateFunctionBasedProgram(builder *strings.Build
 		builder.WriteString(code)
 		builder.WriteString("\n")
 	}
+
+	// Generate symbol table for stack traces
+	builder.WriteString(g.symtab.GenerateDataSection())
+
+	// Include runtime panic handler
+	builder.WriteString(RuntimePanicCode())
 
 	return builder.String(), nil
 }
@@ -136,6 +160,9 @@ func (g *TypedCodeGenerator) generateFunction(fn *semantic.TypedFunctionDecl) (s
 	}
 
 	EmitFunctionEpilogue(&builder, totalLocals > 0)
+
+	// Emit function end label for symbol table
+	builder.WriteString(GenerateFunctionEndLabel(fn.Name))
 
 	return builder.String(), nil
 }
@@ -338,7 +365,8 @@ func (g *TypedCodeGenerator) generateIntBinaryExpr(expr *semantic.TypedBinaryExp
 		isSigned = numType.IsSigned()
 	}
 
-	opCode, err := IntOperation(expr.Op, isSigned)
+	// Use checked operations with runtime overflow/division-by-zero detection
+	opCode, err := g.checkGen.IntOperationChecked(expr.Op, isSigned, expr.OpPos.Line)
 	if err != nil {
 		return "", err
 	}

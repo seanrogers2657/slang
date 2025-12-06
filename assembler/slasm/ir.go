@@ -61,6 +61,7 @@ const (
 	OperandImmediate
 	OperandLabel
 	OperandMemory
+	OperandShift // For lsl #N, asr #N, etc.
 )
 
 // Operand represents an instruction operand
@@ -73,6 +74,9 @@ type Operand struct {
 	Offset          string // offset value or register
 	Writeback       bool   // true for pre-indexed [base, #offset]!
 	PostIndexOffset string // for post-indexed [base], #offset
+
+	// For shift operands (lsl #N, lsr #N, asr #N)
+	ShiftType string // "lsl", "lsr", or "asr"
 }
 
 // DataDeclaration represents a data declaration (.byte, .space, .asciz, etc.)
@@ -92,3 +96,12 @@ type ConstantDef struct {
 }
 
 func (c *ConstantDef) isItem() {}
+
+// DataRelocation represents a location in the data section that needs a rebase fixup
+// This is needed for PIE executables when data contains pointers to code/data labels
+type DataRelocation struct {
+	Offset     uint64 // Offset within the data section
+	Size       int    // Size of the pointer (typically 8 for .quad)
+	TargetAddr uint64 // The absolute VM address that was written
+}
+

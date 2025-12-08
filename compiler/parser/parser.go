@@ -597,22 +597,26 @@ func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 	rightParen := p.CurrentToken().Pos
 	p.advance() // consume ')'
 
-	// Expect ':' for return type
-	if p.CurrentToken().Type != lexer.TokenTypeColon {
-		p.Errors = append(p.Errors, fmt.Errorf("expected ':' after ')' for return type, got %s", p.CurrentToken().Value))
-		return nil
-	}
-	p.advance() // consume ':'
+	// Check for optional return type annotation
+	var returnType string
+	var returnPos ast.Position
+	if p.CurrentToken().Type == lexer.TokenTypeColon {
+		p.advance() // consume ':'
 
-	// Expect return type identifier
-	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-		p.Errors = append(p.Errors, fmt.Errorf("expected return type, got %s", p.CurrentToken().Value))
-		return nil
-	}
+		// Expect return type identifier
+		if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+			p.Errors = append(p.Errors, fmt.Errorf("expected return type, got %s", p.CurrentToken().Value))
+			return nil
+		}
 
-	returnType := p.CurrentToken().Value
-	returnPos := p.CurrentToken().Pos
-	p.advance() // consume return type
+		returnType = p.CurrentToken().Value
+		returnPos = p.CurrentToken().Pos
+		p.advance() // consume return type
+	} else {
+		// No return type specified - default to void
+		returnType = "void"
+		// returnPos stays as zero value
+	}
 
 	// Skip newlines before body
 	p.skipNewlines()

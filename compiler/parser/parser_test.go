@@ -1223,6 +1223,99 @@ func TestParserTypeAnnotation(t *testing.T) {
 	}
 }
 
+func TestParserOptionalReturnType(t *testing.T) {
+	tests := []struct {
+		name               string
+		source             string
+		expectedName       string
+		expectedReturnType string
+		expectedBody       int
+	}{
+		{
+			name:               "function without return type defaults to void",
+			source:             "fn main() {}",
+			expectedName:       "main",
+			expectedReturnType: "void",
+			expectedBody:       0,
+		},
+		{
+			name:               "function without return type with body",
+			source:             "fn main() {\n    print(42)\n}",
+			expectedName:       "main",
+			expectedReturnType: "void",
+			expectedBody:       1,
+		},
+		{
+			name:               "function with explicit void return type",
+			source:             "fn main(): void {}",
+			expectedName:       "main",
+			expectedReturnType: "void",
+			expectedBody:       0,
+		},
+		{
+			name:               "function with explicit i64 return type",
+			source:             "fn add(): i64 {\n    return 42\n}",
+			expectedName:       "add",
+			expectedReturnType: "i64",
+			expectedBody:       1,
+		},
+		{
+			name:               "function without return type and newline before body",
+			source:             "fn main()\n{}",
+			expectedName:       "main",
+			expectedReturnType: "void",
+			expectedBody:       0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			if program == nil {
+				t.Fatal("expected program, got nil")
+			}
+
+			if len(program.Declarations) != 1 {
+				t.Fatalf("expected 1 declaration, got %d", len(program.Declarations))
+			}
+
+			fnDecl, ok := program.Declarations[0].(*ast.FunctionDecl)
+			if !ok {
+				t.Fatal("expected FunctionDecl")
+			}
+
+			if fnDecl.Name != tt.expectedName {
+				t.Errorf("expected function name %q, got %q", tt.expectedName, fnDecl.Name)
+			}
+
+			if fnDecl.ReturnType != tt.expectedReturnType {
+				t.Errorf("expected return type %q, got %q", tt.expectedReturnType, fnDecl.ReturnType)
+			}
+
+			if fnDecl.Body == nil {
+				t.Fatal("expected function body, got nil")
+			}
+
+			if len(fnDecl.Body.Statements) != tt.expectedBody {
+				t.Errorf("expected %d statements in body, got %d", tt.expectedBody, len(fnDecl.Body.Statements))
+			}
+		})
+	}
+}
+
 func TestParserMultipleVariables(t *testing.T) {
 	source := `fn main(): void {
     val x = 5

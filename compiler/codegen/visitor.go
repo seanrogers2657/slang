@@ -3,8 +3,8 @@ package codegen
 import (
 	"fmt"
 
-	"github.com/seanrogers2657/slang/frontend/ast"
-	"github.com/seanrogers2657/slang/frontend/semantic"
+	"github.com/seanrogers2657/slang/compiler/ast"
+	"github.com/seanrogers2657/slang/compiler/semantic"
 )
 
 // LiteralInfo holds information about a collected literal.

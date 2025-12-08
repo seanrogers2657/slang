@@ -5,7 +5,7 @@ package amd64
 import (
 	"fmt"
 
-	"github.com/seanrogers2657/slang/backend/arch"
+	"github.com/seanrogers2657/slang/compiler/arch"
 )
 
 // Emitter implements arch.Emitter for AMD64.

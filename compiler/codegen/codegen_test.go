@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/seanrogers2657/slang/frontend/ast"
+	"github.com/seanrogers2657/slang/compiler/ast"
 )
 
 // makeMainFunction creates a main function declaration wrapping the given statements

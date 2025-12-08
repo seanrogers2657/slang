@@ -29,10 +29,10 @@ This repository follows strict organizational rules:
 
 **Slang** is a compiler for a simple programming language written in Go. It targets ARM64 assembly for macOS. The compiler follows a traditional four-stage pipeline:
 
-1. **Lexer** (`frontend/lexer`) - Tokenizes source code into tokens
-2. **Parser** (`frontend/parser`) - Builds an Abstract Syntax Tree (AST) from tokens
-3. **Semantic Analyzer** (`frontend/semantic`) - Performs type checking and semantic analysis
-4. **Code Generator** (`backend/codegen`) - Generates ARM64 assembly from the AST
+1. **Lexer** (`compiler/lexer`) - Tokenizes source code into tokens
+2. **Parser** (`compiler/parser`) - Builds an Abstract Syntax Tree (AST) from tokens
+3. **Semantic Analyzer** (`compiler/semantic`) - Performs type checking and semantic analysis
+4. **Code Generator** (`compiler/codegen`) - Generates ARM64 assembly from the AST
 
 The compiler currently supports:
 - **Variables**: Immutable (`val`) and mutable (`var`) variables (e.g., `val x = 5`, `var y = 10`)
@@ -182,12 +182,12 @@ Linker (ld) → Executable binary
 
 ### Key Data Structures
 
-**Lexer** (`frontend/lexer/lexer.go`):
+**Lexer** (`compiler/lexer/lexer.go`):
 - `Token` - Represents a single token with `Type` and `Value`
 - `TokenType` - Enum for token types (Integer, Plus, Minus, etc.)
 - Outputs: `[]Token` and `[]error`
 
-**Parser** (`frontend/parser/parser.go`):
+**Parser** (`compiler/parser/parser.go`):
 - Uses Pratt parsing for proper operator precedence
 - `LiteralExpr` - Represents number/string literals
 - `IdentifierExpr` - Represents variable references (e.g., `x`, `myVar`)
@@ -196,7 +196,7 @@ Linker (ld) → Executable binary
 - `FunctionDecl` - Function declaration with name and body
 - Outputs: `*Program` and `[]error`
 
-**Semantic Analyzer** (`frontend/semantic/analyzer.go`):
+**Semantic Analyzer** (`compiler/semantic/analyzer.go`):
 - `Analyzer` - Performs type checking and semantic validation
 - `Scope` - Lexical scope with parent pointer for variable lookup
 - `Type` interface - Represents types in the type system (IntegerType, StringType, etc.)
@@ -212,7 +212,7 @@ Linker (ld) → Executable binary
   - Built-in functions are validated against their registered signatures
 - Outputs: `[]*CompilerError` and `*TypedProgram`
 
-**Error Framework** (`frontend/errors/`):
+**Error Framework** (`errors/`):
 - `CompilerError` - Rich error type with filename, position, and error span
 - `FormatError()` - Formats errors with source code context and color highlighting
 - Beautiful error messages showing:
@@ -223,7 +223,7 @@ Linker (ld) → Executable binary
   - Optional hints for fixing the error
   - Summary of total errors/warnings
 
-**Code Generator** (`backend/codegen/codegen.go`):
+**Code Generator** (`compiler/codegen/codegen.go`):
 - `AsGenerator` interface with `Generate() (string, error)`
 - `CodeGenContext` - Tracks variable stack offsets during code generation
 - Generates ARM64 assembly targeting macOS
@@ -278,15 +278,15 @@ _start:
 ## Testing Strategy
 
 The project has comprehensive test coverage:
-- Backend (Assembly Generator): 62.5%
-- Frontend (Lexer): 96.7%
-- Frontend (Parser): 60.4%
-- Frontend (Semantic Analyzer): 62.2%
-- Frontend (Error Framework): 89.6%
+- Codegen (Assembly Generator): 62.5%
+- Lexer: 96.7%
+- Parser: 60.4%
+- Semantic Analyzer: 62.2%
+- Error Framework: 89.6%
 
 All tests follow table-driven patterns with subtests using `t.Run()`. See `docs/TESTING.md` for detailed testing documentation.
 
-**Semantic Analysis Tests** (`frontend/semantic/analyzer_test.go`):
+**Semantic Analysis Tests** (`compiler/semantic/analyzer_test.go`):
 - Type checking for all operators (arithmetic and comparison)
 - Type error detection and reporting
 - Multi-statement program analysis
@@ -341,14 +341,14 @@ Supported directives:
 
 When adding a new operator, you must update three files:
 
-1. **Lexer** (`frontend/lexer/lexer.go`):
+1. **Lexer** (`compiler/lexer/lexer.go`):
    - Add `TokenType<OperatorName>` constant to the enum
    - Add parsing logic in the `Parse()` method
 
-2. **Parser** (`frontend/parser/parser.go`):
+2. **Parser** (`compiler/parser/parser.go`):
    - Add case in `ParseBinaryExpression()` switch statement
 
-3. **Code Generator** (`backend/codegen/codegen.go`):
+3. **Code Generator** (`compiler/codegen/codegen.go`):
    - Add case in `GenerateExprWithContext()` switch statement with ARM64 instructions
 
 4. **Tests**: Update test files for all three components
@@ -359,7 +359,7 @@ When adding a new operator, you must update three files:
 
 Built-in functions are registered in a central registry and handled specially by the semantic analyzer and code generator.
 
-1. **Registry** (`frontend/semantic/builtins.go`):
+1. **Registry** (`compiler/semantic/builtins.go`):
    - Add entry to the `Builtins` map with parameter types, return type, and flags
 
    ```go
@@ -370,11 +370,11 @@ Built-in functions are registered in a central registry and handled specially by
    }
    ```
 
-2. **Code Generator - Typed** (`backend/codegen/typed_codegen.go`):
+2. **Code Generator - Typed** (`compiler/codegen/typed_codegen.go`):
    - Add case in `generateBuiltinCall()` switch statement
    - Implement the generation function (e.g., `generateExitBuiltin()`)
 
-3. **Code Generator - AST** (`backend/codegen/codegen.go`):
+3. **Code Generator - AST** (`compiler/codegen/codegen.go`):
    - Add case in `generateBuiltinCallAST()` switch statement
    - Implement the generation function (e.g., `generateExitBuiltinAST()`)
 

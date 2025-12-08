@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/seanrogers2657/slang/backend/arch"
+	"github.com/seanrogers2657/slang/compiler/arch"
 )
 
 // TestEmitterImplementsInterface verifies that Emitter implements arch.Emitter.

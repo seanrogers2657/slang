@@ -3,7 +3,7 @@ package semantic
 import (
 	"testing"
 
-	"github.com/seanrogers2657/slang/frontend/ast"
+	"github.com/seanrogers2657/slang/compiler/ast"
 )
 
 func TestAnalyzeLiteral(t *testing.T) {

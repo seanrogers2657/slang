@@ -3,8 +3,8 @@ package codegen
 import (
 	"strings"
 
-	"github.com/seanrogers2657/slang/backend/arch"
-	"github.com/seanrogers2657/slang/backend/arch/arm64"
+	"github.com/seanrogers2657/slang/compiler/arch"
+	"github.com/seanrogers2657/slang/compiler/arch/arm64"
 )
 
 // defaultEmitter is the default architecture emitter (ARM64 for now).

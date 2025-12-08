@@ -5,8 +5,8 @@ import (
 	"math/big"
 	"strconv"
 
+	"github.com/seanrogers2657/slang/compiler/ast"
 	"github.com/seanrogers2657/slang/errors"
-	"github.com/seanrogers2657/slang/frontend/ast"
 )
 
 // toErrorPos converts an ast.Position to an errors.Position

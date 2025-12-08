@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/seanrogers2657/slang/runtime"
+	"github.com/seanrogers2657/slang/compiler/runtime"
 )
 
 // CheckGenerator manages runtime check code generation.

@@ -12,11 +12,11 @@ import (
 
 	"github.com/seanrogers2657/slang/assembler"
 	"github.com/seanrogers2657/slang/assembler/slasm"
-	"github.com/seanrogers2657/slang/backend/codegen"
+	"github.com/seanrogers2657/slang/compiler/codegen"
+	"github.com/seanrogers2657/slang/compiler/lexer"
+	"github.com/seanrogers2657/slang/compiler/parser"
+	"github.com/seanrogers2657/slang/compiler/semantic"
 	slangErrors "github.com/seanrogers2657/slang/errors"
-	"github.com/seanrogers2657/slang/frontend/lexer"
-	"github.com/seanrogers2657/slang/frontend/parser"
-	"github.com/seanrogers2657/slang/frontend/semantic"
 	"github.com/seanrogers2657/slang/test/testutil"
 )
 

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/seanrogers2657/slang/frontend/ast"
-	"github.com/seanrogers2657/slang/frontend/semantic"
+	"github.com/seanrogers2657/slang/compiler/ast"
+	"github.com/seanrogers2657/slang/compiler/semantic"
 )
 
 func TestNewBaseContext(t *testing.T) {

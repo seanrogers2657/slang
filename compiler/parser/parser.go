@@ -3,8 +3,8 @@ package parser
 import (
 	"fmt"
 
-	"github.com/seanrogers2657/slang/frontend/ast"
-	"github.com/seanrogers2657/slang/frontend/lexer"
+	"github.com/seanrogers2657/slang/compiler/ast"
+	"github.com/seanrogers2657/slang/compiler/lexer"
 )
 
 // Precedence levels for operators (higher = tighter binding)

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"unicode"
 
-	"github.com/seanrogers2657/slang/frontend/ast"
+	"github.com/seanrogers2657/slang/compiler/ast"
 )
 
 type TokenType int

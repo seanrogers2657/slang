@@ -258,6 +258,7 @@ _walk_done:
 // Note: This function computes the ASLR slide to correctly compare addresses.
 // The symbol table stores absolute addresses based on preferred load address,
 // but at runtime the binary may be loaded at a different address.
+// Also looks up the line number table for exact call site line numbers.
 // ============================================================================
 .align 4
 _slang_symtab_lookup:
@@ -265,6 +266,8 @@ _slang_symtab_lookup:
     mov x29, sp
     stp x19, x20, [sp, #-16]!
     stp x21, x22, [sp, #-16]!
+    stp x23, x24, [sp, #-16]!
+    stp x25, x26, [sp, #-16]!
 
     mov x19, x0                         // x19 = return address to look up
 
@@ -306,8 +309,46 @@ _lookup_loop:
     ldr x2, [x8, #32]
     add x2, x2, x22                     // file pointer (adjusted)
     ldr x3, [x8, #40]                   // file length (no adjustment)
-    ldr x4, [x8, #48]                   // line number (no adjustment)
+    ldr x4, [x8, #48]                   // line number (default: function start)
 
+    // Save function info before line table lookup
+    mov x23, x0                         // save name ptr
+    mov x24, x1                         // save name len
+    mov x25, x2                         // save file ptr
+    mov x26, x3                         // save file len
+    // x4 = default line number
+
+    // Now look up exact line number in line table
+    adrp x8, _slang_linetab@PAGE
+    add x8, x8, _slang_linetab@PAGEOFF
+
+_linetab_loop:
+    ldr x9, [x8]                        // address from line table (stored address)
+    cbz x9, _linetab_done               // sentinel = end of table, use default line
+
+    // Apply slide and check for exact match
+    add x9, x9, x22                     // x9 = actual address
+    cmp x19, x9
+    b.ne _linetab_next
+
+    // Found exact match! Load line number
+    ldr x4, [x8, #8]                    // x4 = line number from line table
+    b _linetab_done
+
+_linetab_next:
+    add x8, x8, #16                     // sizeof(LineEntry) = 2 * 8
+    b _linetab_loop
+
+_linetab_done:
+    // Restore function info (x4 already has the correct line number)
+    mov x0, x23                         // name ptr
+    mov x1, x24                         // name len
+    mov x2, x25                         // file ptr
+    mov x3, x26                         // file len
+    // x4 has line number (from line table if found, else function start)
+
+    ldp x25, x26, [sp], #16
+    ldp x23, x24, [sp], #16
     ldp x21, x22, [sp], #16
     ldp x19, x20, [sp], #16
     ldp x29, x30, [sp], #16
@@ -324,6 +365,8 @@ _lookup_notfound:
     mov x3, #0
     mov x4, #0
 
+    ldp x25, x26, [sp], #16
+    ldp x23, x24, [sp], #16
     ldp x21, x22, [sp], #16
     ldp x19, x20, [sp], #16
     ldp x29, x30, [sp], #16

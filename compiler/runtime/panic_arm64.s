@@ -229,13 +229,14 @@ _slang_panic:
 //   x1 = function name length
 //   x2 = filename pointer
 //   x3 = filename length
-//   x4 = line number
+//   x4 = line number (from line table if exact match, else function start line)
 // ============================================================================
 .align 4
 _slang_symtab_lookup:
     stp x29, x30, [sp, #-16]!
     mov x29, sp
     stp x19, x20, [sp, #-16]!
+    stp x23, x24, [sp, #-16]!
 
     mov x19, x0                         // Save return address
 
@@ -257,13 +258,50 @@ _slang_symtab_lookup:
     cmp x19, x10
     b.ge .Llookup_next
 
-    // Found! Load the entry data
+    // Found function! Load the entry data
     ldr x0, [x8, #16]                   // name pointer
     ldr x1, [x8, #24]                   // name length
     ldr x2, [x8, #32]                   // file pointer
     ldr x3, [x8, #40]                   // file length
-    ldr x4, [x8, #48]                   // line number
+    ldr x4, [x8, #48]                   // line number (default: function start)
 
+    // Save function info before line table lookup
+    mov x20, x0                         // save name ptr
+    mov x23, x1                         // save name len
+    mov x24, x2                         // save file ptr
+    // x3 = file len (we'll restore it later)
+    // x4 = default line number
+
+    // Now look up exact line number in line table
+    // x19 = return address we're looking for
+    adrp x8, _slang_linetab@PAGE
+    add x8, x8, _slang_linetab@PAGEOFF
+
+.Llinetab_loop:
+    ldr x9, [x8]                        // address from line table
+    cbz x9, .Llinetab_done              // sentinel = end of table, use default line
+
+    // Check for exact match
+    cmp x19, x9
+    b.ne .Llinetab_next
+
+    // Found exact match! Load line number
+    ldr x4, [x8, #8]                    // x4 = line number from line table
+    b .Llinetab_done
+
+.Llinetab_next:
+    add x8, x8, #16                     // sizeof(LineEntry) = 2 * 8
+    b .Llinetab_loop
+
+.Llinetab_done:
+    // Restore function info (x4 already has the line number)
+    mov x0, x20                         // name ptr
+    mov x1, x23                         // name len
+    mov x2, x24                         // file ptr
+    // x3 still has file len from symbol table lookup
+    // x4 has line number (from line table if found, else function start)
+
+    ldp x23, x24, [sp], #16
     ldp x19, x20, [sp], #16
     ldp x29, x30, [sp], #16
     ret
@@ -279,6 +317,7 @@ _slang_symtab_lookup:
     mov x3, #0
     mov x4, #0
 
+    ldp x23, x24, [sp], #16
     ldp x19, x20, [sp], #16
     ldp x29, x30, [sp], #16
     ret
@@ -362,4 +401,12 @@ _slang_itoa:
 .align 3
 .weak _slang_symtab
 _slang_symtab:
+    .quad 0                             // sentinel (empty table)
+
+// ============================================================================
+// Default empty line table (will be replaced by generated code)
+// ============================================================================
+.align 3
+.weak _slang_linetab
+_slang_linetab:
     .quad 0                             // sentinel (empty table)

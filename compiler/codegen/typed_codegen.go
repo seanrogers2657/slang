@@ -457,7 +457,8 @@ func (g *TypedCodeGenerator) generateCallExpr(call *semantic.TypedCallExpr, ctx 
 		builder.WriteString(code)
 	}
 
-	EmitBranchLink(&builder, call.Name)
+	// Use GenerateCallWithLine to emit bl with a label for line number tracking
+	builder.WriteString(g.symtab.GenerateCallWithLine(call.Name, call.NamePos.Line))
 	EmitMoveReg(&builder, "x2", "x0")
 
 	return builder.String(), nil

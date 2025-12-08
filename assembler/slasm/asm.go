@@ -35,26 +35,158 @@ func New() *NativeAssembler {
 // Assemble converts an assembly file (.s) to an object file (.o)
 // This is the native implementation that parses and encodes ARM64 assembly
 func (a *NativeAssembler) Assemble(inputPath, outputPath string) error {
-	// TODO: Implement native assembly
-	// 1. Read assembly file
-	// 2. Lex tokens
-	// 3. Parse into IR
-	// 4. Resolve symbols (two-pass)
-	// 5. Encode instructions
-	// 6. Generate Mach-O object file
-	return fmt.Errorf("native assembler not yet implemented")
+	a.Logger.Header("========== SLASM ASSEMBLER - OBJECT FILE GENERATION ==========")
+
+	// Step 1: Read assembly file
+	a.Logger.Section("STEP 1: READ SOURCE")
+	sourceBytes, err := os.ReadFile(inputPath)
+	if err != nil {
+		return fmt.Errorf("failed to read assembly file: %w", err)
+	}
+	assembly := string(sourceBytes)
+	a.Logger.Printf("Read %d bytes from %s\n", len(sourceBytes), inputPath)
+
+	// Step 2: Lex the assembly source
+	a.Logger.Section("STEP 2: LEXER")
+	lexer := NewLexer(assembly)
+	tokens, err := lexer.Tokenize()
+	if err != nil {
+		return fmt.Errorf("lexer error: %w", err)
+	}
+	a.Logger.Printf("Lexer produced %d tokens\n", len(tokens))
+
+	// Step 3: Parse tokens into IR
+	a.Logger.Section("STEP 3: PARSER")
+	parser := NewParser(tokens)
+	program, err := parser.Parse()
+	if err != nil {
+		return fmt.Errorf("parser error: %w", err)
+	}
+	a.Logger.Printf("Parser produced %d section(s)\n", len(program.Sections))
+
+	// Step 4: Calculate layout and build symbol table
+	a.Logger.Section("STEP 4: LAYOUT & SYMBOL TABLE")
+	layout := NewLayout(program)
+	err = layout.Calculate()
+	if err != nil {
+		return fmt.Errorf("layout error: %w", err)
+	}
+
+	symbolTable := layout.GetSymbolTable()
+	a.Logger.Printf("Symbol table contains %d symbols\n", symbolTable.Count())
+
+	// For object files, addresses are relative to section start (0-based)
+	// No need to adjust addresses like we do for executables
+
+	// Step 5: Encode instructions to machine code
+	a.Logger.Section("STEP 5: INSTRUCTION ENCODING")
+	encoder := NewEncoder(layout.GetSymbolTable(), layout.GetConstants())
+	var codeBytes []byte
+	var dataBytes []byte
+	instructionCount := 0
+	dataItemCount := 0
+
+	for _, section := range program.Sections {
+		if section.Type == SectionText {
+			for _, item := range section.Items {
+				switch v := item.(type) {
+				case *Instruction:
+					// For object files, use section-relative addresses
+					currentAddr := uint64(len(codeBytes))
+					machineCode, err := encoder.Encode(v, currentAddr)
+					if err != nil {
+						return fmt.Errorf("encoding error for instruction '%s': %w", v.Mnemonic, err)
+					}
+					codeBytes = append(codeBytes, machineCode...)
+					instructionCount++
+
+				case *Directive:
+					if v.Name == "align" && len(v.Args) > 0 {
+						alignValue := parseAlignment(v.Args[0])
+						if alignValue > 0 {
+							alignment := uint64(1 << alignValue)
+							relativeAddr := uint64(len(codeBytes))
+							padding := alignmentPadding(relativeAddr, alignment)
+							if padding > 0 {
+								for i := uint64(0); i < padding/4; i++ {
+									codeBytes = append(codeBytes, 0x1f, 0x20, 0x03, 0xd5) // NOP
+								}
+							}
+						}
+					}
+				}
+			}
+		} else if section.Type == SectionData {
+			for _, item := range section.Items {
+				switch v := item.(type) {
+				case *DataDeclaration:
+					currentAddr := uint64(len(dataBytes))
+					bytes, _, err := encoder.EncodeDataWithRelocations(v, currentAddr)
+					if err != nil {
+						return fmt.Errorf("encoding error for data '.%s': %w", v.Type, err)
+					}
+					dataBytes = append(dataBytes, bytes...)
+					dataItemCount++
+
+				case *Directive:
+					if v.Name == "align" && len(v.Args) > 0 {
+						alignValue := parseAlignment(v.Args[0])
+						if alignValue > 0 {
+							alignment := uint64(1 << alignValue)
+							currentAddr := uint64(len(dataBytes))
+							padding := alignmentPadding(currentAddr, alignment)
+							for i := uint64(0); i < padding; i++ {
+								dataBytes = append(dataBytes, 0)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	a.Logger.Printf("Encoded %d instructions (%d bytes)\n", instructionCount, len(codeBytes))
+	if dataItemCount > 0 {
+		a.Logger.Printf("Encoded %d data items (%d bytes)\n", dataItemCount, len(dataBytes))
+	}
+
+	// Step 6: Generate Mach-O object file
+	a.Logger.Section("STEP 6: MACH-O OBJECT FILE GENERATION")
+	writer := NewMachOWriter(a.Arch, a.Logger)
+	err = writer.WriteObjectFile(outputPath, codeBytes, dataBytes, layout.GetSymbolTable())
+	if err != nil {
+		return fmt.Errorf("object file generation error: %w", err)
+	}
+
+	a.Logger.Printf("Generated object file: %s\n", outputPath)
+
+	// Summary
+	a.Logger.Printf("\n========== ASSEMBLE SUMMARY ==========\n")
+	a.Logger.Printf("Input file:        %s\n", inputPath)
+	a.Logger.Printf("Output file:       %s\n", outputPath)
+	a.Logger.Printf("Architecture:      %s\n", a.Arch)
+	a.Logger.Printf("Instructions:      %d\n", instructionCount)
+	a.Logger.Printf("Code size:         %d bytes\n", len(codeBytes))
+	a.Logger.Printf("Data size:         %d bytes\n", len(dataBytes))
+	a.Logger.Printf("Symbols:           %d\n", symbolTable.Count())
+	a.Logger.Printf("=======================================\n\n")
+
+	return nil
 }
 
 // Link creates an executable from object files
 // This is the native implementation that links object files without using ld
 func (a *NativeAssembler) Link(objectFiles []string, outputPath string) error {
-	// TODO: Implement native linker
-	// 1. Read all object files
-	// 2. Resolve symbols across files
-	// 3. Apply relocations
-	// 4. Generate executable Mach-O
-	// 5. Link with system libraries if needed
-	return fmt.Errorf("native linker not yet implemented")
+	a.Logger.Header("========== SLASM LINKER ==========")
+
+	linker := NewLinker(a.Logger)
+	err := linker.Link(objectFiles, outputPath, a.EntryPoint)
+	if err != nil {
+		return fmt.Errorf("linker error: %w", err)
+	}
+
+	a.Logger.Printf("Successfully linked %d object file(s) -> %s\n", len(objectFiles), outputPath)
+	return nil
 }
 
 // Build performs the complete build process from assembly string to executable
@@ -146,35 +278,23 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 
 	symbolTable := layout.GetSymbolTable()
 	a.Logger.Printf("Symbol table (before adjustment):\n")
-	for name, sym := range symbolTable.symbols {
+	symbolTable.ForEach(func(name string, sym *Symbol) {
 		globalFlag := ""
 		if sym.Global {
 			globalFlag = " [GLOBAL]"
 		}
 		a.Logger.Printf("  %-15s: addr=0x%04x section=%v%s\n", name, sym.Address, sym.Section, globalFlag)
-	}
+	})
 
 	// Calculate base VM addresses for symbol adjustment
-	// These must match the values used in WriteExecutable
-	vmAddr := uint64(0x100000000) // Standard base for ARM64 executables
-	headerSize := uint64(32)
-	segmentCmdSize := uint64(72)
-	sectionHeaderSize := uint64(80)
-	pagezeroSize := uint64(72)
-	linkeditSegmentSize := uint64(72)
-	dylinkerCmdSize := uint64(32) // Aligned size for /usr/lib/dyld
-	dylibCmdSize := uint64(56)    // Aligned size for /usr/lib/libSystem.B.dylib
-	entryPointCmdSize := uint64(24)
-	uuidCmdSize := uint64(24)
-	buildVersionCmdSize := uint64(32)
-	sourceVersionCmdSize := uint64(16)
-	chainedFixupsCmdSize := uint64(16)
-	exportsTrieCmdSize := uint64(16)
-	symtabCmdSize := uint64(24)
-	dysymtabCmdSize := uint64(80)
-	functionStartsCmdSize := uint64(16)
-	dataInCodeCmdSize := uint64(16)
-	codeSignatureCmdSize := uint64(16)
+	// These must match the values used in WriteExecutable (using constants from macho.go)
+	vmAddr := uint64(VMBaseAddress)
+
+	// Calculate dylinker and dylib command sizes (path + alignment)
+	dylinkerCmdSize := uint64(DylinkerCmdBaseSize + len(DylinkerPath) + 1)
+	dylinkerCmdSize = (dylinkerCmdSize + 7) &^ 7 // Align to 8 bytes
+	dylibCmdSize := uint64(DylibCmdBaseSize + len(LibSystemPath) + 1)
+	dylibCmdSize = (dylibCmdSize + 7) &^ 7
 
 	// Check if we have data
 	hasData := false
@@ -185,27 +305,34 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 		}
 	}
 
-	// Calculate load commands size
-	loadCmdsSize := pagezeroSize + segmentCmdSize + sectionHeaderSize + linkeditSegmentSize +
-		dylinkerCmdSize + dylibCmdSize + entryPointCmdSize + uuidCmdSize +
-		buildVersionCmdSize + sourceVersionCmdSize +
-		chainedFixupsCmdSize + exportsTrieCmdSize +
-		symtabCmdSize + dysymtabCmdSize +
-		functionStartsCmdSize + dataInCodeCmdSize +
-		codeSignatureCmdSize
+	// Calculate load commands size using constants from macho.go
+	loadCmdsSize := uint64(SegmentCommand64Size) + // __PAGEZERO
+		uint64(SegmentCommand64Size+Section64Size) + // __TEXT + __text section
+		uint64(SegmentCommand64Size) + // __LINKEDIT
+		dylinkerCmdSize +
+		dylibCmdSize +
+		uint64(EntryPointCmdSize) +
+		uint64(UUIDCmdSize) +
+		uint64(BuildVersionCmdSize) +
+		uint64(SourceVersionCmdSize) +
+		uint64(LinkeditDataCmdSize) + // chained fixups
+		uint64(LinkeditDataCmdSize) + // exports trie
+		uint64(SymtabCmdSize) +
+		uint64(DysymtabCmdSize) +
+		uint64(LinkeditDataCmdSize) + // function starts
+		uint64(LinkeditDataCmdSize) + // data in code
+		uint64(CodeSignatureCmdSize)
 
 	if hasData {
-		dataSegmentCmdSize := uint64(72)
-		dataSectionSize := uint64(80)
-		loadCmdsSize += dataSegmentCmdSize + dataSectionSize
+		loadCmdsSize += uint64(SegmentCommand64Size + Section64Size) // __DATA + __data section
 	}
 
 	// Calculate code offset and base addresses
-	codeOffset := ((headerSize + loadCmdsSize + 7) / 8) * 8 // Align to 8 bytes
+	codeOffset := ((uint64(MachHeader64Size) + loadCmdsSize + 7) / 8) * 8 // Align to 8 bytes
 	textBase := vmAddr + codeOffset
 
 	// Calculate text segment size for data base calculation
-	textSegmentFileSize := uint64(0x4000) // 16KB minimum
+	textSegmentFileSize := uint64(MinSegmentFileSize) // 16KB minimum
 
 	// Calculate data base address
 	dataBase := vmAddr + textSegmentFileSize // Data comes after TEXT segment
@@ -214,18 +341,17 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	symbolTable.AdjustAddresses(textBase, dataBase)
 
 	a.Logger.Printf("\nSymbol table (after adjustment):\n")
-	for name, sym := range symbolTable.symbols {
+	symbolTable.ForEach(func(name string, sym *Symbol) {
 		globalFlag := ""
 		if sym.Global {
 			globalFlag = " [GLOBAL]"
 		}
 		a.Logger.Printf("  %-15s: addr=0x%08x section=%v%s\n", name, sym.Address, sym.Section, globalFlag)
-	}
+	})
 	a.Logger.Printf("\n")
 
 	// Step 4: Encode instructions to machine code
 	a.Logger.Section("STEP 4: INSTRUCTION ENCODING")
-
 
 	encoder := NewEncoder(layout.GetSymbolTable(), layout.GetConstants())
 	var codeBytes []byte
@@ -261,7 +387,7 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 						currentAddr,
 						fmt.Sprintf("%s %s", v.Mnemonic, operands),
 						machineCode[0], machineCode[1], machineCode[2], machineCode[3],
-						uint32(machineCode[0]) | uint32(machineCode[1])<<8 | uint32(machineCode[2])<<16 | uint32(machineCode[3])<<24)
+						uint32(machineCode[0])|uint32(machineCode[1])<<8|uint32(machineCode[2])<<16|uint32(machineCode[3])<<24)
 
 					codeBytes = append(codeBytes, machineCode...)
 					instructionCount++
@@ -336,7 +462,6 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	// Step 5: Generate Mach-O executable
 	a.Logger.Section("STEP 5: MACH-O GENERATION")
 
-
 	writer := NewMachOWriter(a.Arch, a.Logger)
 	err = writer.WriteExecutable(opts.OutputPath, codeBytes, dataBytes, dataRelocations, layout.GetSymbolTable(), a.EntryPoint)
 	if err != nil {
@@ -363,7 +488,7 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	a.Logger.Printf("Entry point:       %s\n", a.EntryPoint)
 	a.Logger.Printf("Instructions:      %d\n", instructionCount)
 	a.Logger.Printf("Code size:         %d bytes\n", len(codeBytes))
-	a.Logger.Printf("Symbols:           %d\n", len(symbolTable.symbols))
+	a.Logger.Printf("Symbols:           %d\n", symbolTable.Count())
 	a.Logger.Printf("===================================\n\n")
 
 	return nil

@@ -123,6 +123,18 @@ func (st *SymbolTable) All() []*Symbol {
 	return symbols
 }
 
+// Count returns the number of symbols in the table
+func (st *SymbolTable) Count() int {
+	return len(st.symbols)
+}
+
+// ForEach iterates over all symbols, calling the provided function for each
+func (st *SymbolTable) ForEach(fn func(name string, sym *Symbol)) {
+	for name, sym := range st.symbols {
+		fn(name, sym)
+	}
+}
+
 // AdjustAddresses adjusts symbol addresses based on section base addresses
 // This is called after Mach-O layout is calculated to convert relative
 // addresses to absolute VM addresses

@@ -19,7 +19,10 @@ type Section struct {
 	Items []Item
 }
 
-// Item represents an item in a section (directive, label, instruction, data)
+// Item represents an item in a section (directive, label, instruction, data).
+// This is a sealed interface - only types within this package can implement it.
+// The unexported isItem() method serves as a marker to prevent external implementations.
+// Implementations: *Directive, *Label, *Instruction, *DataDeclaration, *ConstantDef
 type Item interface {
 	isItem()
 }
@@ -104,4 +107,3 @@ type DataRelocation struct {
 	Size       int    // Size of the pointer (typically 8 for .quad)
 	TargetAddr uint64 // The absolute VM address that was written
 }
-

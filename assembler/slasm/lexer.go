@@ -1,6 +1,9 @@
 package slasm
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // TokenType represents the type of token in assembly source
 type TokenType int
@@ -154,6 +157,18 @@ func (l *Lexer) NextToken() Token {
 	}
 }
 
+// LexerErrors represents multiple lexer errors
+type LexerErrors struct {
+	Errors []error
+}
+
+func (e *LexerErrors) Error() string {
+	if len(e.Errors) == 1 {
+		return e.Errors[0].Error()
+	}
+	return fmt.Sprintf("%d lexer errors: %v (and %d more)", len(e.Errors), e.Errors[0], len(e.Errors)-1)
+}
+
 // Tokenize returns all tokens from the source
 func (l *Lexer) Tokenize() ([]Token, error) {
 	var tokens []Token
@@ -174,9 +189,9 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 		}
 	}
 
-	// Return first error if any
+	// Return all errors wrapped in LexerErrors
 	if len(errors) > 0 {
-		return tokens, errors[0]
+		return tokens, &LexerErrors{Errors: errors}
 	}
 
 	return tokens, nil
@@ -219,34 +234,34 @@ func (l *Lexer) isIdentifierChar(ch rune) bool {
 }
 
 func (l *Lexer) readComment(line, column int) Token {
-	value := ""
+	var sb strings.Builder
 	for l.pos < len(l.source) && l.current != '\n' {
-		value += string(l.current)
+		sb.WriteRune(l.current)
 		l.advance()
 	}
-	return Token{Type: TokenComment, Value: value, Line: line, Column: column}
+	return Token{Type: TokenComment, Value: sb.String(), Line: line, Column: column}
 }
 
 func (l *Lexer) readDirective(line, column int) Token {
-	value := ""
+	var sb strings.Builder
 	// Include the leading .
-	value += string(l.current)
+	sb.WriteRune(l.current)
 	l.advance()
 
 	// Read the rest of the directive name
 	for l.pos < len(l.source) && l.isIdentifierChar(l.current) {
-		value += string(l.current)
+		sb.WriteRune(l.current)
 		l.advance()
 	}
-	return Token{Type: TokenDirective, Value: value, Line: line, Column: column}
+	return Token{Type: TokenDirective, Value: sb.String(), Line: line, Column: column}
 }
 
 func (l *Lexer) readNumber(line, column int) Token {
-	value := ""
+	var sb strings.Builder
 
 	// Handle negative numbers
 	if l.current == '-' {
-		value += string(l.current)
+		sb.WriteRune(l.current)
 		l.advance()
 	}
 
@@ -254,25 +269,25 @@ func (l *Lexer) readNumber(line, column int) Token {
 	if l.current == '0' && l.pos+1 < len(l.source) {
 		next := rune(l.source[l.pos+1])
 		if next == 'x' || next == 'X' {
-			value += string(l.current) // '0'
+			sb.WriteRune(l.current) // '0'
 			l.advance()
-			value += string(l.current) // 'x' or 'X'
+			sb.WriteRune(l.current) // 'x' or 'X'
 			l.advance()
 			// Read hex digits
 			for l.pos < len(l.source) && l.isHexDigit(l.current) {
-				value += string(l.current)
+				sb.WriteRune(l.current)
 				l.advance()
 			}
-			return Token{Type: TokenInteger, Value: value, Line: line, Column: column}
+			return Token{Type: TokenInteger, Value: sb.String(), Line: line, Column: column}
 		}
 	}
 
 	// Read decimal digits
 	for l.pos < len(l.source) && l.current >= '0' && l.current <= '9' {
-		value += string(l.current)
+		sb.WriteRune(l.current)
 		l.advance()
 	}
-	return Token{Type: TokenInteger, Value: value, Line: line, Column: column}
+	return Token{Type: TokenInteger, Value: sb.String(), Line: line, Column: column}
 }
 
 func (l *Lexer) isHexDigit(ch rune) bool {
@@ -282,7 +297,7 @@ func (l *Lexer) isHexDigit(ch rune) bool {
 }
 
 func (l *Lexer) readString(line, column int) Token {
-	value := ""
+	var sb strings.Builder
 	l.advance() // Skip opening quote
 
 	for l.pos < len(l.source) && l.current != '"' {
@@ -292,20 +307,20 @@ func (l *Lexer) readString(line, column int) Token {
 			if l.pos < len(l.source) {
 				switch l.current {
 				case 'n':
-					value += "\\n"
+					sb.WriteString("\\n")
 				case 't':
-					value += "\\t"
+					sb.WriteString("\\t")
 				case '\\':
-					value += "\\\\"
+					sb.WriteString("\\\\")
 				case '"':
-					value += "\""
+					sb.WriteRune('"')
 				default:
-					value += string(l.current)
+					sb.WriteRune(l.current)
 				}
 				l.advance()
 			}
 		} else {
-			value += string(l.current)
+			sb.WriteRune(l.current)
 			l.advance()
 		}
 	}
@@ -314,29 +329,28 @@ func (l *Lexer) readString(line, column int) Token {
 		l.advance() // Skip closing quote
 	}
 
-	return Token{Type: TokenString, Value: value, Line: line, Column: column}
+	return Token{Type: TokenString, Value: sb.String(), Line: line, Column: column}
 }
 
 func (l *Lexer) readIdentifier(line, column int) Token {
-	value := ""
+	var sb strings.Builder
 	for l.pos < len(l.source) && l.isIdentifierChar(l.current) {
-		value += string(l.current)
+		sb.WriteRune(l.current)
 		l.advance()
 	}
+	value := sb.String()
 
 	// Check for conditional branch: b.cond (e.g., b.eq, b.ne, b.lt, b.gt, etc.)
 	if value == "b" && l.current == '.' {
 		l.advance() // consume the '.'
-		cond := ""
+		var condSb strings.Builder
 		for l.pos < len(l.source) && l.isIdentifierChar(l.current) {
-			cond += string(l.current)
+			condSb.WriteRune(l.current)
 			l.advance()
 		}
-		if isConditionCode(cond) {
-			return Token{Type: TokenIdentifier, Value: "b." + cond, Line: line, Column: column}
-		}
-		// If not a valid condition code, put it back by returning what we have
-		// This case shouldn't happen in well-formed assembly
+		cond := condSb.String()
+		// Return b.cond regardless of whether it's a valid condition code
+		// (let the encoder handle validation)
 		return Token{Type: TokenIdentifier, Value: "b." + cond, Line: line, Column: column}
 	}
 

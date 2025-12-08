@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 // Logger provides configurable logging for the assembler pipeline
@@ -82,9 +83,9 @@ func (l *Logger) SetWriter(writer io.Writer) {
 
 // Helper function to repeat a string
 func repeat(s string, count int) string {
-	result := ""
-	for i := 0; i < count; i++ {
-		result += s
+	if count <= 0 {
+		return ""
 	}
-	return result
+	// Use strings.Repeat for O(n) performance instead of O(n²) concatenation
+	return strings.Repeat(s, count)
 }

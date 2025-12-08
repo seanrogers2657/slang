@@ -106,8 +106,9 @@ func (p *Parser) Parse() (*Program, error) {
 			continue
 		}
 
-		// Unknown token, skip it
-		p.advance()
+		// Unknown token - return error instead of silently skipping
+		tok := p.peek()
+		return nil, fmt.Errorf("line %d:%d: unexpected token %v '%s'", tok.Line, tok.Column, tok.Type, tok.Value)
 	}
 
 	// Add the last section
@@ -243,7 +244,7 @@ func (p *Parser) parseDataDirective() (*DataDeclaration, error) {
 
 func (p *Parser) parseLabel() *Label {
 	tok := p.advance() // consume identifier
-	p.advance()         // consume colon
+	p.advance()        // consume colon
 
 	return &Label{
 		Name:   tok.Value,

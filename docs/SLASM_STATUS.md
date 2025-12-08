@@ -1,6 +1,6 @@
 # slasm Implementation Status
 
-Last updated: 2025-12-01
+Last updated: 2025-12-06
 
 **STATUS: ✅ FULLY WORKING** - Native ARM64 assembler with comprehensive instruction support!
 
@@ -74,6 +74,17 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - `asr Rd, Rn, #shift` → Arithmetic shift right (immediate, 0-63)
 - `asr Rd, Rn, Rm` → Arithmetic shift right (register)
 
+**Logical Operations:**
+- `and Rd, Rn, Rm` → Bitwise AND
+- `orr Rd, Rn, Rm` → Bitwise OR
+- `eor Rd, Rn, Rm` → Bitwise exclusive OR (XOR)
+- `mvn Rd, Rm` → Bitwise NOT (move negated)
+- `ands Rd, Rn, Rm` → Bitwise AND with flags update
+- `tst Rn, Rm` → Test bits (ANDS with Rd=XZR)
+- `bic Rd, Rn, Rm` → Bit clear (AND NOT)
+- `orn Rd, Rn, Rm` → OR NOT
+- `eon Rd, Rn, Rm` → Exclusive OR NOT
+
 **Comparison:**
 - `cmp Rn, #imm` → SUBS with Rd=XZR
 - `cmp Rn, Rm` → SUBS register with Rd=XZR
@@ -104,6 +115,10 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - `stp Rt1, Rt2, [Rn, #imm]` → Store pair with signed offset
 - `stp Rt1, Rt2, [Rn, #imm]!` → Store pair with pre-indexed writeback
 - `stp Rt1, Rt2, [Rn], #imm` → Store pair with post-indexed writeback
+- `ldrb Wt, [Xn, #imm]` → Load byte (unsigned offset)
+- `strb Wt, [Xn, #imm]` → Store byte (unsigned offset)
+- `ldrh Wt, [Xn, #imm]` → Load halfword (unsigned offset)
+- `strh Wt, [Xn, #imm]` → Store halfword (unsigned offset)
 
 **Data Encoding:**
 - `.byte` values → 1-byte encoding
@@ -172,10 +187,11 @@ The slasm assembler is a custom ARM64 assembler that generates Mach-O executable
 - All encoder tests ✅
   - Arithmetic: ADD, SUB, NEG, MUL, SDIV, UDIV, MSUB
   - Shift: LSL, LSR, ASR (immediate and register forms)
+  - Logical: AND, ORR, EOR, MVN, ANDS, TST, BIC, ORN, EON
   - Comparison: CMP, CSET
   - Branch: B, BL, BR, B.cond (all condition codes)
   - Address: ADR, ADRP
-  - Memory: LDR, STR, LDP, STP (including pre/post-indexed writeback)
+  - Memory: LDR, STR, LDP, STP, LDRB, STRB, LDRH, STRH (including pre/post-indexed writeback)
   - Data encoding: byte, word, quad, asciz, space
   - Constants: Resolution of assembly-time constants in immediates
 
@@ -241,37 +257,60 @@ Table-driven tests covering:
 ## Not Yet Implemented
 
 ### Instructions
-- Logical operations: `and`, `orr`, `eor`, `mvn`
 - Test bit and branch: `tbz`, `tbnz`
-- Compare and branch: `cbz`, `cbnz`
 - Sign-extending loads: `ldrsh`, `ldrsw`
 - 32-bit register variants for some operations
 
 ### Features
-- Object file generation (`.o` files)
-- Multi-file linking
-- Relocations for external symbols
 - BSS section
+- Cross-file symbol references (symbols must be defined in the same file)
+
+## Recently Added Features
+
+### Logical Operations (2025-12-06)
+Full support for bitwise logical operations:
+- `and`, `orr`, `eor`, `mvn`
+- `ands`, `tst`, `bic`, `orn`, `eon`
+
+### Halfword Memory Operations (2025-12-06)
+- `ldrh` - Load halfword (16-bit, zero-extended)
+- `strh` - Store halfword
+
+### Object File Generation (2025-12-06)
+- `slasm assemble -o output.o input.s` generates relocatable `.o` files
+- Mach-O MH_OBJECT format
+- Symbol table with local and global symbols
+
+### Multi-File Linking (2025-12-06)
+- `slasm link -o output file1.o file2.o` links multiple object files
+- Section merging (__text, __data)
+- Symbol resolution across files
+- Generates signed executable
+
+**Note:** Cross-file symbol references are not yet supported. All symbols must be defined within the same source file.
 
 ## File Structure
 
 ```
 assembler/slasm/
-├── asm.go           - Main assembler orchestration
-├── lexer.go         - Tokenization (with hex support)
-├── parser.go        - AST construction (with data directives)
-├── symbols.go       - Symbol table
-├── layout.go        - Two-pass address assignment
-├── encoder.go       - ARM64 instruction encoding
-├── macho.go         - Mach-O file generation
-├── ir.go            - Intermediate representation types
-├── util.go          - Utility functions
-├── logger.go        - Logging support
-├── codesign/        - Native code signing
-├── e2e_test.go      - End-to-end tests (table-driven)
-├── encoder_test.go  - Encoding unit tests
-├── lexer_test.go    - Lexer unit tests
-└── parser_test.go   - Parser unit tests
+├── asm.go            - Main assembler orchestration
+├── lexer.go          - Tokenization (with hex support)
+├── parser.go         - AST construction (with data directives)
+├── symbols.go        - Symbol table
+├── layout.go         - Two-pass address assignment
+├── encoder.go        - ARM64 instruction encoding
+├── macho.go          - Mach-O file generation (executable + object)
+├── ir.go             - Intermediate representation types
+├── util.go           - Utility functions
+├── logger.go         - Logging support
+├── relocations.go    - Relocation types and structures
+├── object_reader.go  - Mach-O object file parser
+├── linker.go         - Multi-file linker
+├── codesign/         - Native code signing
+├── e2e_test.go       - End-to-end tests (table-driven)
+├── encoder_test.go   - Encoding unit tests
+├── lexer_test.go     - Lexer unit tests
+└── parser_test.go    - Parser unit tests
 ```
 
 ## Usage
@@ -287,6 +326,12 @@ slasm build --backend system -o output input.s
 
 # Verbose output
 slasm build -v -o output input.s
+
+# Assemble to object file (.o)
+slasm assemble -o output.o input.s
+
+# Link multiple object files
+slasm link -o output file1.o file2.o
 ```
 
 ### Go API
@@ -309,6 +354,7 @@ _start:
     svc #0
 `
 
+    // Build directly to executable
     err := asm.Build(code, assembler.BuildOptions{
         OutputPath: "output",
     })
@@ -316,6 +362,18 @@ _start:
         panic(err)
     }
     // Binary is ready to execute - no codesign needed!
+
+    // Or assemble to object file
+    err = asm.Assemble("source.s", "output.o")
+    if err != nil {
+        panic(err)
+    }
+
+    // Link multiple object files
+    err = asm.Link([]string{"file1.o", "file2.o"}, "output")
+    if err != nil {
+        panic(err)
+    }
 }
 ```
 
@@ -331,7 +389,8 @@ _start:
 | Data directives | ✅ Parsing/encoding | ✅ Complete |
 | Instruction set | ⚠️ Core subset | ✅ Complete |
 | Execution | ✅ Works | ✅ Works |
-| Object files | ❌ Not implemented | ✅ Supported |
+| Object files | ✅ Supported | ✅ Supported |
+| Multi-file linking | ✅ Supported | ✅ Supported |
 | External dependencies | ✅ None | ❌ Requires Xcode |
 
 ## References

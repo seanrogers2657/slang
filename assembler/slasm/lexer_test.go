@@ -393,8 +393,8 @@ func TestLexer_ConditionalBranch(t *testing.T) {
 
 func TestLexer_RegisterRecognition(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      string
+		name        string
+		input       string
 		shouldBeReg bool
 	}{
 		{"x0", "x0", true},
@@ -405,8 +405,8 @@ func TestLexer_RegisterRecognition(t *testing.T) {
 		{"lr", "lr", true},
 		{"xzr", "xzr", true},
 		{"wzr", "wzr", true},
-		{"x31", "x31", false},  // Invalid - should be identifier
-		{"x99", "x99", false},  // Invalid - should be identifier
+		{"x31", "x31", false},   // Invalid - should be identifier
+		{"x99", "x99", false},   // Invalid - should be identifier
 		{"main", "main", false}, // Regular identifier
 	}
 

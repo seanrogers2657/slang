@@ -31,19 +31,291 @@ func NewMachOWriter(arch string, logger *Logger) *MachOWriter {
 
 // WriteObjectFile writes a Mach-O object file (.o)
 func (w *MachOWriter) WriteObjectFile(outputPath string, code []byte, data []byte, symbols *SymbolTable) error {
-	// TODO: Implement Mach-O object file generation
-	// Structure:
-	// 1. mach_header_64
-	// 2. Load commands:
-	//    - LC_SEGMENT_64 for __TEXT segment
-	//    - LC_SEGMENT_64 for __DATA segment
-	//    - LC_SYMTAB for symbol table
-	// 3. Section data (__text, __data)
-	// 4. Relocations
-	// 5. Symbol table
-	// 6. String table
+	// Object file structure:
+	// 1. mach_header_64 (FileType = MH_OBJECT)
+	// 2. LC_SEGMENT_64 (unnamed, containing all sections)
+	//    - __text section header
+	//    - __data section header (if data present)
+	// 3. LC_SYMTAB
+	// 4. LC_DYSYMTAB
+	// 5. Section data (__text, __data)
+	// 6. Relocation entries (after each section's data, referenced by section header)
+	// 7. Symbol table (nlist64 entries)
+	// 8. String table
 
-	return nil
+	hasData := len(data) > 0
+
+	// Calculate number of sections
+	numSections := uint32(1) // __text
+	if hasData {
+		numSections++
+	}
+
+	// Calculate sizes and offsets
+	headerSize := uint32(MachHeader64Size)
+
+	// Segment command size includes section headers
+	segmentCmdSize := uint32(SegmentCommand64Size) + numSections*uint32(Section64Size)
+	symtabCmdSize := uint32(SymtabCmdSize)
+	dysymtabCmdSize := uint32(DysymtabCmdSize)
+
+	loadCmdsSize := segmentCmdSize + symtabCmdSize + dysymtabCmdSize
+	numLoadCmds := uint32(3) // segment, symtab, dysymtab
+
+	// Section data starts after header + load commands, aligned to 4 bytes
+	sectionDataStart := align(headerSize+loadCmdsSize, 4)
+	textOffset := sectionDataStart
+	textSize := uint32(len(code))
+
+	// Data section follows text (if present)
+	dataOffset := uint32(0)
+	dataSize := uint32(0)
+	if hasData {
+		dataOffset = align(textOffset+textSize, 4)
+		dataSize = uint32(len(data))
+	}
+
+	// Calculate where symbol table and string table go
+	var symbolsOffset uint32
+	if hasData {
+		symbolsOffset = align(dataOffset+dataSize, 8)
+	} else {
+		symbolsOffset = align(textOffset+textSize, 8)
+	}
+
+	// Build symbol table entries
+	symEntries, stringTable := w.buildObjectSymbols(symbols)
+	numSymbols := uint32(len(symEntries))
+	symbolTableSize := numSymbols * uint32(Nlist64Size)
+
+	// String table follows symbol table
+	stringsOffset := symbolsOffset + symbolTableSize
+	stringTableSize := uint32(len(stringTable))
+
+	// Total file size
+	totalSize := stringsOffset + stringTableSize
+
+	// Create file
+	file, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	bw := newBinaryWriter(file)
+
+	// Write Mach-O header
+	header := machHeader64{
+		Magic:      MH_MAGIC_64,
+		CPUType:    CPU_TYPE_ARM64,
+		CPUSubtype: CPU_SUBTYPE_ARM64,
+		FileType:   MH_OBJECT,
+		NCmds:      numLoadCmds,
+		SizeofCmds: loadCmdsSize,
+		Flags:      MH_NOUNDEFS, // No undefined symbols in our simple case
+		Reserved:   0,
+	}
+	bw.write(&header)
+
+	// Write segment command (unnamed for object files)
+	var segmentSize uint64
+	if hasData {
+		segmentSize = uint64(dataOffset + dataSize - textOffset)
+	} else {
+		segmentSize = uint64(textSize)
+	}
+
+	segment := segmentCommand64{
+		Cmd:      LC_SEGMENT_64,
+		Cmdsize:  segmentCmdSize,
+		VMAddr:   0,
+		VMSize:   segmentSize,
+		FileOff:  uint64(textOffset),
+		FileSize: segmentSize,
+		MaxProt:  VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE,
+		InitProt: VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE,
+		NSects:   numSections,
+		Flags:    0,
+	}
+	// Leave Segname empty (unnamed segment for object files)
+	bw.write(&segment)
+
+	// Write __text section header
+	textSection := section64{
+		Addr:      0,
+		Size:      uint64(textSize),
+		Offset:    textOffset,
+		Align:     2, // 4-byte aligned (2^2)
+		Reloff:    0, // No relocations for now
+		Nreloc:    0,
+		Flags:     SectionFlagPureInstructions,
+		Reserved1: 0,
+		Reserved2: 0,
+		Reserved3: 0,
+	}
+	copy(textSection.Sectname[:], "__text")
+	copy(textSection.Segname[:], "__TEXT")
+	bw.write(&textSection)
+
+	// Write __data section header (if present)
+	if hasData {
+		dataSection := section64{
+			Addr:      uint64(dataOffset - textOffset), // Relative to segment start
+			Size:      uint64(dataSize),
+			Offset:    dataOffset,
+			Align:     3, // 8-byte aligned (2^3)
+			Reloff:    0, // No relocations for now
+			Nreloc:    0,
+			Flags:     0, // S_REGULAR
+			Reserved1: 0,
+			Reserved2: 0,
+			Reserved3: 0,
+		}
+		copy(dataSection.Sectname[:], "__data")
+		copy(dataSection.Segname[:], "__DATA")
+		bw.write(&dataSection)
+	}
+
+	// Write LC_SYMTAB
+	symtab := symtabCommand{
+		Cmd:     LC_SYMTAB,
+		Cmdsize: symtabCmdSize,
+		Symoff:  symbolsOffset,
+		Nsyms:   numSymbols,
+		Stroff:  stringsOffset,
+		Strsize: stringTableSize,
+	}
+	bw.write(&symtab)
+
+	// Write LC_DYSYMTAB
+	dysymtab := dysymtabCommand{
+		Cmd:            LC_DYSYMTAB,
+		Cmdsize:        dysymtabCmdSize,
+		Ilocalsym:      0,
+		Nlocalsym:      0,
+		Iextdefsym:     0,
+		Nextdefsym:     numSymbols,
+		Iundefsym:      numSymbols,
+		Nundefsym:      0,
+		Tocoff:         0,
+		Ntoc:           0,
+		Modtaboff:      0,
+		Nmodtab:        0,
+		Extrefsymoff:   0,
+		Nextrefsyms:    0,
+		Indirectsymoff: 0,
+		Nindirectsyms:  0,
+		Extreloff:      0,
+		Nextrel:        0,
+		Locreloff:      0,
+		Nlocrel:        0,
+	}
+	bw.write(&dysymtab)
+
+	// Pad to section data start
+	currentPos := headerSize + loadCmdsSize
+	if currentPos < sectionDataStart {
+		padding := make([]byte, sectionDataStart-currentPos)
+		bw.writeBytes(padding)
+	}
+
+	// Write __text section data
+	bw.writeBytes(code)
+
+	// Pad to data section (if present)
+	if hasData {
+		currentPos = textOffset + textSize
+		if currentPos < dataOffset {
+			padding := make([]byte, dataOffset-currentPos)
+			bw.writeBytes(padding)
+		}
+		bw.writeBytes(data)
+		currentPos = dataOffset + dataSize
+	} else {
+		currentPos = textOffset + textSize
+	}
+
+	// Pad to symbol table
+	if currentPos < symbolsOffset {
+		padding := make([]byte, symbolsOffset-currentPos)
+		bw.writeBytes(padding)
+	}
+
+	// Write symbol table entries
+	for _, sym := range symEntries {
+		bw.write(&sym)
+	}
+
+	// Write string table
+	bw.writeBytes(stringTable)
+
+	// Pad to total size if needed
+	currentPos = stringsOffset + stringTableSize
+	if currentPos < totalSize {
+		padding := make([]byte, totalSize-currentPos)
+		bw.writeBytes(padding)
+	}
+
+	w.logger.Printf("Object file structure:\n")
+	w.logger.Printf("  Header: %d bytes\n", headerSize)
+	w.logger.Printf("  Load commands: %d bytes (%d commands)\n", loadCmdsSize, numLoadCmds)
+	w.logger.Printf("  __text: offset=0x%x, size=%d bytes\n", textOffset, textSize)
+	if hasData {
+		w.logger.Printf("  __data: offset=0x%x, size=%d bytes\n", dataOffset, dataSize)
+	}
+	w.logger.Printf("  Symbol table: offset=0x%x, %d entries\n", symbolsOffset, numSymbols)
+	w.logger.Printf("  String table: offset=0x%x, size=%d bytes\n", stringsOffset, stringTableSize)
+	w.logger.Printf("  Total size: %d bytes\n", totalSize)
+
+	return bw.error()
+}
+
+// buildObjectSymbols creates symbol table entries and string table for object file
+func (w *MachOWriter) buildObjectSymbols(symbols *SymbolTable) ([]nlist64, []byte) {
+	if symbols == nil {
+		// Return minimal string table (just null byte)
+		return nil, []byte{0}
+	}
+
+	var entries []nlist64
+	var stringTable []byte
+	stringTable = append(stringTable, 0) // String table starts with null
+
+	// Add each symbol
+	symbols.ForEach(func(name string, sym *Symbol) {
+		strIdx := uint32(len(stringTable))
+		stringTable = append(stringTable, []byte(name)...)
+		stringTable = append(stringTable, 0) // Null terminator
+
+		var symType uint8 = N_SECT // Defined in section
+		if sym.Global {
+			symType |= N_EXT // External symbol
+		}
+
+		var sect uint8 = 1 // Section 1 is __text
+		if sym.Section == SectionData {
+			sect = 2 // Section 2 is __data
+		}
+
+		entry := nlist64{
+			Strx:  strIdx,
+			Type:  symType,
+			Sect:  sect,
+			Desc:  0,
+			Value: sym.Address,
+		}
+		entries = append(entries, entry)
+	})
+
+	return entries, stringTable
+}
+
+// align rounds up n to the nearest multiple of alignment
+func align(n, alignment uint32) uint32 {
+	if alignment == 0 {
+		return n
+	}
+	return (n + alignment - 1) &^ (alignment - 1)
 }
 
 // WriteExecutable writes a Mach-O executable to the specified path.
@@ -243,20 +515,20 @@ const (
 	CPU_TYPE_ARM64    = 0x0100000c
 	CPU_SUBTYPE_ARM64 = 0x00000000
 
-	LC_SEGMENT_64           = 0x19
-	LC_SYMTAB               = 0x2
-	LC_DYSYMTAB             = 0xb
-	LC_LOAD_DYLINKER        = 0xe
-	LC_LOAD_DYLIB           = 0xc
-	LC_UUID                 = 0x1b
-	LC_BUILD_VERSION        = 0x32
-	LC_SOURCE_VERSION       = 0x2a
-	LC_CODE_SIGNATURE       = 0x1d
-	LC_MAIN                 = 0x80000028
-	LC_DYLD_CHAINED_FIXUPS  = 0x80000034
-	LC_DYLD_EXPORTS_TRIE    = 0x80000033
-	LC_FUNCTION_STARTS      = 0x26
-	LC_DATA_IN_CODE         = 0x29
+	LC_SEGMENT_64          = 0x19
+	LC_SYMTAB              = 0x2
+	LC_DYSYMTAB            = 0xb
+	LC_LOAD_DYLINKER       = 0xe
+	LC_LOAD_DYLIB          = 0xc
+	LC_UUID                = 0x1b
+	LC_BUILD_VERSION       = 0x32
+	LC_SOURCE_VERSION      = 0x2a
+	LC_CODE_SIGNATURE      = 0x1d
+	LC_MAIN                = 0x80000028
+	LC_DYLD_CHAINED_FIXUPS = 0x80000034
+	LC_DYLD_EXPORTS_TRIE   = 0x80000033
+	LC_FUNCTION_STARTS     = 0x26
+	LC_DATA_IN_CODE        = 0x29
 
 	// Mach-O header flags
 	MH_NOUNDEFS = 0x1
@@ -289,24 +561,24 @@ const (
 
 // Structure sizes (in bytes)
 const (
-	MachHeader64Size      = 32
-	SegmentCommand64Size  = 72
-	Section64Size         = 80
-	EntryPointCmdSize     = 24
-	DylinkerCmdBaseSize   = 12 // Without path
-	DylibCmdBaseSize      = 24 // Without path
-	UUIDCmdSize           = 24
-	BuildVersionCmdSize   = 32 // With 1 tool entry
-	SourceVersionCmdSize  = 16
-	LinkeditDataCmdSize   = 16 // For chained fixups, exports trie, etc.
-	SymtabCmdSize         = 24
-	DysymtabCmdSize       = 80
-	CodeSignatureCmdSize  = 16
-	BuildToolVersionSize  = 8
-	Nlist64Size           = 16
-	FunctionStartsSize    = 8
-	StringTableSize       = 16
-	ExportsTrieSize       = 48
+	MachHeader64Size     = 32
+	SegmentCommand64Size = 72
+	Section64Size        = 80
+	EntryPointCmdSize    = 24
+	DylinkerCmdBaseSize  = 12 // Without path
+	DylibCmdBaseSize     = 24 // Without path
+	UUIDCmdSize          = 24
+	BuildVersionCmdSize  = 32 // With 1 tool entry
+	SourceVersionCmdSize = 16
+	LinkeditDataCmdSize  = 16 // For chained fixups, exports trie, etc.
+	SymtabCmdSize        = 24
+	DysymtabCmdSize      = 80
+	CodeSignatureCmdSize = 16
+	BuildToolVersionSize = 8
+	Nlist64Size          = 16
+	FunctionStartsSize   = 8
+	StringTableSize      = 16
+	ExportsTrieSize      = 48
 )
 
 // Version constants
@@ -1096,8 +1368,8 @@ func generateChainedFixupsWithRelocations(data []byte, relocations []DataRelocat
 	symbolsOffset := importsOffset
 
 	// dyld_chained_fixups_header (offset 0)
-	binary.LittleEndian.PutUint32(buf[0:4], 0)             // fixups_version = 0
-	binary.LittleEndian.PutUint32(buf[4:8], startsOffset)  // starts_offset
+	binary.LittleEndian.PutUint32(buf[0:4], 0)            // fixups_version = 0
+	binary.LittleEndian.PutUint32(buf[4:8], startsOffset) // starts_offset
 	binary.LittleEndian.PutUint32(buf[8:12], importsOffset)
 	binary.LittleEndian.PutUint32(buf[12:16], symbolsOffset)
 	binary.LittleEndian.PutUint32(buf[16:20], 0) // imports_count = 0
@@ -1120,7 +1392,7 @@ func generateChainedFixupsWithRelocations(data []byte, relocations []DataRelocat
 	// dyld_chained_starts_in_segment for DATA (follows starts_in_image)
 	segmentStartsOff := int(startsOffset) + int(dataSegmentStartsOffset)
 	// size field is the actual structure size (not aligned)
-	binary.LittleEndian.PutUint32(buf[segmentStartsOff:segmentStartsOff+4], uint32(startsInSegmentSize)) // size
+	binary.LittleEndian.PutUint32(buf[segmentStartsOff:segmentStartsOff+4], uint32(startsInSegmentSize))  // size
 	binary.LittleEndian.PutUint16(buf[segmentStartsOff+4:segmentStartsOff+6], PageSize)                   // page_size
 	binary.LittleEndian.PutUint16(buf[segmentStartsOff+6:segmentStartsOff+8], DYLD_CHAINED_PTR_64_OFFSET) // pointer_format
 	// segment_offset: VM offset from image base to the data segment

@@ -11,6 +11,7 @@ type SectionType int
 const (
 	SectionData SectionType = iota
 	SectionText
+	SectionBSS // Uninitialized data section
 )
 
 // Section represents a section in the assembly (.data, .text)

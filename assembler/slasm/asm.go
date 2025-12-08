@@ -102,7 +102,10 @@ func (a *NativeAssembler) Assemble(inputPath, outputPath string) error {
 
 				case *Directive:
 					if v.Name == "align" && len(v.Args) > 0 {
-						alignValue := parseAlignment(v.Args[0])
+						alignValue, err := parseAlignment(v.Args[0])
+						if err != nil {
+							return fmt.Errorf("line %d: %w", v.Line, err)
+						}
 						if alignValue > 0 {
 							alignment := uint64(1 << alignValue)
 							relativeAddr := uint64(len(codeBytes))
@@ -130,7 +133,10 @@ func (a *NativeAssembler) Assemble(inputPath, outputPath string) error {
 
 				case *Directive:
 					if v.Name == "align" && len(v.Args) > 0 {
-						alignValue := parseAlignment(v.Args[0])
+						alignValue, err := parseAlignment(v.Args[0])
+						if err != nil {
+							return fmt.Errorf("line %d: %w", v.Line, err)
+						}
 						if alignValue > 0 {
 							alignment := uint64(1 << alignValue)
 							currentAddr := uint64(len(dataBytes))
@@ -395,7 +401,10 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 				case *Directive:
 					// Handle alignment directives by emitting NOP padding
 					if v.Name == "align" && len(v.Args) > 0 {
-						alignValue := parseAlignment(v.Args[0])
+						alignValue, err := parseAlignment(v.Args[0])
+						if err != nil {
+							return fmt.Errorf("line %d: %w", v.Line, err)
+						}
 						if alignValue > 0 {
 							alignment := uint64(1 << alignValue) // 2^n
 							relativeAddr := uint64(len(codeBytes))
@@ -433,7 +442,10 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 				case *Directive:
 					// Handle alignment directives by emitting zero padding
 					if v.Name == "align" && len(v.Args) > 0 {
-						alignValue := parseAlignment(v.Args[0])
+						alignValue, err := parseAlignment(v.Args[0])
+						if err != nil {
+							return fmt.Errorf("line %d: %w", v.Line, err)
+						}
 						if alignValue > 0 {
 							alignment := uint64(1 << alignValue) // 2^n
 							currentAddr := uint64(len(dataBytes))

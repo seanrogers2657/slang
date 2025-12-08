@@ -1,6 +1,39 @@
 package slasm
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
+
+// SymbolState represents the explicit state of a symbol
+type SymbolState int
+
+const (
+	// SymbolUndefined indicates the symbol has not been defined yet
+	SymbolUndefined SymbolState = iota
+	// SymbolDefined indicates the symbol has been defined with an address
+	SymbolDefined
+	// SymbolForwardRef indicates the symbol was referenced before being defined
+	SymbolForwardRef
+	// SymbolExtern indicates the symbol is an external reference (imported)
+	SymbolExtern
+)
+
+// String returns a human-readable representation of the symbol state
+func (s SymbolState) String() string {
+	switch s {
+	case SymbolUndefined:
+		return "undefined"
+	case SymbolDefined:
+		return "defined"
+	case SymbolForwardRef:
+		return "forward-ref"
+	case SymbolExtern:
+		return "extern"
+	default:
+		return fmt.Sprintf("unknown(%d)", int(s))
+	}
+}
 
 // SymbolTable tracks label definitions and their addresses
 type SymbolTable struct {
@@ -12,11 +45,12 @@ type Symbol struct {
 	Name       string
 	Address    uint64
 	Section    SectionType
-	Global     bool     // whether this symbol is marked as .global
-	Defined    bool     // whether the symbol has been defined
-	References []uint64 // addresses where this symbol is referenced
-	Line       int      // source line where symbol was defined
-	Column     int      // source column where symbol was defined
+	Global     bool        // whether this symbol is marked as .global
+	State      SymbolState // explicit state of the symbol
+	Defined    bool        // whether the symbol has been defined (kept for backward compatibility)
+	References []uint64    // addresses where this symbol is referenced
+	Line       int         // source line where symbol was defined
+	Column     int         // source column where symbol was defined
 }
 
 // NewSymbolTable creates a new symbol table
@@ -37,6 +71,7 @@ func (st *SymbolTable) Define(name string, address uint64, section SectionType, 
 		}
 		// Update existing forward reference
 		existing.Defined = true
+		existing.State = SymbolDefined
 		existing.Address = address
 		existing.Section = section
 		existing.Line = line
@@ -50,6 +85,7 @@ func (st *SymbolTable) Define(name string, address uint64, section SectionType, 
 		Address:    address,
 		Section:    section,
 		Global:     false,
+		State:      SymbolDefined,
 		Defined:    true,
 		References: []uint64{},
 		Line:       line,
@@ -79,6 +115,7 @@ func (st *SymbolTable) Reference(name string, address uint64) *Symbol {
 		Address:    0,
 		Section:    SectionText,
 		Global:     false,
+		State:      SymbolForwardRef,
 		Defined:    false,
 		References: []uint64{address},
 		Line:       0,
@@ -97,6 +134,23 @@ func (st *SymbolTable) MarkGlobal(name string) {
 		st.symbols[name] = &Symbol{
 			Name:       name,
 			Global:     true,
+			State:      SymbolForwardRef,
+			Defined:    false,
+			References: []uint64{},
+		}
+	}
+}
+
+// MarkExtern marks a symbol as external (imported from another object)
+func (st *SymbolTable) MarkExtern(name string) {
+	if symbol, exists := st.symbols[name]; exists {
+		symbol.State = SymbolExtern
+	} else {
+		// Create extern symbol entry
+		st.symbols[name] = &Symbol{
+			Name:       name,
+			Global:     false,
+			State:      SymbolExtern,
 			Defined:    false,
 			References: []uint64{},
 		}
@@ -123,6 +177,17 @@ func (st *SymbolTable) All() []*Symbol {
 	return symbols
 }
 
+// AllSorted returns all symbols sorted by name for deterministic iteration
+// Use this instead of All() or ForEach() when consistent ordering is required
+// (e.g., when generating output that should be reproducible)
+func (st *SymbolTable) AllSorted() []*Symbol {
+	symbols := st.All()
+	sort.Slice(symbols, func(i, j int) bool {
+		return symbols[i].Name < symbols[j].Name
+	})
+	return symbols
+}
+
 // Count returns the number of symbols in the table
 func (st *SymbolTable) Count() int {
 	return len(st.symbols)
@@ -140,10 +205,17 @@ func (st *SymbolTable) ForEach(fn func(name string, sym *Symbol)) {
 // addresses to absolute VM addresses
 func (st *SymbolTable) AdjustAddresses(textBase, dataBase uint64) {
 	for _, symbol := range st.symbols {
-		if symbol.Section == SectionText {
+		switch symbol.Section {
+		case SectionText:
 			symbol.Address += textBase
-		} else if symbol.Section == SectionData {
+		case SectionData:
 			symbol.Address += dataBase
+		case SectionBSS:
+			// BSS symbols also use data base (they follow data section)
+			symbol.Address += dataBase
+		default:
+			// Unknown section type - symbol address is not adjusted
+			// This could happen for external/undefined symbols
 		}
 	}
 }

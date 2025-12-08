@@ -132,3 +132,58 @@ func IsRegister(name string) bool {
 	_, err := ParseRegister(name)
 	return err == nil
 }
+
+// MaxSpaceDirectiveSize is the maximum allowed size for .space/.zero directives (1MB)
+const MaxSpaceDirectiveSize = 1 << 20
+
+// ParseSpaceSize parses and validates a size value for .space/.zero directives.
+// Returns an error if the value is negative, too large, or invalid.
+func ParseSpaceSize(s string) (int, error) {
+	size, err := ParseInt64(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid size: %w", err)
+	}
+
+	if size < 0 {
+		return 0, fmt.Errorf("size cannot be negative: %d", size)
+	}
+
+	if size > MaxSpaceDirectiveSize {
+		return 0, fmt.Errorf("size %d exceeds maximum allowed (%d bytes)", size, MaxSpaceDirectiveSize)
+	}
+
+	return int(size), nil
+}
+
+// UnescapeString converts escape sequences in a string.
+// Supports: \n, \t, \r, \\, \", \0
+func UnescapeString(s string) string {
+	var result strings.Builder
+	result.Grow(len(s)) // Pre-allocate capacity
+	i := 0
+	for i < len(s) {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case 'n':
+				result.WriteByte('\n')
+			case 't':
+				result.WriteByte('\t')
+			case 'r':
+				result.WriteByte('\r')
+			case '\\':
+				result.WriteByte('\\')
+			case '"':
+				result.WriteByte('"')
+			case '0':
+				result.WriteByte('\x00')
+			default:
+				result.WriteByte(s[i+1])
+			}
+			i += 2
+		} else {
+			result.WriteByte(s[i])
+			i++
+		}
+	}
+	return result.String()
+}

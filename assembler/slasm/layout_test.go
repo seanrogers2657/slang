@@ -394,3 +394,172 @@ func TestLayout_MixedSections(t *testing.T) {
 		t.Errorf("expected _start in text section, got %v", startSym.Section)
 	}
 }
+
+func TestParseAlignment(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    int
+		wantErr bool
+		errMsg  string
+	}{
+		// Valid alignment values
+		{"align 0", "0", 0, false, ""},
+		{"align 1", "1", 1, false, ""},
+		{"align 2", "2", 2, false, ""},
+		{"align 3", "3", 3, false, ""},
+		{"align 4", "4", 4, false, ""},
+		{"align 8", "8", 8, false, ""},
+		{"align 12 (max)", "12", 12, false, ""},
+
+		// Invalid - out of range
+		{"align -1", "-1", 0, true, "out of range"},
+		{"align 13", "13", 0, true, "out of range"},
+		{"align 100", "100", 0, true, "out of range"},
+
+		// Invalid - not a number
+		{"empty", "", 0, true, "invalid"},
+		{"letters", "abc", 0, true, "invalid"},
+		{"mixed", "4abc", 0, true, "invalid"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseAlignment(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("parseAlignment(%q) expected error, got nil", tt.input)
+					return
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("parseAlignment(%q) unexpected error: %v", tt.input, err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("parseAlignment(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLayout_InvalidAlignment(t *testing.T) {
+	// Create a program with an invalid alignment value
+	program := &Program{
+		Sections: []*Section{
+			{
+				Type: SectionText,
+				Items: []Item{
+					&Directive{Name: "align", Args: []string{"abc"}, Line: 1},
+					&Label{Name: "_start"},
+				},
+			},
+		},
+	}
+
+	layout := NewLayout(program)
+	err := layout.Calculate()
+
+	if err == nil {
+		t.Fatal("expected error for invalid alignment value")
+	}
+}
+
+func TestLayout_AlignmentOutOfRange(t *testing.T) {
+	// Create a program with alignment out of range (> 12)
+	program := &Program{
+		Sections: []*Section{
+			{
+				Type: SectionText,
+				Items: []Item{
+					&Directive{Name: "align", Args: []string{"20"}, Line: 1},
+					&Label{Name: "_start"},
+				},
+			},
+		},
+	}
+
+	layout := NewLayout(program)
+	err := layout.Calculate()
+
+	if err == nil {
+		t.Fatal("expected error for alignment out of range")
+	}
+}
+
+func TestLayout_DuplicateConstant(t *testing.T) {
+	// Create a program with duplicate constant names
+	program := &Program{
+		Sections: []*Section{
+			{
+				Type: SectionText,
+				Items: []Item{
+					&ConstantDef{Name: "MY_CONST", Value: 42, Line: 1},
+					&ConstantDef{Name: "MY_CONST", Value: 100, Line: 2}, // Duplicate
+					&Label{Name: "_start"},
+				},
+			},
+		},
+	}
+
+	layout := NewLayout(program)
+	err := layout.Calculate()
+
+	if err == nil {
+		t.Fatal("expected error for duplicate constant")
+	}
+}
+
+func TestLayout_EmptyConstantName(t *testing.T) {
+	// Create a program with an empty constant name
+	program := &Program{
+		Sections: []*Section{
+			{
+				Type: SectionText,
+				Items: []Item{
+					&ConstantDef{Name: "", Value: 42, Line: 1}, // Empty name
+					&Label{Name: "_start"},
+				},
+			},
+		},
+	}
+
+	layout := NewLayout(program)
+	err := layout.Calculate()
+
+	if err == nil {
+		t.Fatal("expected error for empty constant name")
+	}
+}
+
+func TestLayout_ValidConstants(t *testing.T) {
+	// Create a program with valid constants
+	program := &Program{
+		Sections: []*Section{
+			{
+				Type: SectionText,
+				Items: []Item{
+					&ConstantDef{Name: "CONST_A", Value: 42, Line: 1},
+					&ConstantDef{Name: "CONST_B", Value: 100, Line: 2},
+					&Label{Name: "_start"},
+				},
+			},
+		},
+	}
+
+	layout := NewLayout(program)
+	err := layout.Calculate()
+
+	if err != nil {
+		t.Fatalf("layout calculation failed: %v", err)
+	}
+
+	constants := layout.GetConstants()
+	if constants["CONST_A"] != 42 {
+		t.Errorf("expected CONST_A = 42, got %d", constants["CONST_A"])
+	}
+	if constants["CONST_B"] != 100 {
+		t.Errorf("expected CONST_B = 100, got %d", constants["CONST_B"])
+	}
+}

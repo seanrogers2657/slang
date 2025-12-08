@@ -300,11 +300,11 @@ func (l *Lexer) readString(line, column int) Token {
 	var sb strings.Builder
 	l.advance() // Skip opening quote
 
-	for l.pos < len(l.source) && l.current != '"' {
+	for l.pos < len(l.source) && l.current != '"' && l.current != '\n' {
 		if l.current == '\\' {
 			// Handle escape sequences
 			l.advance()
-			if l.pos < len(l.source) {
+			if l.pos < len(l.source) && l.current != '\n' {
 				switch l.current {
 				case 'n':
 					sb.WriteString("\\n")
@@ -325,10 +325,12 @@ func (l *Lexer) readString(line, column int) Token {
 		}
 	}
 
-	if l.current == '"' {
-		l.advance() // Skip closing quote
+	// Check for unterminated string (hit EOF or newline before closing quote)
+	if l.pos >= len(l.source) || l.current == '\n' {
+		return Token{Type: TokenError, Value: "unterminated string literal", Line: line, Column: column}
 	}
 
+	l.advance() // Skip closing quote
 	return Token{Type: TokenString, Value: sb.String(), Line: line, Column: column}
 }
 

@@ -192,7 +192,10 @@ func (l *Linker) ApplyRelocations(textVMAddr, dataVMAddr uint64) error {
 
 			// Get target symbol
 			if !reloc.Extern {
-				// Local relocation - skip for now
+				// Local relocations are resolved within the object file itself
+				// Log for debugging/transparency
+				l.Logger.Printf("  Skipping local relocation at offset 0x%x (type %d, symbol %d)\n",
+					patchOffset, reloc.Type, reloc.SymbolNum)
 				continue
 			}
 

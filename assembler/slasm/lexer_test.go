@@ -430,3 +430,75 @@ func TestLexer_RegisterRecognition(t *testing.T) {
 		})
 	}
 }
+
+func TestLexer_UnterminatedStrings(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantError bool
+		errorMsg  string
+	}{
+		{
+			name:      "unterminated at EOF",
+			input:     `"hello`,
+			wantError: true,
+			errorMsg:  "unterminated string literal",
+		},
+		{
+			name:      "unterminated at newline",
+			input:     "\"hello\nworld\"",
+			wantError: true,
+			errorMsg:  "unterminated string literal",
+		},
+		{
+			name:      "unterminated empty string at EOF",
+			input:     `"`,
+			wantError: true,
+			errorMsg:  "unterminated string literal",
+		},
+		{
+			name:      "properly terminated",
+			input:     `"hello"`,
+			wantError: false,
+		},
+		{
+			name:      "empty string properly terminated",
+			input:     `""`,
+			wantError: false,
+		},
+		{
+			name:      "string with escapes properly terminated",
+			input:     `"hello\nworld"`,
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lexer := NewLexer(tt.input)
+			tokens, err := lexer.Tokenize()
+
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("expected error, got none")
+					return
+				}
+				// Check that we got a TokenError with the right message
+				foundError := false
+				for _, tok := range tokens {
+					if tok.Type == TokenError && tok.Value == tt.errorMsg {
+						foundError = true
+						break
+					}
+				}
+				if !foundError {
+					t.Errorf("expected TokenError with message %q, got tokens: %v", tt.errorMsg, tokens)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}

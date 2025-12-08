@@ -1,6 +1,7 @@
 package slasm
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -174,6 +175,60 @@ func TestIsRegister(t *testing.T) {
 			got := IsRegister(tt.input)
 			if got != tt.want {
 				t.Errorf("IsRegister(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseSpaceSize(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    int
+		wantErr bool
+		errMsg  string
+	}{
+		// Valid sizes
+		{"zero", "0", 0, false, ""},
+		{"small", "100", 100, false, ""},
+		{"medium", "4096", 4096, false, ""},
+		{"max allowed", "1048576", MaxSpaceDirectiveSize, false, ""},
+		{"with whitespace", "  100  ", 100, false, ""},
+		{"hex", "0x100", 256, false, ""},
+
+		// Invalid - negative
+		{"negative", "-1", 0, true, "cannot be negative"},
+		{"negative large", "-1000", 0, true, "cannot be negative"},
+
+		// Invalid - too large
+		{"over max", "1048577", 0, true, "exceeds maximum"},
+		{"way over max", "999999999999", 0, true, "exceeds maximum"},
+
+		// Invalid - not a number
+		{"empty", "", 0, true, "invalid size"},
+		{"letters", "abc", 0, true, "invalid"},
+		{"mixed", "100abc", 0, true, "invalid"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseSpaceSize(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("ParseSpaceSize(%q) expected error containing %q, got nil", tt.input, tt.errMsg)
+					return
+				}
+				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("ParseSpaceSize(%q) error = %q, want error containing %q", tt.input, err.Error(), tt.errMsg)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("ParseSpaceSize(%q) unexpected error: %v", tt.input, err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("ParseSpaceSize(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
 	}

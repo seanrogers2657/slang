@@ -1,8 +1,7 @@
 package slasm
 
 import (
-	"strconv"
-	"strings"
+	"fmt"
 )
 
 // Layout calculates addresses for all instructions and data
@@ -55,15 +54,11 @@ func (l *Layout) Calculate() error {
 			case *Directive:
 				// Handle alignment directives
 				if v.Name == "align" && len(v.Args) > 0 {
-					// Parse alignment value
-					alignment := uint64(4) // default
-					if len(v.Args) > 0 {
-						// Simple parsing - assume it's a number
-						alignValue := parseAlignment(v.Args[0])
-						if alignValue > 0 {
-							alignment = uint64(1 << alignValue) // 2^n
-						}
+					alignValue, err := parseAlignment(v.Args[0])
+					if err != nil {
+						return fmt.Errorf("line %d: %w", v.Line, err)
 					}
+					alignment := uint64(1 << alignValue) // 2^n
 					padding := alignmentPadding(*currentAddr, alignment)
 					*currentAddr += padding
 				}
@@ -79,6 +74,14 @@ func (l *Layout) Calculate() error {
 				*currentAddr += uint64(dataSize(v))
 
 			case *ConstantDef:
+				// Validate constant name
+				if v.Name == "" {
+					return fmt.Errorf("line %d: constant definition has empty name", v.Line)
+				}
+				// Check for duplicate constant names
+				if _, exists := l.constants[v.Name]; exists {
+					return fmt.Errorf("line %d: duplicate constant '%s'", v.Line, v.Name)
+				}
 				// Store constant value (doesn't take address space)
 				l.constants[v.Name] = v.Value
 			}
@@ -119,18 +122,18 @@ func dataSize(data *DataDeclaration) int {
 	case "8byte", "quad":
 		return countValues(data.Value) * 8
 	case "space", "zero":
-		// Parse the size from Value using strconv for overflow protection
-		size, err := strconv.Atoi(strings.TrimSpace(data.Value))
-		if err != nil || size < 0 {
-			return 0
+		// Parse the size with validation (negative, overflow, max size checks)
+		size, err := ParseSpaceSize(data.Value)
+		if err != nil {
+			return 0 // Layout phase - errors will be caught in encoding
 		}
 		return size
 	case "asciz", "string":
 		// String length + 1 for null terminator
-		return len(unescapeString(data.Value)) + 1
+		return len(UnescapeString(data.Value)) + 1
 	case "ascii":
 		// String length without null terminator
-		return len(unescapeString(data.Value))
+		return len(UnescapeString(data.Value))
 	default:
 		return 0
 	}
@@ -150,48 +153,21 @@ func countValues(s string) int {
 	return count
 }
 
-// unescapeString converts escape sequences in a string
-func unescapeString(s string) string {
-	var result strings.Builder
-	result.Grow(len(s)) // Pre-allocate capacity
-	i := 0
-	for i < len(s) {
-		if s[i] == '\\' && i+1 < len(s) {
-			switch s[i+1] {
-			case 'n':
-				result.WriteByte('\n')
-			case 't':
-				result.WriteByte('\t')
-			case 'r':
-				result.WriteByte('\r')
-			case '\\':
-				result.WriteByte('\\')
-			case '"':
-				result.WriteByte('"')
-			case '0':
-				result.WriteByte('\x00')
-			default:
-				result.WriteByte(s[i+1])
-			}
-			i += 2
-		} else {
-			result.WriteByte(s[i])
-			i++
-		}
+// parseAlignment parses an alignment value and returns an error if invalid.
+// The alignment value is the power of 2 (e.g., .align 4 means 16-byte alignment).
+func parseAlignment(s string) (int, error) {
+	// Use ParseInt for proper validation
+	value, err := ParseInt(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid alignment value '%s': %w", s, err)
 	}
-	return result.String()
-}
 
-// parseAlignment parses an alignment value
-func parseAlignment(s string) int {
-	// Simple decimal parsing
-	result := 0
-	for _, ch := range s {
-		if ch >= '0' && ch <= '9' {
-			result = result*10 + int(ch-'0')
-		}
+	// ARM64 alignment values are typically 0-12 (1 to 4096 bytes)
+	if value < 0 || value > 12 {
+		return 0, fmt.Errorf("alignment value %d out of range (must be 0-12)", value)
 	}
-	return result
+
+	return value, nil
 }
 
 // alignmentPadding calculates padding needed for alignment

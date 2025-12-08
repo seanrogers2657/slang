@@ -1,5 +1,10 @@
 package slasm
 
+import (
+	"strconv"
+	"strings"
+)
+
 // Layout calculates addresses for all instructions and data
 type Layout struct {
 	program     *Program
@@ -114,12 +119,10 @@ func dataSize(data *DataDeclaration) int {
 	case "8byte", "quad":
 		return countValues(data.Value) * 8
 	case "space", "zero":
-		// Parse the size from Value (simple decimal parsing)
-		size := 0
-		for _, ch := range data.Value {
-			if ch >= '0' && ch <= '9' {
-				size = size*10 + int(ch-'0')
-			}
+		// Parse the size from Value using strconv for overflow protection
+		size, err := strconv.Atoi(strings.TrimSpace(data.Value))
+		if err != nil || size < 0 {
+			return 0
 		}
 		return size
 	case "asciz", "string":
@@ -149,33 +152,34 @@ func countValues(s string) int {
 
 // unescapeString converts escape sequences in a string
 func unescapeString(s string) string {
-	result := ""
+	var result strings.Builder
+	result.Grow(len(s)) // Pre-allocate capacity
 	i := 0
 	for i < len(s) {
 		if s[i] == '\\' && i+1 < len(s) {
 			switch s[i+1] {
 			case 'n':
-				result += "\n"
+				result.WriteByte('\n')
 			case 't':
-				result += "\t"
+				result.WriteByte('\t')
 			case 'r':
-				result += "\r"
+				result.WriteByte('\r')
 			case '\\':
-				result += "\\"
+				result.WriteByte('\\')
 			case '"':
-				result += "\""
+				result.WriteByte('"')
 			case '0':
-				result += "\x00"
+				result.WriteByte('\x00')
 			default:
-				result += string(s[i+1])
+				result.WriteByte(s[i+1])
 			}
 			i += 2
 		} else {
-			result += string(s[i])
+			result.WriteByte(s[i])
 			i++
 		}
 	}
-	return result
+	return result.String()
 }
 
 // parseAlignment parses an alignment value

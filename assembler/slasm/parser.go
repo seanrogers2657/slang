@@ -376,9 +376,10 @@ func (p *Parser) parseOperand() (*Operand, error) {
 			operand.Offset = offset.Value
 		}
 
-		if p.peek().Type == TokenRBracket {
-			p.advance() // consume ]
+		if p.peek().Type != TokenRBracket {
+			return nil, fmt.Errorf("expected ']' in memory operand, got %v", p.peek().Type)
 		}
+		p.advance() // consume ]
 
 		// Check for pre-indexed writeback: [base, #offset]!
 		if p.peek().Type == TokenExclamation {

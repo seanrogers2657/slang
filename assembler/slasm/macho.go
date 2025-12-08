@@ -1475,46 +1475,88 @@ func sortDataRelocations(relocs []DataRelocation) {
 func generateMinimalExportsTrie(entryOffset uint64) []byte {
 	// The exports trie encodes:
 	// - _mh_execute_header at address 0 (relative to __TEXT base)
-	// - start at the entry point offset (relative to __TEXT base)
+	// - _start at the entry point offset (relative to __TEXT base)
+	//
+	// Trie structure:
+	// - Root node (no terminal): 1 edge "_" -> child
+	// - Child node: 2 edges "mh_execute_header\0" and "start\0"
+	// - Terminal for _mh_execute_header: flags=0, address=0
+	// - Terminal for _start: flags=0, address=entryOffset
 
-	// Use exact bytes from working system binary, with adjusted offset for start
-	// The entry offset is encoded at byte 14-15 as a ULEB128 value
-	buf := []byte{
-		0x00, 0x01, 0x5f, 0x00, 0x12, 0x00, 0x00, 0x00,
-		0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, // byte 14-15 will be patched
-		0x00, 0x00, 0x02, 0x5f, 0x6d, 0x68, 0x5f, 0x65,
-		0x78, 0x65, 0x63, 0x75, 0x74, 0x65, 0x5f, 0x68,
-		0x65, 0x61, 0x64, 0x65, 0x72, 0x00, 0x09, 0x73,
-		0x74, 0x61, 0x72, 0x74, 0x00, 0x0d, 0x00, 0x00,
+	// Encode start address as ULEB128
+	startAddrULEB := encodeULEB128(entryOffset)
+
+	// Build terminal nodes first to know their sizes
+	// Terminal for _mh_execute_header: terminalSize=2 (flags + addr), flags=0, addr=0, edgeCount=0
+	mhTerminal := []byte{0x02, 0x00, 0x00, 0x00}
+
+	// Terminal for _start: terminalSize, flags=0, addr=ULEB, edgeCount=0
+	startTerminalSize := byte(1 + len(startAddrULEB)) // flags + addr
+	startTerminal := append([]byte{startTerminalSize, 0x00}, startAddrULEB...)
+	startTerminal = append(startTerminal, 0x00) // edgeCount=0
+
+	// Calculate sizes and offsets
+	// Root node: terminalSize(1) + edgeCount(1) + "_\0"(2) + childOffset(1) = 5 bytes
+	rootNodeSize := 5
+
+	// Child node: terminalSize(1) + edgeCount(1) + "mh_execute_header\0"(18) + offset(1)
+	//             + "start\0"(6) + offset(1) = 28 bytes
+	mhSuffix := "mh_execute_header"
+	startSuffix := "start"
+	childNodeSize := 2 + len(mhSuffix) + 1 + 1 + len(startSuffix) + 1 + 1
+
+	// Offsets from trie start
+	childOffset := rootNodeSize
+	mhOffset := rootNodeSize + childNodeSize
+	startOffset := mhOffset + len(mhTerminal)
+
+	// Build root node
+	rootNode := []byte{
+		0x00,                  // terminalSize = 0 (not a terminal)
+		0x01,                  // edgeCount = 1
+		'_', 0x00,             // edge label "_\0"
+		byte(childOffset),     // child node offset
 	}
 
-	// Encode the entry offset as ULEB128 at the correct position
-	// For offset 0x1000 (4096), the ULEB128 is 0x80 0x20
-	// For offset 0x2d8 (728), the ULEB128 is 0xd8 0x05
-	if entryOffset <= 0x7f {
-		buf[14] = byte(entryOffset)
-		buf[15] = 0x05
-		buf[16] = 0x00
-	} else {
-		// ULEB128 encoding for values > 127
-		buf[14] = byte(entryOffset&0x7f) | 0x80
-		buf[15] = byte((entryOffset >> 7) & 0x7f)
-		if entryOffset >= 0x4000 {
-			buf[15] |= 0x80
-			buf[16] = byte((entryOffset >> 14) & 0x7f)
-		}
-	}
+	// Build child node
+	childNode := []byte{0x00, 0x02} // terminalSize=0, edgeCount=2
+	childNode = append(childNode, []byte(mhSuffix)...)
+	childNode = append(childNode, 0x00)           // null terminator
+	childNode = append(childNode, byte(mhOffset)) // offset to mh terminal
+	childNode = append(childNode, []byte(startSuffix)...)
+	childNode = append(childNode, 0x00)              // null terminator
+	childNode = append(childNode, byte(startOffset)) // offset to start terminal
 
-	// Fix the offset in the trie for where _start address is encoded
-	// Looking at byte 44-45, this should also have the encoded address
-	if entryOffset <= 0x7f {
-		buf[45] = byte(entryOffset)
-	} else {
-		buf[45] = byte(entryOffset&0x7f) | 0x80
-		buf[46] = byte((entryOffset >> 7) & 0x7f)
+	// Assemble full trie
+	var buf []byte
+	buf = append(buf, rootNode...)
+	buf = append(buf, childNode...)
+	buf = append(buf, mhTerminal...)
+	buf = append(buf, startTerminal...)
+
+	// Pad to 8-byte alignment
+	for len(buf)%8 != 0 {
+		buf = append(buf, 0x00)
 	}
 
 	return buf
+}
+
+// encodeULEB128 encodes a uint64 as ULEB128
+func encodeULEB128(value uint64) []byte {
+	var result []byte
+	for {
+		b := byte(value & 0x7f)
+		value >>= 7
+		if value != 0 {
+			b |= 0x80
+		}
+		result = append(result, b)
+		if value == 0 {
+			break
+		}
+	}
+	return result
 }
 
 // generateFunctionStarts generates the function starts data

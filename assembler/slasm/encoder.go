@@ -139,9 +139,6 @@ func (e *Encoder) ResolveImmediate(value string) (int64, error) {
 
 // Encode encodes an instruction to machine code (4 bytes for ARM64)
 func (e *Encoder) Encode(inst *Instruction, address uint64) ([]byte, error) {
-	// TODO: Implement instruction encoding
-	// This is the core of the assembler - converts mnemonics to machine code
-
 	switch inst.Mnemonic {
 	case "mov":
 		return e.encodeMov(inst)
@@ -660,24 +657,23 @@ func (e *Encoder) encodeMul(inst *Instruction) ([]byte, error) {
 	// MADD Xd, Xn, Xm, XZR (MUL is an alias)
 	// Encoding: sf 0 011011 000 Rm 0 Ra Rn Rd
 
-	if len(inst.Operands) != 3 {
-		return nil, fmt.Errorf("line %d:%d: mul requires 3 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 3); err != nil {
+		return nil, err
 	}
 
-	rd, err := ParseRegister(inst.Operands[0].Value)
+	rd, err := parseRegOperand(inst, 0, "destination")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: mul destination: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rn, err := ParseRegister(inst.Operands[1].Value)
+	rn, err := parseRegOperand(inst, 1, "operand 1")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: mul operand 1: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[2].Value)
+	rm, err := parseRegOperand(inst, 2, "operand 2")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: mul operand 2: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	sf := uint32(1)
@@ -693,24 +689,23 @@ func (e *Encoder) encodeSmulh(inst *Instruction) ([]byte, error) {
 	// Encoding: 1 0011011 010 Rm 0 11111 Rn Rd
 	// = 0x9B400000 | (Rm << 16) | (0x1F << 10) | (Rn << 5) | Rd
 
-	if len(inst.Operands) != 3 {
-		return nil, fmt.Errorf("line %d:%d: smulh requires 3 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 3); err != nil {
+		return nil, err
 	}
 
-	rd, err := ParseRegister(inst.Operands[0].Value)
+	rd, err := parseRegOperand(inst, 0, "destination")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: smulh destination: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rn, err := ParseRegister(inst.Operands[1].Value)
+	rn, err := parseRegOperand(inst, 1, "operand 1")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: smulh operand 1: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[2].Value)
+	rm, err := parseRegOperand(inst, 2, "operand 2")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: smulh operand 2: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	// SMULH: 1 00 11011 010 Rm 0 11111 Rn Rd
@@ -724,24 +719,23 @@ func (e *Encoder) encodeUmulh(inst *Instruction) ([]byte, error) {
 	// Encoding: 1 0011011 110 Rm 0 11111 Rn Rd
 	// = 0x9BC00000 | (Rm << 16) | (0x1F << 10) | (Rn << 5) | Rd
 
-	if len(inst.Operands) != 3 {
-		return nil, fmt.Errorf("line %d:%d: umulh requires 3 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 3); err != nil {
+		return nil, err
 	}
 
-	rd, err := ParseRegister(inst.Operands[0].Value)
+	rd, err := parseRegOperand(inst, 0, "destination")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: umulh destination: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rn, err := ParseRegister(inst.Operands[1].Value)
+	rn, err := parseRegOperand(inst, 1, "operand 1")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: umulh operand 1: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[2].Value)
+	rm, err := parseRegOperand(inst, 2, "operand 2")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: umulh operand 2: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	// UMULH: 1 00 11011 110 Rm 0 11111 Rn Rd
@@ -754,24 +748,23 @@ func (e *Encoder) encodeSdiv(inst *Instruction) ([]byte, error) {
 	// SDIV Xd, Xn, Xm
 	// Encoding: sf 0 011010110 Rm 000011 Rn Rd
 
-	if len(inst.Operands) != 3 {
-		return nil, fmt.Errorf("line %d:%d: sdiv requires 3 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 3); err != nil {
+		return nil, err
 	}
 
-	rd, err := ParseRegister(inst.Operands[0].Value)
+	rd, err := parseRegOperand(inst, 0, "destination")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: sdiv destination: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rn, err := ParseRegister(inst.Operands[1].Value)
+	rn, err := parseRegOperand(inst, 1, "operand 1")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: sdiv operand 1: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[2].Value)
+	rm, err := parseRegOperand(inst, 2, "operand 2")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: sdiv operand 2: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	sf := uint32(1)
@@ -785,24 +778,23 @@ func (e *Encoder) encodeUdiv(inst *Instruction) ([]byte, error) {
 	// Encoding: sf 0 011010110 Rm 000010 Rn Rd
 	// Same as SDIV but opcode bits [11:10] = 10 instead of 11
 
-	if len(inst.Operands) != 3 {
-		return nil, fmt.Errorf("line %d:%d: udiv requires 3 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 3); err != nil {
+		return nil, err
 	}
 
-	rd, err := ParseRegister(inst.Operands[0].Value)
+	rd, err := parseRegOperand(inst, 0, "destination")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: udiv destination: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rn, err := ParseRegister(inst.Operands[1].Value)
+	rn, err := parseRegOperand(inst, 1, "operand 1")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: udiv operand 1: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[2].Value)
+	rm, err := parseRegOperand(inst, 2, "operand 2")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: udiv operand 2: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	sf := uint32(1)
@@ -816,29 +808,28 @@ func (e *Encoder) encodeMsub(inst *Instruction) ([]byte, error) {
 	// Xd = Xa - (Xn * Xm)
 	// Encoding: sf 0 011011 000 Rm 1 Ra Rn Rd
 
-	if len(inst.Operands) != 4 {
-		return nil, fmt.Errorf("line %d:%d: msub requires 4 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 4); err != nil {
+		return nil, err
 	}
 
-	rd, err := ParseRegister(inst.Operands[0].Value)
+	rd, err := parseRegOperand(inst, 0, "destination")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: msub destination: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rn, err := ParseRegister(inst.Operands[1].Value)
+	rn, err := parseRegOperand(inst, 1, "operand 1")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: msub operand 1: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[2].Value)
+	rm, err := parseRegOperand(inst, 2, "operand 2")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: msub operand 2: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	ra, err := ParseRegister(inst.Operands[3].Value)
+	ra, err := parseRegOperand(inst, 3, "operand 3")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: msub operand 3: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	sf := uint32(1)
@@ -852,19 +843,18 @@ func (e *Encoder) encodeNeg(inst *Instruction) ([]byte, error) {
 	// SUB (register): sf 1001011 shift 0 Rm imm6 Rn Rd
 	// With Rn = XZR (31), shift = 0, imm6 = 0
 
-	if len(inst.Operands) != 2 {
-		return nil, fmt.Errorf("line %d:%d: neg requires 2 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 2); err != nil {
+		return nil, err
 	}
 
-	rd, err := ParseRegister(inst.Operands[0].Value)
+	rd, err := parseRegOperand(inst, 0, "destination")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: neg destination: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[1].Value)
+	rm, err := parseRegOperand(inst, 1, "source")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: neg source: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	sf := uint32(1)  // 64-bit
@@ -2207,24 +2197,23 @@ func (e *Encoder) encodeAnd(inst *Instruction) ([]byte, error) {
 	// sf=1 for 64-bit, opc=00 (AND), shift=00 (LSL), N=0, imm6=0
 	// Base: 0x8A000000
 
-	if len(inst.Operands) != 3 {
-		return nil, fmt.Errorf("line %d:%d: and requires 3 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 3); err != nil {
+		return nil, err
 	}
 
-	rd, err := ParseRegister(inst.Operands[0].Value)
+	rd, err := parseRegOperand(inst, 0, "destination")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: and destination: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rn, err := ParseRegister(inst.Operands[1].Value)
+	rn, err := parseRegOperand(inst, 1, "operand 1")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: and operand 1: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[2].Value)
+	rm, err := parseRegOperand(inst, 2, "operand 2")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: and operand 2: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	// AND (shifted register): sf 00 01010 shift N Rm imm6 Rn Rd
@@ -2239,24 +2228,23 @@ func (e *Encoder) encodeOrr(inst *Instruction) ([]byte, error) {
 	// sf=1, opc=01 (ORR)
 	// Base: 0xAA000000
 
-	if len(inst.Operands) != 3 {
-		return nil, fmt.Errorf("line %d:%d: orr requires 3 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 3); err != nil {
+		return nil, err
 	}
 
-	rd, err := ParseRegister(inst.Operands[0].Value)
+	rd, err := parseRegOperand(inst, 0, "destination")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: orr destination: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rn, err := ParseRegister(inst.Operands[1].Value)
+	rn, err := parseRegOperand(inst, 1, "operand 1")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: orr operand 1: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[2].Value)
+	rm, err := parseRegOperand(inst, 2, "operand 2")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: orr operand 2: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	// ORR (shifted register): sf 01 01010 shift N Rm imm6 Rn Rd
@@ -2271,24 +2259,23 @@ func (e *Encoder) encodeEor(inst *Instruction) ([]byte, error) {
 	// sf=1, opc=10 (EOR)
 	// Base: 0xCA000000
 
-	if len(inst.Operands) != 3 {
-		return nil, fmt.Errorf("line %d:%d: eor requires 3 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 3); err != nil {
+		return nil, err
 	}
 
-	rd, err := ParseRegister(inst.Operands[0].Value)
+	rd, err := parseRegOperand(inst, 0, "destination")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: eor destination: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rn, err := ParseRegister(inst.Operands[1].Value)
+	rn, err := parseRegOperand(inst, 1, "operand 1")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: eor operand 1: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[2].Value)
+	rm, err := parseRegOperand(inst, 2, "operand 2")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: eor operand 2: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	// EOR (shifted register): sf 10 01010 shift N Rm imm6 Rn Rd
@@ -2302,19 +2289,18 @@ func (e *Encoder) encodeMvn(inst *Instruction) ([]byte, error) {
 	// Encoding: sf 01 01010 shift 1 Rm imm6 Rn Rd (with Rn=XZR)
 	// Base: 0xAA200000 (ORN with N=1)
 
-	if len(inst.Operands) != 2 {
-		return nil, fmt.Errorf("line %d:%d: mvn requires 2 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 2); err != nil {
+		return nil, err
 	}
 
-	rd, err := ParseRegister(inst.Operands[0].Value)
+	rd, err := parseRegOperand(inst, 0, "destination")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: mvn destination: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[1].Value)
+	rm, err := parseRegOperand(inst, 1, "source")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: mvn source: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	// ORN (shifted register) with Rn=XZR: sf 01 01010 shift 1 Rm imm6 11111 Rd
@@ -2330,24 +2316,23 @@ func (e *Encoder) encodeAnds(inst *Instruction) ([]byte, error) {
 	// sf=1, opc=11 (ANDS)
 	// Base: 0xEA000000
 
-	if len(inst.Operands) != 3 {
-		return nil, fmt.Errorf("line %d:%d: ands requires 3 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 3); err != nil {
+		return nil, err
 	}
 
-	rd, err := ParseRegister(inst.Operands[0].Value)
+	rd, err := parseRegOperand(inst, 0, "destination")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: ands destination: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rn, err := ParseRegister(inst.Operands[1].Value)
+	rn, err := parseRegOperand(inst, 1, "operand 1")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: ands operand 1: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[2].Value)
+	rm, err := parseRegOperand(inst, 2, "operand 2")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: ands operand 2: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	// ANDS (shifted register): sf 11 01010 shift N Rm imm6 Rn Rd
@@ -2361,19 +2346,18 @@ func (e *Encoder) encodeTst(inst *Instruction) ([]byte, error) {
 	// Encoding: sf 11 01010 shift N Rm imm6 Rn 11111 (Rd=XZR)
 	// Base: 0xEA00001F
 
-	if len(inst.Operands) != 2 {
-		return nil, fmt.Errorf("line %d:%d: tst requires 2 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 2); err != nil {
+		return nil, err
 	}
 
-	rn, err := ParseRegister(inst.Operands[0].Value)
+	rn, err := parseRegOperand(inst, 0, "operand 1")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: tst operand 1: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[1].Value)
+	rm, err := parseRegOperand(inst, 1, "operand 2")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: tst operand 2: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	// ANDS with Rd=XZR (31): sf 11 01010 shift N Rm imm6 Rn 11111
@@ -2387,24 +2371,23 @@ func (e *Encoder) encodeBic(inst *Instruction) ([]byte, error) {
 	// Encoding: sf 00 01010 shift 1 Rm imm6 Rn Rd (N=1 for NOT)
 	// Base: 0x8A200000
 
-	if len(inst.Operands) != 3 {
-		return nil, fmt.Errorf("line %d:%d: bic requires 3 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 3); err != nil {
+		return nil, err
 	}
 
-	rd, err := ParseRegister(inst.Operands[0].Value)
+	rd, err := parseRegOperand(inst, 0, "destination")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: bic destination: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rn, err := ParseRegister(inst.Operands[1].Value)
+	rn, err := parseRegOperand(inst, 1, "operand 1")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: bic operand 1: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[2].Value)
+	rm, err := parseRegOperand(inst, 2, "operand 2")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: bic operand 2: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	// BIC (shifted register): sf 00 01010 shift 1 Rm imm6 Rn Rd
@@ -2418,24 +2401,23 @@ func (e *Encoder) encodeOrn(inst *Instruction) ([]byte, error) {
 	// Encoding: sf 01 01010 shift 1 Rm imm6 Rn Rd (N=1 for NOT)
 	// Base: 0xAA200000
 
-	if len(inst.Operands) != 3 {
-		return nil, fmt.Errorf("line %d:%d: orn requires 3 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 3); err != nil {
+		return nil, err
 	}
 
-	rd, err := ParseRegister(inst.Operands[0].Value)
+	rd, err := parseRegOperand(inst, 0, "destination")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: orn destination: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rn, err := ParseRegister(inst.Operands[1].Value)
+	rn, err := parseRegOperand(inst, 1, "operand 1")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: orn operand 1: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[2].Value)
+	rm, err := parseRegOperand(inst, 2, "operand 2")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: orn operand 2: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	// ORN (shifted register): sf 01 01010 shift 1 Rm imm6 Rn Rd
@@ -2449,24 +2431,23 @@ func (e *Encoder) encodeEon(inst *Instruction) ([]byte, error) {
 	// Encoding: sf 10 01010 shift 1 Rm imm6 Rn Rd (N=1 for NOT)
 	// Base: 0xCA200000
 
-	if len(inst.Operands) != 3 {
-		return nil, fmt.Errorf("line %d:%d: eon requires 3 operands, got %d",
-			inst.Line, inst.Column, len(inst.Operands))
+	if err := validateOperandCount(inst, 3); err != nil {
+		return nil, err
 	}
 
-	rd, err := ParseRegister(inst.Operands[0].Value)
+	rd, err := parseRegOperand(inst, 0, "destination")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: eon destination: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rn, err := ParseRegister(inst.Operands[1].Value)
+	rn, err := parseRegOperand(inst, 1, "operand 1")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: eon operand 1: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
-	rm, err := ParseRegister(inst.Operands[2].Value)
+	rm, err := parseRegOperand(inst, 2, "operand 2")
 	if err != nil {
-		return nil, fmt.Errorf("line %d:%d: eon operand 2: %w", inst.Line, inst.Column, err)
+		return nil, err
 	}
 
 	// EON (shifted register): sf 10 01010 shift 1 Rm imm6 Rn Rd

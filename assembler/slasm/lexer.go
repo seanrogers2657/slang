@@ -361,13 +361,3 @@ func (l *Lexer) readIdentifier(line, column int) Token {
 
 	return Token{Type: TokenIdentifier, Value: value, Line: line, Column: column}
 }
-
-// isConditionCode checks if the string is a valid ARM64 condition code
-func isConditionCode(s string) bool {
-	switch s {
-	case "eq", "ne", "cs", "hs", "cc", "lo", "mi", "pl",
-		"vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "al":
-		return true
-	}
-	return false
-}

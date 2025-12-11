@@ -61,11 +61,11 @@ const (
 
 // UnaryExpr represents a unary operation (e.g., -5, !true)
 type UnaryExpr struct {
-	Op          string
-	Operand     Expression
-	OpPos       Position // position of operator
-	OperandPos  Position // position of operand
-	OperandEnd  Position // end position of operand
+	Op         string
+	Operand    Expression
+	OpPos      Position // position of operator
+	OperandPos Position // position of operand
+	OperandEnd Position // end position of operand
 }
 
 func (u *UnaryExpr) Pos() Position { return u.OpPos }

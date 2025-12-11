@@ -22,7 +22,7 @@ var Builtins = map[string]BuiltinFunc{
 		ReturnType: TypeVoid,
 		NoReturn:   false,
 		AcceptedTypes: map[int][]Type{
-			0: {TypeI64, TypeString}, // print accepts i64 or string
+			0: {TypeI64, TypeString, TypeBoolean}, // print accepts i64, string, or bool
 		},
 	},
 }

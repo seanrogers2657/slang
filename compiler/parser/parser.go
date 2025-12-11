@@ -11,11 +11,13 @@ import (
 type precedence int
 
 const (
-	precedenceLowest precedence = iota
-	precedenceComparison        // ==, !=, <, >, <=, >=
-	precedenceSum               // +, -
-	precedenceProduct           // *, /, %
-	precedencePrefix            // -x, !x
+	precedenceLowest     precedence = iota
+	precedenceOr                    // ||
+	precedenceAnd                   // &&
+	precedenceComparison            // ==, !=, <, >, <=, >=
+	precedenceSum                   // +, -
+	precedenceProduct               // *, /, %
+	precedencePrefix                // -x, !x
 )
 
 func NewParser(source []lexer.Token) *parser {
@@ -37,6 +39,10 @@ type parser struct {
 // getPrecedence returns the precedence level for the current token
 func (p *parser) getPrecedence(tokenType lexer.TokenType) precedence {
 	switch tokenType {
+	case lexer.TokenTypeOr:
+		return precedenceOr
+	case lexer.TokenTypeAnd:
+		return precedenceAnd
 	case lexer.TokenTypeEqual, lexer.TokenTypeNotEqual,
 		lexer.TokenTypeLessThan, lexer.TokenTypeGreaterThan,
 		lexer.TokenTypeLessThanOrEqual, lexer.TokenTypeGreaterThanOrEqual:
@@ -119,6 +125,10 @@ func (p *parser) getOperatorString(tokenType lexer.TokenType) string {
 		return "<="
 	case lexer.TokenTypeGreaterThanOrEqual:
 		return ">="
+	case lexer.TokenTypeAnd:
+		return "&&"
+	case lexer.TokenTypeOr:
+		return "||"
 	default:
 		return ""
 	}
@@ -178,7 +188,7 @@ func (p *parser) Parse() *ast.Program {
 			// After each statement, we expect a newline or end of input
 			if !p.isAtEnd() {
 				if p.CurrentToken().Type == lexer.TokenTypeNewline {
-					p.Index++ // Consume the newline
+					p.Index++        // Consume the newline
 					p.skipNewlines() // Skip any additional newlines
 				} else {
 					// Error: expected newline or end of input
@@ -377,6 +387,30 @@ func (p *parser) ParseLiteral() ast.Expression {
 		return literal
 	}
 
+	if p.CurrentToken().Type == lexer.TokenTypeTrue {
+		token := p.CurrentToken()
+		literal := &ast.LiteralExpr{
+			Kind:     ast.LiteralTypeBoolean,
+			Value:    "true",
+			StartPos: token.Pos,
+			EndPos:   ast.Position{Line: token.Pos.Line, Column: token.Pos.Column + 4, Offset: token.Pos.Offset + 4},
+		}
+		p.Index++
+		return literal
+	}
+
+	if p.CurrentToken().Type == lexer.TokenTypeFalse {
+		token := p.CurrentToken()
+		literal := &ast.LiteralExpr{
+			Kind:     ast.LiteralTypeBoolean,
+			Value:    "false",
+			StartPos: token.Pos,
+			EndPos:   ast.Position{Line: token.Pos.Line, Column: token.Pos.Column + 5, Offset: token.Pos.Offset + 5},
+		}
+		p.Index++
+		return literal
+	}
+
 	return nil
 }
 
@@ -429,6 +463,27 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 
 // parsePrimary parses primary expressions (literals, identifiers, grouping, etc.)
 func (p *parser) parsePrimary() ast.Expression {
+	// Check for unary NOT operator
+	if p.CurrentToken().Type == lexer.TokenTypeNot {
+		opPos := p.CurrentToken().Pos
+		p.advance() // consume '!'
+
+		// Parse the operand (recursively call parsePrimary for highest precedence)
+		operand := p.parsePrimary()
+		if operand == nil {
+			p.Errors = append(p.Errors, fmt.Errorf("expected expression after '!'"))
+			return nil
+		}
+
+		return &ast.UnaryExpr{
+			Op:         "!",
+			Operand:    operand,
+			OpPos:      opPos,
+			OperandPos: operand.Pos(),
+			OperandEnd: operand.End(),
+		}
+	}
+
 	// Check for identifier (could be variable reference or function call)
 	if p.CurrentToken().Type == lexer.TokenTypeIdentifier {
 		token := p.CurrentToken()
@@ -530,7 +585,7 @@ func (p *parser) ParseBlockStmt() *ast.BlockStmt {
 		// After each statement, expect newline or '}'
 		if !p.isAtEnd() && p.CurrentToken().Type != lexer.TokenTypeRBrace {
 			if p.CurrentToken().Type == lexer.TokenTypeNewline {
-				p.advance() // consume newline
+				p.advance()      // consume newline
 				p.skipNewlines() // skip any additional newlines
 			} else {
 				p.Errors = append(p.Errors, fmt.Errorf("expected newline or '}' after statement, got %s", p.CurrentToken().Value))

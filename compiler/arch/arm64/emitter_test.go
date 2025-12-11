@@ -753,10 +753,10 @@ func TestEmitPrintInt(t *testing.T) {
 	output := e.EmitPrintInt()
 
 	mustContain := []string{
-		"mov x0, x2",      // value to print
+		"mov x0, x2",       // value to print
 		"bl int_to_string", // call conversion routine
-		"mov x16, #4",     // write syscall
-		"svc #0x80",       // supervisor call
+		"mov x16, #4",      // write syscall
+		"svc #0x80",        // supervisor call
 	}
 
 	for _, s := range mustContain {
@@ -776,15 +776,15 @@ func TestIntToStringFunction(t *testing.T) {
 
 	// Verify it's a complete function
 	mustContain := []string{
-		"int_to_string:",             // function label
-		"stp x29, x30, [sp, #-16]!",  // prologue
+		"int_to_string:",            // function label
+		"stp x29, x30, [sp, #-16]!", // prologue
 		"mov x29, sp",
-		"buffer@PAGE",                // uses buffer
-		"check_negative:",            // handles negative numbers
-		"convert_loop:",              // digit conversion loop
-		"finalize:",                  // finalization
-		"restore_regs:",              // cleanup
-		"ret",                        // return
+		"buffer@PAGE",     // uses buffer
+		"check_negative:", // handles negative numbers
+		"convert_loop:",   // digit conversion loop
+		"finalize:",       // finalization
+		"restore_regs:",   // cleanup
+		"ret",             // return
 	}
 
 	for _, s := range mustContain {

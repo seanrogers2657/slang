@@ -11,8 +11,8 @@ import (
 type LiteralInfo struct {
 	Value  string
 	Label  string
-	Length int    // for strings
-	IsF64  bool   // for floats
+	Length int  // for strings
+	IsF64  bool // for floats
 	Kind   ast.LiteralType
 }
 
@@ -21,6 +21,7 @@ type ProgramInfo struct {
 	FloatLiterals  map[string]LiteralInfo // label -> info
 	StringLiterals []LiteralInfo
 	HasPrint       bool
+	HasBoolPrint   bool // true if print() is called with a boolean argument
 }
 
 // NewProgramInfo creates an empty ProgramInfo.
@@ -88,83 +89,20 @@ func (info *ProgramInfo) collectFromTypedExpr(expr semantic.TypedExpression, flo
 	case *semantic.TypedCallExpr:
 		if e.Name == "print" {
 			info.HasPrint = true
+			// Check if printing a boolean
+			if len(e.Arguments) > 0 {
+				if _, isBool := e.Arguments[0].GetType().(semantic.BooleanType); isBool {
+					info.HasBoolPrint = true
+				}
+			}
 		}
 		for _, arg := range e.Arguments {
 			info.collectFromTypedExpr(arg, floatIdx, stringIdx)
 		}
+
+	case *semantic.TypedUnaryExpr:
+		info.collectFromTypedExpr(e.Operand, floatIdx, stringIdx)
 	}
-}
-
-// CollectFromASTFunction scans an AST function for string literals and print calls.
-// Returns a map of literal pointers to their labels.
-func (info *ProgramInfo) CollectFromASTFunction(fn *ast.FunctionDecl) map[*ast.LiteralExpr]string {
-	stringMap := make(map[*ast.LiteralExpr]string)
-	stringIndex := len(info.StringLiterals)
-
-	for _, stmt := range fn.Body.Statements {
-		info.collectFromASTStatement(stmt, stringMap, &stringIndex)
-	}
-
-	return stringMap
-}
-
-func (info *ProgramInfo) collectFromASTStatement(stmt ast.Statement, stringMap map[*ast.LiteralExpr]string, stringIdx *int) {
-	switch s := stmt.(type) {
-	case *ast.ExprStmt:
-		info.collectFromASTExpr(s.Expr, stringMap, stringIdx)
-	case *ast.VarDeclStmt:
-		info.collectFromASTExpr(s.Initializer, stringMap, stringIdx)
-	case *ast.AssignStmt:
-		info.collectFromASTExpr(s.Value, stringMap, stringIdx)
-	case *ast.ReturnStmt:
-		info.collectFromASTExpr(s.Value, stringMap, stringIdx)
-	}
-}
-
-func (info *ProgramInfo) collectFromASTExpr(expr ast.Expression, stringMap map[*ast.LiteralExpr]string, stringIdx *int) {
-	if expr == nil {
-		return
-	}
-
-	switch e := expr.(type) {
-	case *ast.LiteralExpr:
-		if e.Kind == ast.LiteralTypeString {
-			if _, exists := stringMap[e]; !exists {
-				label := fmt.Sprintf("str_%d", *stringIdx)
-				stringMap[e] = label
-				info.StringLiterals = append(info.StringLiterals, LiteralInfo{
-					Value:  e.Value,
-					Label:  label,
-					Length: len(e.Value),
-					Kind:   ast.LiteralTypeString,
-				})
-				(*stringIdx)++
-			}
-		}
-
-	case *ast.BinaryExpr:
-		info.collectFromASTExpr(e.Left, stringMap, stringIdx)
-		info.collectFromASTExpr(e.Right, stringMap, stringIdx)
-
-	case *ast.CallExpr:
-		if e.Name == "print" {
-			info.HasPrint = true
-		}
-		for _, arg := range e.Arguments {
-			info.collectFromASTExpr(arg, stringMap, stringIdx)
-		}
-	}
-}
-
-// CountVariables counts the number of variable declarations in a statement list.
-func CountVariables(stmts []ast.Statement) int {
-	count := 0
-	for _, stmt := range stmts {
-		if _, ok := stmt.(*ast.VarDeclStmt); ok {
-			count++
-		}
-	}
-	return count
 }
 
 // CountTypedVariables counts variable declarations in a typed statement list.

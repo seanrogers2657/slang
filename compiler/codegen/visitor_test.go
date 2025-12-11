@@ -208,194 +208,6 @@ func TestCollectFromTypedFunction_NestedCallExpr(t *testing.T) {
 	}
 }
 
-func TestCollectFromASTFunction(t *testing.T) {
-	info := NewProgramInfo()
-
-	fn := &ast.FunctionDecl{
-		Name: "main",
-		Body: &ast.BlockStmt{
-			Statements: []ast.Statement{
-				&ast.ExprStmt{
-					Expr: &ast.CallExpr{
-						Name: "print",
-						Arguments: []ast.Expression{
-							&ast.LiteralExpr{
-								Value: "hello world",
-								Kind:  ast.LiteralTypeString,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	stringMap := info.CollectFromASTFunction(fn)
-
-	if len(stringMap) != 1 {
-		t.Errorf("expected 1 string in map, got %d", len(stringMap))
-	}
-	if len(info.StringLiterals) != 1 {
-		t.Errorf("expected 1 string literal, got %d", len(info.StringLiterals))
-	}
-	if !info.HasPrint {
-		t.Error("expected HasPrint to be true")
-	}
-}
-
-func TestCollectFromASTFunction_VarDecl(t *testing.T) {
-	info := NewProgramInfo()
-
-	fn := &ast.FunctionDecl{
-		Name: "main",
-		Body: &ast.BlockStmt{
-			Statements: []ast.Statement{
-				&ast.VarDeclStmt{
-					Name: "msg",
-					Initializer: &ast.LiteralExpr{
-						Value: "test",
-						Kind:  ast.LiteralTypeString,
-					},
-				},
-			},
-		},
-	}
-
-	stringMap := info.CollectFromASTFunction(fn)
-
-	if len(stringMap) != 1 {
-		t.Errorf("expected 1 string in map, got %d", len(stringMap))
-	}
-}
-
-func TestCollectFromASTFunction_AssignStmt(t *testing.T) {
-	info := NewProgramInfo()
-
-	fn := &ast.FunctionDecl{
-		Name: "main",
-		Body: &ast.BlockStmt{
-			Statements: []ast.Statement{
-				&ast.AssignStmt{
-					Name: "x",
-					Value: &ast.LiteralExpr{
-						Value: "assigned",
-						Kind:  ast.LiteralTypeString,
-					},
-				},
-			},
-		},
-	}
-
-	stringMap := info.CollectFromASTFunction(fn)
-
-	if len(stringMap) != 1 {
-		t.Errorf("expected 1 string in map, got %d", len(stringMap))
-	}
-}
-
-func TestCollectFromASTFunction_ReturnStmt(t *testing.T) {
-	info := NewProgramInfo()
-
-	fn := &ast.FunctionDecl{
-		Name: "main",
-		Body: &ast.BlockStmt{
-			Statements: []ast.Statement{
-				&ast.ReturnStmt{
-					Value: &ast.LiteralExpr{
-						Value: "returned",
-						Kind:  ast.LiteralTypeString,
-					},
-				},
-			},
-		},
-	}
-
-	stringMap := info.CollectFromASTFunction(fn)
-
-	if len(stringMap) != 1 {
-		t.Errorf("expected 1 string in map, got %d", len(stringMap))
-	}
-}
-
-func TestCollectFromASTFunction_BinaryExpr(t *testing.T) {
-	info := NewProgramInfo()
-
-	fn := &ast.FunctionDecl{
-		Name: "main",
-		Body: &ast.BlockStmt{
-			Statements: []ast.Statement{
-				&ast.ExprStmt{
-					Expr: &ast.BinaryExpr{
-						Left: &ast.LiteralExpr{
-							Value: "left",
-							Kind:  ast.LiteralTypeString,
-						},
-						Op: "+",
-						Right: &ast.LiteralExpr{
-							Value: "right",
-							Kind:  ast.LiteralTypeString,
-						},
-					},
-				},
-			},
-		},
-	}
-
-	stringMap := info.CollectFromASTFunction(fn)
-
-	if len(stringMap) != 2 {
-		t.Errorf("expected 2 strings in map, got %d", len(stringMap))
-	}
-}
-
-func TestCollectFromASTFunction_DuplicateStrings(t *testing.T) {
-	info := NewProgramInfo()
-
-	literal := &ast.LiteralExpr{
-		Value: "same",
-		Kind:  ast.LiteralTypeString,
-	}
-
-	fn := &ast.FunctionDecl{
-		Name: "main",
-		Body: &ast.BlockStmt{
-			Statements: []ast.Statement{
-				&ast.ExprStmt{Expr: literal},
-				&ast.ExprStmt{Expr: literal}, // same pointer
-			},
-		},
-	}
-
-	stringMap := info.CollectFromASTFunction(fn)
-
-	// Should only have one entry since it's the same pointer
-	if len(stringMap) != 1 {
-		t.Errorf("expected 1 string in map (deduped), got %d", len(stringMap))
-	}
-}
-
-func TestCountVariables(t *testing.T) {
-	stmts := []ast.Statement{
-		&ast.VarDeclStmt{Name: "x"},
-		&ast.ExprStmt{Expr: &ast.LiteralExpr{Value: "1", Kind: ast.LiteralTypeInteger}},
-		&ast.VarDeclStmt{Name: "y"},
-		&ast.VarDeclStmt{Name: "z"},
-	}
-
-	count := CountVariables(stmts)
-	if count != 3 {
-		t.Errorf("expected 3 variables, got %d", count)
-	}
-}
-
-func TestCountVariables_Empty(t *testing.T) {
-	stmts := []ast.Statement{}
-	count := CountVariables(stmts)
-	if count != 0 {
-		t.Errorf("expected 0 variables, got %d", count)
-	}
-}
-
 func TestCountTypedVariables(t *testing.T) {
 	stmts := []semantic.TypedStatement{
 		&semantic.TypedVarDeclStmt{Name: "a"},
@@ -406,6 +218,14 @@ func TestCountTypedVariables(t *testing.T) {
 	count := CountTypedVariables(stmts)
 	if count != 2 {
 		t.Errorf("expected 2 variables, got %d", count)
+	}
+}
+
+func TestCountTypedVariables_Empty(t *testing.T) {
+	stmts := []semantic.TypedStatement{}
+	count := CountTypedVariables(stmts)
+	if count != 0 {
+		t.Errorf("expected 0 variables, got %d", count)
 	}
 }
 

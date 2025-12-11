@@ -16,9 +16,7 @@
    - Fixed data section alignment padding in `assembler/slasm/asm.go`
 8. **Test framework:**
    - Added `stderr_contains` directive support to `test/testutil/expectations.go`
-   - Added `requires_system_asm` directive support
    - Updated `test/sl/e2e_test.go` to capture stdout/stderr separately
-   - Added `runWithSystemAsm()` for tests requiring system assembler
 9. **E2E test files** in `_examples/slang/runtime/`:
    - `overflow_add.sl` - Signed addition overflow
    - `overflow_sub.sl` - Signed subtraction overflow
@@ -49,13 +47,9 @@ The `generateChainedFixupsWithRelocations()` function in `assembler/slasm/macho.
    - Next pointer delta in 4-byte units (bits 51-62)
 4. Populates the `dyld_chained_starts_in_segment` structure for the __DATA segment
 
-All runtime tests now work with slasm (no longer require `requires_system_asm=true`).
+All runtime tests now work with slasm. The slasm encoder supports MOVZ/MOVK with shift operands, enabling proper encoding of large immediate values.
 
-**Remaining Known Issues:**
-- Large unsigned immediate values (e.g., `u64` max: 18446744073709551615) still require system assembler due to slasm encoder limitations. Tests `unsigned_overflow_add.sl` and `unsigned_overflow_mul.sl` still use `requires_system_asm=true`.
-
-### ⏳ Remaining Work
-1. Support large unsigned immediates in slasm encoder
+### ✅ Completed
 
 ---
 

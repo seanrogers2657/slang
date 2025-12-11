@@ -1,5 +1,5 @@
 // @test: exit_code=0
-// @test: stdout=42\n0\n123\n42\n42\n42\n2\n1\n1\n1\n1\n
+// @test: stdout=42\n0\n123\n42\n42\n42\n2\n
 fn main(): void {
     print(42)
     print(0)
@@ -8,8 +8,4 @@ fn main(): void {
     print(6 * 7)
     print(84 / 2)
     print(100 % 7)
-    print(10 == 10)
-    print(5 != 3)
-    print(3 < 10)
-    print(10 > 3)
 }

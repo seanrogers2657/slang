@@ -217,10 +217,10 @@ func TestTypedCodeGenerator_BinaryExpr_AllIntOperations(t *testing.T) {
 		op       string
 		expected []string
 	}{
-		{"addition", "+", []string{"adds x2, x0, x1", "b.vs"}},                // checked add
-		{"subtraction", "-", []string{"subs x2, x0, x1", "b.vs"}},             // checked sub
+		{"addition", "+", []string{"adds x2, x0, x1", "b.vs"}},                  // checked add
+		{"subtraction", "-", []string{"subs x2, x0, x1", "b.vs"}},               // checked sub
 		{"multiplication", "*", []string{"mul x2, x0, x1", "smulh x3, x0, x1"}}, // checked mul
-		{"division", "/", []string{"cbz x1", "sdiv x2, x0, x1"}},              // div-by-zero check
+		{"division", "/", []string{"cbz x1", "sdiv x2, x0, x1"}},                // div-by-zero check
 		{"modulo", "%", []string{"cbz x1", "sdiv x3, x0, x1", "msub x2, x3, x1, x0"}},
 		{"equal", "==", []string{"cmp x0, x1", "cset x2, eq"}},
 		{"not equal", "!=", []string{"cmp x0, x1", "cset x2, ne"}},

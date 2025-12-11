@@ -1512,10 +1512,10 @@ func generateMinimalExportsTrie(entryOffset uint64) []byte {
 
 	// Build root node
 	rootNode := []byte{
-		0x00,                  // terminalSize = 0 (not a terminal)
-		0x01,                  // edgeCount = 1
-		'_', 0x00,             // edge label "_\0"
-		byte(childOffset),     // child node offset
+		0x00,      // terminalSize = 0 (not a terminal)
+		0x01,      // edgeCount = 1
+		'_', 0x00, // edge label "_\0"
+		byte(childOffset), // child node offset
 	}
 
 	// Build child node

@@ -189,7 +189,6 @@ Example files use `@test:` directives in header comments:
 
 ```slang
 // @test: exit_code=42
-// @test: requires_system_asm=true
 fn main() {
     42
 }
@@ -212,7 +211,6 @@ _start:
 | `stdout=text` | Expected stdout output | (empty) |
 | `stderr=text` | Expected stderr output | (empty) |
 | `skip=reason` | Skip the test with a reason | (not skipped) |
-| `requires_system_asm=true` | Test requires system assembler (sl tests only) | false |
 | `expect_error=true` | Test expects a compilation error | false |
 | `error_stage=stage` | Which stage should produce the error (lexer, parser, semantic) | (any) |
 | `error_contains=text` | Error message should contain this text | (any) |

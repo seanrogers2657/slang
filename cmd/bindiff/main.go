@@ -9,38 +9,38 @@ import (
 )
 
 const (
-	MH_MAGIC_64    = 0xfeedfacf
-	LC_SEGMENT_64  = 0x19
-	LC_SYMTAB      = 0x2
-	LC_DYSYMTAB    = 0xb
-	LC_LOAD_DYLINKER = 0xe
-	LC_LOAD_DYLIB  = 0xc
-	LC_UUID        = 0x1b
-	LC_BUILD_VERSION = 0x32
-	LC_SOURCE_VERSION = 0x2a
-	LC_CODE_SIGNATURE = 0x1d
-	LC_MAIN        = 0x80000028
+	MH_MAGIC_64            = 0xfeedfacf
+	LC_SEGMENT_64          = 0x19
+	LC_SYMTAB              = 0x2
+	LC_DYSYMTAB            = 0xb
+	LC_LOAD_DYLINKER       = 0xe
+	LC_LOAD_DYLIB          = 0xc
+	LC_UUID                = 0x1b
+	LC_BUILD_VERSION       = 0x32
+	LC_SOURCE_VERSION      = 0x2a
+	LC_CODE_SIGNATURE      = 0x1d
+	LC_MAIN                = 0x80000028
 	LC_DYLD_CHAINED_FIXUPS = 0x80000034
-	LC_DYLD_INFO_ONLY = 0x80000022
-	LC_FUNCTION_STARTS = 0x26
-	LC_DATA_IN_CODE = 0x29
+	LC_DYLD_INFO_ONLY      = 0x80000022
+	LC_FUNCTION_STARTS     = 0x26
+	LC_DATA_IN_CODE        = 0x29
 )
 
 var lcNames = map[uint32]string{
-	LC_SEGMENT_64: "LC_SEGMENT_64",
-	LC_SYMTAB: "LC_SYMTAB",
-	LC_DYSYMTAB: "LC_DYSYMTAB",
-	LC_LOAD_DYLINKER: "LC_LOAD_DYLINKER",
-	LC_LOAD_DYLIB: "LC_LOAD_DYLIB",
-	LC_UUID: "LC_UUID",
-	LC_BUILD_VERSION: "LC_BUILD_VERSION",
-	LC_SOURCE_VERSION: "LC_SOURCE_VERSION",
-	LC_CODE_SIGNATURE: "LC_CODE_SIGNATURE",
-	LC_MAIN: "LC_MAIN",
+	LC_SEGMENT_64:          "LC_SEGMENT_64",
+	LC_SYMTAB:              "LC_SYMTAB",
+	LC_DYSYMTAB:            "LC_DYSYMTAB",
+	LC_LOAD_DYLINKER:       "LC_LOAD_DYLINKER",
+	LC_LOAD_DYLIB:          "LC_LOAD_DYLIB",
+	LC_UUID:                "LC_UUID",
+	LC_BUILD_VERSION:       "LC_BUILD_VERSION",
+	LC_SOURCE_VERSION:      "LC_SOURCE_VERSION",
+	LC_CODE_SIGNATURE:      "LC_CODE_SIGNATURE",
+	LC_MAIN:                "LC_MAIN",
 	LC_DYLD_CHAINED_FIXUPS: "LC_DYLD_CHAINED_FIXUPS",
-	LC_DYLD_INFO_ONLY: "LC_DYLD_INFO_ONLY",
-	LC_FUNCTION_STARTS: "LC_FUNCTION_STARTS",
-	LC_DATA_IN_CODE: "LC_DATA_IN_CODE",
+	LC_DYLD_INFO_ONLY:      "LC_DYLD_INFO_ONLY",
+	LC_FUNCTION_STARTS:     "LC_FUNCTION_STARTS",
+	LC_DATA_IN_CODE:        "LC_DATA_IN_CODE",
 }
 
 func main() {
@@ -114,8 +114,12 @@ func compareMachO(name1, name2 string, data1, data2 []byte) {
 
 	// Show which commands are present/missing
 	allCmds := make(map[uint32]bool)
-	for cmd := range lc1 { allCmds[cmd] = true }
-	for cmd := range lc2 { allCmds[cmd] = true }
+	for cmd := range lc1 {
+		allCmds[cmd] = true
+	}
+	for cmd := range lc2 {
+		allCmds[cmd] = true
+	}
 
 	for cmd := range allCmds {
 		name := lcNames[cmd]
@@ -154,8 +158,12 @@ func compareMachO(name1, name2 string, data1, data2 []byte) {
 
 		name1 := "-"
 		name2 := "-"
-		if s1 != nil { name1 = s1.name }
-		if s2 != nil { name2 = s2.name }
+		if s1 != nil {
+			name1 = s1.name
+		}
+		if s2 != nil {
+			name2 = s2.name
+		}
 
 		fmt.Printf("\n  [%d] %-12s vs %-12s\n", i, name1, name2)
 
@@ -170,13 +178,21 @@ func compareMachO(name1, name2 string, data1, data2 []byte) {
 			// Sections
 			for j := 0; j < max(len(s1.sections), len(s2.sections)); j++ {
 				var sec1, sec2 *section
-				if j < len(s1.sections) { sec1 = &s1.sections[j] }
-				if j < len(s2.sections) { sec2 = &s2.sections[j] }
+				if j < len(s1.sections) {
+					sec1 = &s1.sections[j]
+				}
+				if j < len(s2.sections) {
+					sec2 = &s2.sections[j]
+				}
 
 				secName1 := "-"
 				secName2 := "-"
-				if sec1 != nil { secName1 = sec1.name }
-				if sec2 != nil { secName2 = sec2.name }
+				if sec1 != nil {
+					secName1 = sec1.name
+				}
+				if sec2 != nil {
+					secName2 = sec2.name
+				}
 
 				fmt.Printf("      Section: %-15s vs %-15s\n", secName1, secName2)
 				if sec1 != nil && sec2 != nil {

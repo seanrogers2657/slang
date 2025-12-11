@@ -86,6 +86,25 @@ func floatLit(value string) *ast.LiteralExpr {
 	}
 }
 
+func boolLit(value string) *ast.LiteralExpr {
+	return &ast.LiteralExpr{
+		Kind:     ast.LiteralTypeBoolean,
+		Value:    value,
+		StartPos: pos(1, 1),
+		EndPos:   pos(1, len(value)),
+	}
+}
+
+func unaryExpr(op string, operand ast.Expression) *ast.UnaryExpr {
+	return &ast.UnaryExpr{
+		Op:         op,
+		Operand:    operand,
+		OpPos:      pos(1, 1),
+		OperandPos: pos(1, 2),
+		OperandEnd: pos(1, 6),
+	}
+}
+
 func assignStmt(name string, value ast.Expression) *ast.AssignStmt {
 	return &ast.AssignStmt{
 		Name:    name,

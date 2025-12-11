@@ -35,6 +35,20 @@ func (e *TypedBinaryExpr) End() ast.Position { return e.RightPos }
 func (e *TypedBinaryExpr) GetType() Type     { return e.Type }
 func (e *TypedBinaryExpr) typedExprNode()    {}
 
+// TypedUnaryExpr represents a typed unary expression (e.g., !x)
+type TypedUnaryExpr struct {
+	Type       Type
+	Op         string // "!"
+	Operand    TypedExpression
+	OpPos      ast.Position
+	OperandEnd ast.Position
+}
+
+func (e *TypedUnaryExpr) Pos() ast.Position { return e.OpPos }
+func (e *TypedUnaryExpr) End() ast.Position { return e.OperandEnd }
+func (e *TypedUnaryExpr) GetType() Type     { return e.Type }
+func (e *TypedUnaryExpr) typedExprNode()    {}
+
 // TypedLiteralExpr represents a typed literal expression
 type TypedLiteralExpr struct {
 	Type     Type
@@ -170,11 +184,11 @@ type TypedDeclaration interface {
 
 // TypedParameter represents a typed function parameter
 type TypedParameter struct {
-	Name     string
-	NamePos  ast.Position
-	Colon    ast.Position
-	Type     Type
-	TypePos  ast.Position
+	Name    string
+	NamePos ast.Position
+	Colon   ast.Position
+	Type    Type
+	TypePos ast.Position
 }
 
 // TypedFunctionDecl represents a typed function declaration

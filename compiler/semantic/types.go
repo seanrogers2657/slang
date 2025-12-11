@@ -2,8 +2,8 @@ package semantic
 
 // Type represents a type in the Slang type system
 type Type interface {
-	String() string          // Human-readable name
-	Equals(other Type) bool  // Type equality check
+	String() string         // Human-readable name
+	Equals(other Type) bool // Type equality check
 }
 
 // NumericType provides bit width info for numeric types
@@ -17,10 +17,10 @@ type NumericType interface {
 // IntegerType represents the default integer type (i64)
 type IntegerType struct{}
 
-func (t IntegerType) String() string  { return "i64" }
-func (t IntegerType) BitWidth() int   { return 64 }
-func (t IntegerType) IsSigned() bool  { return true }
-func (t IntegerType) IsFloat() bool   { return false }
+func (t IntegerType) String() string { return "i64" }
+func (t IntegerType) BitWidth() int  { return 64 }
+func (t IntegerType) IsSigned() bool { return true }
+func (t IntegerType) IsFloat() bool  { return false }
 func (t IntegerType) Equals(other Type) bool {
 	_, ok := other.(IntegerType)
 	if ok {
@@ -33,31 +33,35 @@ func (t IntegerType) Equals(other Type) bool {
 
 // Signed integer types
 type I8Type struct{}
-func (t I8Type) String() string  { return "i8" }
-func (t I8Type) BitWidth() int   { return 8 }
-func (t I8Type) IsSigned() bool  { return true }
-func (t I8Type) IsFloat() bool   { return false }
+
+func (t I8Type) String() string         { return "i8" }
+func (t I8Type) BitWidth() int          { return 8 }
+func (t I8Type) IsSigned() bool         { return true }
+func (t I8Type) IsFloat() bool          { return false }
 func (t I8Type) Equals(other Type) bool { _, ok := other.(I8Type); return ok }
 
 type I16Type struct{}
-func (t I16Type) String() string  { return "i16" }
-func (t I16Type) BitWidth() int   { return 16 }
-func (t I16Type) IsSigned() bool  { return true }
-func (t I16Type) IsFloat() bool   { return false }
+
+func (t I16Type) String() string         { return "i16" }
+func (t I16Type) BitWidth() int          { return 16 }
+func (t I16Type) IsSigned() bool         { return true }
+func (t I16Type) IsFloat() bool          { return false }
 func (t I16Type) Equals(other Type) bool { _, ok := other.(I16Type); return ok }
 
 type I32Type struct{}
-func (t I32Type) String() string  { return "i32" }
-func (t I32Type) BitWidth() int   { return 32 }
-func (t I32Type) IsSigned() bool  { return true }
-func (t I32Type) IsFloat() bool   { return false }
+
+func (t I32Type) String() string         { return "i32" }
+func (t I32Type) BitWidth() int          { return 32 }
+func (t I32Type) IsSigned() bool         { return true }
+func (t I32Type) IsFloat() bool          { return false }
 func (t I32Type) Equals(other Type) bool { _, ok := other.(I32Type); return ok }
 
 type I64Type struct{}
-func (t I64Type) String() string  { return "i64" }
-func (t I64Type) BitWidth() int   { return 64 }
-func (t I64Type) IsSigned() bool  { return true }
-func (t I64Type) IsFloat() bool   { return false }
+
+func (t I64Type) String() string { return "i64" }
+func (t I64Type) BitWidth() int  { return 64 }
+func (t I64Type) IsSigned() bool { return true }
+func (t I64Type) IsFloat() bool  { return false }
 func (t I64Type) Equals(other Type) bool {
 	_, ok := other.(I64Type)
 	if ok {
@@ -69,61 +73,69 @@ func (t I64Type) Equals(other Type) bool {
 }
 
 type I128Type struct{}
-func (t I128Type) String() string  { return "i128" }
-func (t I128Type) BitWidth() int   { return 128 }
-func (t I128Type) IsSigned() bool  { return true }
-func (t I128Type) IsFloat() bool   { return false }
+
+func (t I128Type) String() string         { return "i128" }
+func (t I128Type) BitWidth() int          { return 128 }
+func (t I128Type) IsSigned() bool         { return true }
+func (t I128Type) IsFloat() bool          { return false }
 func (t I128Type) Equals(other Type) bool { _, ok := other.(I128Type); return ok }
 
 // Unsigned integer types
 type U8Type struct{}
-func (t U8Type) String() string  { return "u8" }
-func (t U8Type) BitWidth() int   { return 8 }
-func (t U8Type) IsSigned() bool  { return false }
-func (t U8Type) IsFloat() bool   { return false }
+
+func (t U8Type) String() string         { return "u8" }
+func (t U8Type) BitWidth() int          { return 8 }
+func (t U8Type) IsSigned() bool         { return false }
+func (t U8Type) IsFloat() bool          { return false }
 func (t U8Type) Equals(other Type) bool { _, ok := other.(U8Type); return ok }
 
 type U16Type struct{}
-func (t U16Type) String() string  { return "u16" }
-func (t U16Type) BitWidth() int   { return 16 }
-func (t U16Type) IsSigned() bool  { return false }
-func (t U16Type) IsFloat() bool   { return false }
+
+func (t U16Type) String() string         { return "u16" }
+func (t U16Type) BitWidth() int          { return 16 }
+func (t U16Type) IsSigned() bool         { return false }
+func (t U16Type) IsFloat() bool          { return false }
 func (t U16Type) Equals(other Type) bool { _, ok := other.(U16Type); return ok }
 
 type U32Type struct{}
-func (t U32Type) String() string  { return "u32" }
-func (t U32Type) BitWidth() int   { return 32 }
-func (t U32Type) IsSigned() bool  { return false }
-func (t U32Type) IsFloat() bool   { return false }
+
+func (t U32Type) String() string         { return "u32" }
+func (t U32Type) BitWidth() int          { return 32 }
+func (t U32Type) IsSigned() bool         { return false }
+func (t U32Type) IsFloat() bool          { return false }
 func (t U32Type) Equals(other Type) bool { _, ok := other.(U32Type); return ok }
 
 type U64Type struct{}
-func (t U64Type) String() string  { return "u64" }
-func (t U64Type) BitWidth() int   { return 64 }
-func (t U64Type) IsSigned() bool  { return false }
-func (t U64Type) IsFloat() bool   { return false }
+
+func (t U64Type) String() string         { return "u64" }
+func (t U64Type) BitWidth() int          { return 64 }
+func (t U64Type) IsSigned() bool         { return false }
+func (t U64Type) IsFloat() bool          { return false }
 func (t U64Type) Equals(other Type) bool { _, ok := other.(U64Type); return ok }
 
 type U128Type struct{}
-func (t U128Type) String() string  { return "u128" }
-func (t U128Type) BitWidth() int   { return 128 }
-func (t U128Type) IsSigned() bool  { return false }
-func (t U128Type) IsFloat() bool   { return false }
+
+func (t U128Type) String() string         { return "u128" }
+func (t U128Type) BitWidth() int          { return 128 }
+func (t U128Type) IsSigned() bool         { return false }
+func (t U128Type) IsFloat() bool          { return false }
 func (t U128Type) Equals(other Type) bool { _, ok := other.(U128Type); return ok }
 
 // Floating point types
 type F32Type struct{}
-func (t F32Type) String() string  { return "f32" }
-func (t F32Type) BitWidth() int   { return 32 }
-func (t F32Type) IsSigned() bool  { return true }
-func (t F32Type) IsFloat() bool   { return true }
+
+func (t F32Type) String() string         { return "f32" }
+func (t F32Type) BitWidth() int          { return 32 }
+func (t F32Type) IsSigned() bool         { return true }
+func (t F32Type) IsFloat() bool          { return true }
 func (t F32Type) Equals(other Type) bool { _, ok := other.(F32Type); return ok }
 
 type F64Type struct{}
-func (t F64Type) String() string  { return "f64" }
-func (t F64Type) BitWidth() int   { return 64 }
-func (t F64Type) IsSigned() bool  { return true }
-func (t F64Type) IsFloat() bool   { return true }
+
+func (t F64Type) String() string         { return "f64" }
+func (t F64Type) BitWidth() int          { return 64 }
+func (t F64Type) IsSigned() bool         { return true }
+func (t F64Type) IsFloat() bool          { return true }
 func (t F64Type) Equals(other Type) bool { _, ok := other.(F64Type); return ok }
 
 // StringType represents the string type

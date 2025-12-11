@@ -11,16 +11,16 @@ import (
 // VariableInfo holds metadata about a variable's stack location and type.
 type VariableInfo struct {
 	Offset int
-	Type   semantic.Type // nil for untyped codegen
+	Type   semantic.Type
 }
 
 // BaseContext provides shared context functionality for code generation.
 // It tracks variable allocations, stack offsets, and source line information.
 type BaseContext struct {
-	variables   map[string]VariableInfo
-	stackOffset int
-	sourceLines []string
-	stringMap   map[*ast.LiteralExpr]string // for AST-based codegen
+	variables    map[string]VariableInfo
+	stackOffset  int
+	sourceLines  []string
+	labelCounter int // counter for generating unique labels
 }
 
 // NewBaseContext creates a new code generation context.
@@ -29,7 +29,6 @@ func NewBaseContext(sourceLines []string) *BaseContext {
 		variables:   make(map[string]VariableInfo),
 		stackOffset: 0,
 		sourceLines: sourceLines,
-		stringMap:   make(map[*ast.LiteralExpr]string),
 	}
 }
 
@@ -47,12 +46,6 @@ func (ctx *BaseContext) GetVariable(name string) (VariableInfo, bool) {
 	return v, ok
 }
 
-// GetVariableOffset returns just the stack offset for a variable (for untyped codegen).
-func (ctx *BaseContext) GetVariableOffset(name string) (int, bool) {
-	v, ok := ctx.variables[name]
-	return v.Offset, ok
-}
-
 // GetSourceLineComment returns a comment with the source line for a given position.
 func (ctx *BaseContext) GetSourceLineComment(pos ast.Position) string {
 	if ctx.sourceLines == nil || pos.Line <= 0 || pos.Line > len(ctx.sourceLines) {
@@ -65,13 +58,10 @@ func (ctx *BaseContext) GetSourceLineComment(pos ast.Position) string {
 	return fmt.Sprintf("// %d: %s\n", pos.Line, line)
 }
 
-// SetStringMap sets the string literal map for AST-based codegen.
-func (ctx *BaseContext) SetStringMap(m map[*ast.LiteralExpr]string) {
-	ctx.stringMap = m
-}
-
-// GetStringLabel returns the label for a string literal.
-func (ctx *BaseContext) GetStringLabel(lit *ast.LiteralExpr) (string, bool) {
-	label, ok := ctx.stringMap[lit]
-	return label, ok
+// NextLabel generates a unique label with the given prefix.
+// Used for generating branch targets in control flow (short-circuit evaluation, etc.)
+// Note: Labels use underscore prefix (not .L) for slasm compatibility.
+func (ctx *BaseContext) NextLabel(prefix string) string {
+	ctx.labelCounter++
+	return fmt.Sprintf("_%s_%d", prefix, ctx.labelCounter)
 }

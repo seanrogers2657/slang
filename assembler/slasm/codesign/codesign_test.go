@@ -247,19 +247,19 @@ func TestSuperBlobPut(t *testing.T) {
 
 func TestCodeDirectoryPut(t *testing.T) {
 	cd := CodeDirectory{
-		magic:        CSMAGIC_CODEDIRECTORY,
-		length:       200,
-		version:      0x20400,
-		flags:        0x20002,
-		hashOffset:   100,
-		identOffset:  88,
+		magic:         CSMAGIC_CODEDIRECTORY,
+		length:        200,
+		version:       0x20400,
+		flags:         0x20002,
+		hashOffset:    100,
+		identOffset:   88,
 		nSpecialSlots: 0,
-		nCodeSlots:   4,
-		codeLimit:    16384,
-		hashSize:     32,
-		hashType:     CS_HASHTYPE_SHA256,
-		pageSize:     12,
-		execSegFlags: CS_EXECSEG_MAIN_BINARY,
+		nCodeSlots:    4,
+		codeLimit:     16384,
+		hashSize:      32,
+		hashType:      CS_HASHTYPE_SHA256,
+		pageSize:      12,
+		execSegFlags:  CS_EXECSEG_MAIN_BINARY,
 	}
 
 	out := make([]byte, codeDirectorySize)

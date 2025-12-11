@@ -38,7 +38,7 @@ func TestAnalyzeBinaryExpression_Comparison(t *testing.T) {
 		t.Run(op, func(t *testing.T) {
 			test := newTest(t)
 			result := test.analyzer.analyzeBinaryExpression(binExpr(intLit("5"), op, intLit("3")))
-			test.expectType(result, TypeInteger)
+			test.expectType(result, TypeBoolean)
 			test.expectNoErrors()
 		})
 	}
@@ -327,10 +327,10 @@ func TestAnalyzeBoundsCheckingNegative(t *testing.T) {
 
 func TestAnalyzeTypeMismatch(t *testing.T) {
 	tests := []struct {
-		name     string
-		leftType string
+		name      string
+		leftType  string
 		rightType string
-		errorMsg string
+		errorMsg  string
 	}{
 		{"i32 + i64", "i32", "i64", "requires operands of the same type"},
 		{"i8 + i16", "i8", "i16", "requires operands of the same type"},
@@ -457,5 +457,232 @@ func TestAnalyzeUnknownType(t *testing.T) {
 		test := newTest(t).withScope()
 		test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", "unknown_type", false, intLit("42")))
 		test.expectErrorContaining("unknown type")
+	})
+}
+
+// -----------------------------------------------------------------------------
+// Boolean Type Tests
+// -----------------------------------------------------------------------------
+
+func TestAnalyzeBooleanLiteral(t *testing.T) {
+	t.Run("true literal", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeLiteral(boolLit("true"))
+		test.expectType(result, TypeBoolean)
+		test.expectNoErrors()
+	})
+
+	t.Run("false literal", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeLiteral(boolLit("false"))
+		test.expectType(result, TypeBoolean)
+		test.expectNoErrors()
+	})
+}
+
+func TestAnalyzeUnaryNot(t *testing.T) {
+	t.Run("!true has type bool", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeUnaryExpression(unaryExpr("!", boolLit("true")))
+		test.expectType(result, TypeBoolean)
+		test.expectNoErrors()
+	})
+
+	t.Run("!false has type bool", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeUnaryExpression(unaryExpr("!", boolLit("false")))
+		test.expectType(result, TypeBoolean)
+		test.expectNoErrors()
+	})
+
+	t.Run("!!true has type bool", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeUnaryExpression(unaryExpr("!", unaryExpr("!", boolLit("true"))))
+		test.expectType(result, TypeBoolean)
+		test.expectNoErrors()
+	})
+
+	t.Run("!5 is type error", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeUnaryExpression(unaryExpr("!", intLit("5")))
+		test.expectType(result, TypeError)
+		test.expectErrorContaining("requires boolean operand")
+	})
+
+	t.Run("!variable with boolean type", func(t *testing.T) {
+		test := newTest(t).withScope().declare("flag", TypeBoolean, false)
+		result := test.analyzer.analyzeUnaryExpression(unaryExpr("!", ident("flag")))
+		test.expectType(result, TypeBoolean)
+		test.expectNoErrors()
+	})
+
+	t.Run("!variable with integer type", func(t *testing.T) {
+		test := newTest(t).withScope().declare("count", TypeInteger, false)
+		result := test.analyzer.analyzeUnaryExpression(unaryExpr("!", ident("count")))
+		test.expectType(result, TypeError)
+		test.expectErrorContaining("requires boolean operand")
+	})
+}
+
+func TestAnalyzeLogicalAnd(t *testing.T) {
+	t.Run("true && false has type bool", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeBinaryExpression(binExpr(boolLit("true"), "&&", boolLit("false")))
+		test.expectType(result, TypeBoolean)
+		test.expectNoErrors()
+	})
+
+	t.Run("true && true has type bool", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeBinaryExpression(binExpr(boolLit("true"), "&&", boolLit("true")))
+		test.expectType(result, TypeBoolean)
+		test.expectNoErrors()
+	})
+
+	t.Run("5 && 3 is type error", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeBinaryExpression(binExpr(intLit("5"), "&&", intLit("3")))
+		test.expectType(result, TypeError)
+		test.expectErrorContaining("requires boolean operands")
+	})
+
+	t.Run("true && 5 is type error", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeBinaryExpression(binExpr(boolLit("true"), "&&", intLit("5")))
+		test.expectType(result, TypeError)
+		test.expectErrorContaining("requires boolean operands")
+	})
+
+	t.Run("5 && true is type error", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeBinaryExpression(binExpr(intLit("5"), "&&", boolLit("true")))
+		test.expectType(result, TypeError)
+		test.expectErrorContaining("requires boolean operands")
+	})
+}
+
+func TestAnalyzeLogicalOr(t *testing.T) {
+	t.Run("true || false has type bool", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeBinaryExpression(binExpr(boolLit("true"), "||", boolLit("false")))
+		test.expectType(result, TypeBoolean)
+		test.expectNoErrors()
+	})
+
+	t.Run("false || false has type bool", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeBinaryExpression(binExpr(boolLit("false"), "||", boolLit("false")))
+		test.expectType(result, TypeBoolean)
+		test.expectNoErrors()
+	})
+
+	t.Run("5 || 3 is type error", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeBinaryExpression(binExpr(intLit("5"), "||", intLit("3")))
+		test.expectType(result, TypeError)
+		test.expectErrorContaining("requires boolean operands")
+	})
+}
+
+func TestAnalyzeComparisonReturnsBool(t *testing.T) {
+	// This is a breaking change - comparisons now return bool instead of i64
+	for _, op := range []string{"==", "!=", "<", ">", "<=", ">="} {
+		t.Run(op+" returns bool", func(t *testing.T) {
+			test := newTest(t)
+			result := test.analyzer.analyzeBinaryExpression(binExpr(intLit("5"), op, intLit("3")))
+			test.expectType(result, TypeBoolean)
+			test.expectNoErrors()
+		})
+	}
+}
+
+func TestAnalyzeComparisonWithLogical(t *testing.T) {
+	t.Run("(5 < 10) && (3 > 1) has type bool", func(t *testing.T) {
+		test := newTest(t).withScope()
+		// Simulate: (5 < 10) && (3 > 1)
+		// First analyze the comparisons
+		left := test.analyzer.analyzeBinaryExpression(binExpr(intLit("5"), "<", intLit("10")))
+		right := test.analyzer.analyzeBinaryExpression(binExpr(intLit("3"), ">", intLit("1")))
+
+		// Both should be boolean
+		test.expectType(left, TypeBoolean)
+		test.expectType(right, TypeBoolean)
+
+		// Now create a logical AND of two boolean variables
+		test.analyzer.currentScope.declare("a", TypeBoolean, false)
+		test.analyzer.currentScope.declare("b", TypeBoolean, false)
+		result := test.analyzer.analyzeBinaryExpression(binExpr(ident("a"), "&&", ident("b")))
+		test.expectType(result, TypeBoolean)
+		test.expectNoErrors()
+	})
+}
+
+func TestAnalyzeBooleanVariableDeclaration(t *testing.T) {
+	t.Run("val x = true", func(t *testing.T) {
+		test := newTest(t).withScope()
+		result := test.analyzer.analyzeVarDeclStatement(varDecl("x", false, boolLit("true")))
+
+		typedVarDecl, ok := result.(*TypedVarDeclStmt)
+		if !ok {
+			t.Fatal("expected TypedVarDeclStmt")
+		}
+
+		test.expectType(typedVarDecl.Initializer, TypeBoolean)
+		test.expectNoErrors()
+
+		// Verify variable is in scope with boolean type
+		varInfo, found := test.analyzer.currentScope.lookup("x")
+		if !found {
+			t.Error("variable x not found in scope")
+		}
+		if !varInfo.Type.Equals(TypeBoolean) {
+			t.Errorf("variable has wrong type: expected bool, got %s", varInfo.Type)
+		}
+	})
+
+	t.Run("val x: bool = false", func(t *testing.T) {
+		test := newTest(t).withScope()
+		result := test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", "bool", false, boolLit("false")))
+
+		typedVarDecl, ok := result.(*TypedVarDeclStmt)
+		if !ok {
+			t.Fatal("expected TypedVarDeclStmt")
+		}
+
+		test.expectNoErrors()
+
+		varInfo, found := test.analyzer.currentScope.lookup("x")
+		if !found {
+			t.Error("variable x not found in scope")
+		}
+		if !varInfo.Type.Equals(TypeBoolean) {
+			t.Errorf("variable has wrong type: expected bool, got %s", varInfo.Type)
+		}
+		_ = typedVarDecl // silence unused warning
+	})
+}
+
+func TestAnalyzeBooleanArithmeticError(t *testing.T) {
+	t.Run("true + false is type error", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeBinaryExpression(binExpr(boolLit("true"), "+", boolLit("false")))
+		test.expectType(result, TypeError)
+		test.expectErrorContaining("requires numeric operands")
+	})
+
+	t.Run("true - true is type error", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeBinaryExpression(binExpr(boolLit("true"), "-", boolLit("true")))
+		test.expectType(result, TypeError)
+		test.expectErrorContaining("requires numeric operands")
+	})
+}
+
+func TestAnalyzeUnknownUnaryOperator(t *testing.T) {
+	t.Run("unknown unary operator", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeUnaryExpression(unaryExpr("~", intLit("5")))
+		test.expectType(result, TypeError)
+		test.expectErrorContaining("unknown unary operator")
 	})
 }

@@ -341,14 +341,19 @@ func TestLexerErrors(t *testing.T) {
 		expectedError string
 	}{
 		{
-			name:          "exclamation without equals",
-			input:         "!5",
-			expectedError: "unexpected character: '!'",
-		},
-		{
 			name:          "unexpected character",
 			input:         "2 @ 5",
 			expectedError: "unexpected character: '@'",
+		},
+		{
+			name:          "single ampersand",
+			input:         "a & b",
+			expectedError: "unexpected character: '&' (bitwise & not supported, use && for logical AND)",
+		},
+		{
+			name:          "single pipe",
+			input:         "a | b",
+			expectedError: "unexpected character: '|' (bitwise | not supported, use || for logical OR)",
 		},
 	}
 
@@ -912,6 +917,174 @@ func TestLexerComments(t *testing.T) {
 				{Type: TokenTypeInteger, Value: "10"},
 				{Type: TokenTypeDivide, Value: "/"},
 				{Type: TokenTypeInteger, Value: "2"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("unexpected errors: %v", l.Errors)
+			}
+
+			if len(l.Tokens) != len(tt.expected) {
+				t.Fatalf("expected %d tokens, got %d: %v", len(tt.expected), len(l.Tokens), l.Tokens)
+			}
+
+			for i, token := range l.Tokens {
+				if token.Type != tt.expected[i].Type {
+					t.Errorf("token %d: expected type %v, got %v", i, tt.expected[i].Type, token.Type)
+				}
+				if token.Value != tt.expected[i].Value {
+					t.Errorf("token %d: expected value %q, got %q", i, tt.expected[i].Value, token.Value)
+				}
+			}
+		})
+	}
+}
+
+func TestLexerBooleanTokens(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []Token
+	}{
+		{
+			name:  "true keyword",
+			input: "true",
+			expected: []Token{
+				{Type: TokenTypeTrue, Value: "true"},
+			},
+		},
+		{
+			name:  "false keyword",
+			input: "false",
+			expected: []Token{
+				{Type: TokenTypeFalse, Value: "false"},
+			},
+		},
+		{
+			name:  "logical AND",
+			input: "&&",
+			expected: []Token{
+				{Type: TokenTypeAnd, Value: "&&"},
+			},
+		},
+		{
+			name:  "logical OR",
+			input: "||",
+			expected: []Token{
+				{Type: TokenTypeOr, Value: "||"},
+			},
+		},
+		{
+			name:  "logical NOT",
+			input: "!",
+			expected: []Token{
+				{Type: TokenTypeNot, Value: "!"},
+			},
+		},
+		{
+			name:  "not equal unchanged",
+			input: "!=",
+			expected: []Token{
+				{Type: TokenTypeNotEqual, Value: "!="},
+			},
+		},
+		{
+			name:  "not followed by true",
+			input: "!true",
+			expected: []Token{
+				{Type: TokenTypeNot, Value: "!"},
+				{Type: TokenTypeTrue, Value: "true"},
+			},
+		},
+		{
+			name:  "not followed by false",
+			input: "!false",
+			expected: []Token{
+				{Type: TokenTypeNot, Value: "!"},
+				{Type: TokenTypeFalse, Value: "false"},
+			},
+		},
+		{
+			name:  "not followed by number",
+			input: "!5",
+			expected: []Token{
+				{Type: TokenTypeNot, Value: "!"},
+				{Type: TokenTypeInteger, Value: "5"},
+			},
+		},
+		{
+			name:  "logical AND expression",
+			input: "a && b",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "a"},
+				{Type: TokenTypeAnd, Value: "&&"},
+				{Type: TokenTypeIdentifier, Value: "b"},
+			},
+		},
+		{
+			name:  "logical OR expression",
+			input: "a || b",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "a"},
+				{Type: TokenTypeOr, Value: "||"},
+				{Type: TokenTypeIdentifier, Value: "b"},
+			},
+		},
+		{
+			name:  "complex boolean expression",
+			input: "a && b || c",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "a"},
+				{Type: TokenTypeAnd, Value: "&&"},
+				{Type: TokenTypeIdentifier, Value: "b"},
+				{Type: TokenTypeOr, Value: "||"},
+				{Type: TokenTypeIdentifier, Value: "c"},
+			},
+		},
+		{
+			name:  "boolean literals in expression",
+			input: "true && false",
+			expected: []Token{
+				{Type: TokenTypeTrue, Value: "true"},
+				{Type: TokenTypeAnd, Value: "&&"},
+				{Type: TokenTypeFalse, Value: "false"},
+			},
+		},
+		{
+			name:  "mixed comparison and logical",
+			input: "x < 5 && y > 3",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "x"},
+				{Type: TokenTypeLessThan, Value: "<"},
+				{Type: TokenTypeInteger, Value: "5"},
+				{Type: TokenTypeAnd, Value: "&&"},
+				{Type: TokenTypeIdentifier, Value: "y"},
+				{Type: TokenTypeGreaterThan, Value: ">"},
+				{Type: TokenTypeInteger, Value: "3"},
+			},
+		},
+		{
+			name:  "identifiers starting with true/false",
+			input: "trueValue falseFlag",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "trueValue"},
+				{Type: TokenTypeIdentifier, Value: "falseFlag"},
+			},
+		},
+		{
+			name:  "val with boolean",
+			input: "val x = true",
+			expected: []Token{
+				{Type: TokenTypeVal, Value: "val"},
+				{Type: TokenTypeIdentifier, Value: "x"},
+				{Type: TokenTypeAssign, Value: "="},
+				{Type: TokenTypeTrue, Value: "true"},
 			},
 		},
 	}

@@ -489,6 +489,8 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 		return a.analyzeLiteral(e)
 	case *ast.BinaryExpr:
 		return a.analyzeBinaryExpression(e)
+	case *ast.UnaryExpr:
+		return a.analyzeUnaryExpression(e)
 	case *ast.IdentifierExpr:
 		return a.analyzeIdentifier(e)
 	case *ast.CallExpr:
@@ -748,6 +750,49 @@ func (a *Analyzer) analyzeBinaryExpression(expr *ast.BinaryExpr) TypedExpression
 	}
 }
 
+// analyzeUnaryExpression analyzes a unary expression (e.g., !x)
+func (a *Analyzer) analyzeUnaryExpression(expr *ast.UnaryExpr) TypedExpression {
+	operand := a.analyzeExpression(expr.Operand)
+	operandType := operand.GetType()
+
+	if expr.Op == "!" {
+		// ! requires boolean operand
+		if _, isBool := operandType.(BooleanType); !isBool {
+			if _, isErr := operandType.(ErrorType); !isErr {
+				a.addError(
+					fmt.Sprintf("operator '!' requires boolean operand, got '%s'", operandType.String()),
+					expr.OperandPos, expr.OperandEnd,
+				).WithHint("logical NOT only works with boolean values")
+			}
+			return &TypedUnaryExpr{
+				Type:       TypeError,
+				Op:         expr.Op,
+				Operand:    operand,
+				OpPos:      expr.OpPos,
+				OperandEnd: expr.OperandEnd,
+			}
+		}
+
+		return &TypedUnaryExpr{
+			Type:       TypeBoolean,
+			Op:         expr.Op,
+			Operand:    operand,
+			OpPos:      expr.OpPos,
+			OperandEnd: expr.OperandEnd,
+		}
+	}
+
+	// Unknown unary operator
+	a.addError(fmt.Sprintf("unknown unary operator: '%s'", expr.Op), expr.OpPos, expr.OpPos)
+	return &TypedUnaryExpr{
+		Type:       TypeError,
+		Op:         expr.Op,
+		Operand:    operand,
+		OpPos:      expr.OpPos,
+		OperandEnd: expr.OperandEnd,
+	}
+}
+
 // checkBinaryOperation checks if a binary operation is valid and returns the result type
 func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, leftPos, rightPos ast.Position) Type {
 	// Check for error types - propagate them
@@ -756,6 +801,30 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 	}
 	if _, ok := rightType.(ErrorType); ok {
 		return TypeError
+	}
+
+	// Logical operators: &&, ||
+	// These require boolean operands and return boolean
+	if op == "&&" || op == "||" {
+		// Check left operand is boolean
+		if _, isBool := leftType.(BooleanType); !isBool {
+			a.addError(
+				fmt.Sprintf("operator '%s' requires boolean operands, got '%s'", op, leftType.String()),
+				leftPos, leftPos,
+			).WithHint("logical operators only work with boolean values")
+			return TypeError
+		}
+
+		// Check right operand is boolean
+		if _, isBool := rightType.(BooleanType); !isBool {
+			a.addError(
+				fmt.Sprintf("operator '%s' requires boolean operands, got '%s'", op, rightType.String()),
+				rightPos, rightPos,
+			).WithHint("logical operators only work with boolean values")
+			return TypeError
+		}
+
+		return TypeBoolean
 	}
 
 	// Arithmetic operators: +, -, *, /, %
@@ -802,7 +871,7 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 	}
 
 	// Comparison operators: ==, !=, <, >, <=, >=
-	// These require matching numeric types and return i64 (0 or 1)
+	// These require matching numeric types and return bool
 	if op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" {
 		// Check left operand is numeric
 		if !isIntegerType(leftType) && !isFloatType(leftType) {
@@ -832,8 +901,8 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 			return TypeError
 		}
 
-		// Comparison result is an integer (0 or 1)
-		return TypeInteger
+		// Comparison result is boolean
+		return TypeBoolean
 	}
 
 	// Unknown operator

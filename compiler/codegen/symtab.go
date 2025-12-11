@@ -129,13 +129,13 @@ func (s *SymbolTable) GenerateDataSection() string {
 		nameLabel := fmt.Sprintf("_symtab_name_%d", i)
 
 		b.WriteString(fmt.Sprintf("    // %s at %s:%d\n", entry.Name, entry.Filename, entry.StartLine))
-		b.WriteString(fmt.Sprintf("    .quad %s\n", entry.Label))               // start address
-		b.WriteString(fmt.Sprintf("    .quad %s\n", entry.EndLabel))            // end address
-		b.WriteString(fmt.Sprintf("    .quad %s\n", nameLabel))                 // name pointer
-		b.WriteString(fmt.Sprintf("    .quad %d\n", len(entry.Name)))           // name length
-		b.WriteString(fmt.Sprintf("    .quad %s\n", fileLabel))                 // file pointer
-		b.WriteString(fmt.Sprintf("    .quad %d\n", len(entry.Filename)))       // file length
-		b.WriteString(fmt.Sprintf("    .quad %d\n", entry.StartLine))           // line number
+		b.WriteString(fmt.Sprintf("    .quad %s\n", entry.Label))         // start address
+		b.WriteString(fmt.Sprintf("    .quad %s\n", entry.EndLabel))      // end address
+		b.WriteString(fmt.Sprintf("    .quad %s\n", nameLabel))           // name pointer
+		b.WriteString(fmt.Sprintf("    .quad %d\n", len(entry.Name)))     // name length
+		b.WriteString(fmt.Sprintf("    .quad %s\n", fileLabel))           // file pointer
+		b.WriteString(fmt.Sprintf("    .quad %d\n", len(entry.Filename))) // file length
+		b.WriteString(fmt.Sprintf("    .quad %d\n", entry.StartLine))     // line number
 	}
 
 	// Sentinel entry (null terminator)

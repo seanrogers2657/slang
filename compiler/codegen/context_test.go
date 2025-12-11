@@ -17,9 +17,6 @@ func TestNewBaseContext(t *testing.T) {
 	if ctx.stackOffset != 0 {
 		t.Errorf("stackOffset should be 0, got %d", ctx.stackOffset)
 	}
-	if ctx.stringMap == nil {
-		t.Error("stringMap should be initialized")
-	}
 }
 
 func TestNewBaseContext_WithSourceLines(t *testing.T) {
@@ -66,24 +63,6 @@ func TestBaseContext_GetVariable(t *testing.T) {
 	}
 
 	_, found = ctx.GetVariable("notfound")
-	if found {
-		t.Error("variable notfound should not be found")
-	}
-}
-
-func TestBaseContext_GetVariableOffset(t *testing.T) {
-	ctx := NewBaseContext(nil)
-	ctx.DeclareVariable("x", semantic.TypeI64)
-
-	offset, found := ctx.GetVariableOffset("x")
-	if !found {
-		t.Error("variable x should be found")
-	}
-	if offset != 16 {
-		t.Errorf("expected offset 16, got %d", offset)
-	}
-
-	_, found = ctx.GetVariableOffset("notfound")
 	if found {
 		t.Error("variable notfound should not be found")
 	}
@@ -165,70 +144,6 @@ func TestBaseContext_GetSourceLineComment_NilSourceLines(t *testing.T) {
 	}
 }
 
-func TestBaseContext_SetStringMap(t *testing.T) {
-	ctx := NewBaseContext(nil)
-
-	lit := &ast.LiteralExpr{Value: "hello", Kind: ast.LiteralTypeString}
-	stringMap := map[*ast.LiteralExpr]string{
-		lit: "str_0",
-	}
-
-	ctx.SetStringMap(stringMap)
-
-	label, found := ctx.GetStringLabel(lit)
-	if !found {
-		t.Error("string literal should be found after SetStringMap")
-	}
-	if label != "str_0" {
-		t.Errorf("expected label str_0, got %s", label)
-	}
-}
-
-func TestBaseContext_GetStringLabel(t *testing.T) {
-	ctx := NewBaseContext(nil)
-
-	lit1 := &ast.LiteralExpr{Value: "hello", Kind: ast.LiteralTypeString}
-	lit2 := &ast.LiteralExpr{Value: "world", Kind: ast.LiteralTypeString}
-	lit3 := &ast.LiteralExpr{Value: "notfound", Kind: ast.LiteralTypeString}
-
-	ctx.SetStringMap(map[*ast.LiteralExpr]string{
-		lit1: "str_0",
-		lit2: "str_1",
-	})
-
-	label, found := ctx.GetStringLabel(lit1)
-	if !found {
-		t.Error("lit1 should be found")
-	}
-	if label != "str_0" {
-		t.Errorf("expected str_0, got %s", label)
-	}
-
-	label, found = ctx.GetStringLabel(lit2)
-	if !found {
-		t.Error("lit2 should be found")
-	}
-	if label != "str_1" {
-		t.Errorf("expected str_1, got %s", label)
-	}
-
-	_, found = ctx.GetStringLabel(lit3)
-	if found {
-		t.Error("lit3 should not be found")
-	}
-}
-
-func TestBaseContext_GetStringLabel_EmptyMap(t *testing.T) {
-	ctx := NewBaseContext(nil)
-
-	lit := &ast.LiteralExpr{Value: "test", Kind: ast.LiteralTypeString}
-
-	_, found := ctx.GetStringLabel(lit)
-	if found {
-		t.Error("should not find label in empty map")
-	}
-}
-
 func TestBaseContext_MultipleVariables(t *testing.T) {
 	ctx := NewBaseContext(nil)
 
@@ -254,5 +169,24 @@ func TestBaseContext_MultipleVariables(t *testing.T) {
 
 	if aInfo.Offset >= fInfo.Offset {
 		t.Error("later variables should have larger offsets")
+	}
+}
+
+func TestBaseContext_NextLabel(t *testing.T) {
+	ctx := NewBaseContext(nil)
+
+	label1 := ctx.NextLabel("and_end")
+	if label1 != "_and_end_1" {
+		t.Errorf("expected _and_end_1, got %s", label1)
+	}
+
+	label2 := ctx.NextLabel("or_true")
+	if label2 != "_or_true_2" {
+		t.Errorf("expected _or_true_2, got %s", label2)
+	}
+
+	label3 := ctx.NextLabel("and_end")
+	if label3 != "_and_end_3" {
+		t.Errorf("expected _and_end_3, got %s", label3)
 	}
 }

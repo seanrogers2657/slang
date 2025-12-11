@@ -40,14 +40,17 @@ This repository follows strict organizational rules:
 
 The compiler currently supports:
 - **Variables**: Immutable (`val`) and mutable (`var`) variables (e.g., `val x = 5`, `var y = 10`)
-- **Expressions**: Binary expressions with integers
+- **Types**: `i64` (integer), `bool` (boolean), `string`, `void`
+- **Expressions**: Binary and unary expressions
 - **Operators**:
   - Arithmetic: `+`, `-`, `*`, `/`, `%`
-  - Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
+  - Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=` (return `bool`)
+  - Logical: `&&` (and), `||` (or), `!` (not)
+- **Boolean literals**: `true`, `false`
 - **Statements**: Expression statements, variable declarations
 - **Functions**: Function declarations with `fn` keyword (e.g., `fn main() { ... }`)
 - **Built-in Functions**:
-  - `print(value)` - print an integer value to stdout
+  - `print(value)` - print a value to stdout (accepts `i64`, `string`, or `bool`)
   - `exit(code)` - exit program with specified exit code
 - **Comments**: Line comments with `//` (e.g., `// this is a comment`)
 
@@ -203,7 +206,7 @@ Linker (ld) → Executable binary
 **Semantic Analyzer** (`compiler/semantic/analyzer.go`):
 - `Analyzer` - Performs type checking and semantic validation
 - `Scope` - Lexical scope with parent pointer for variable lookup
-- `Type` interface - Represents types in the type system (IntegerType, StringType, etc.)
+- `Type` interface - Represents types in the type system (IntegerType, BooleanType, StringType, etc.)
 - `TypedProgram` - AST annotated with type information
 - Variable handling:
   - Tracks variable declarations in symbol table
@@ -212,7 +215,9 @@ Linker (ld) → Executable binary
   - Type inference from initializer expression
 - Type checking rules:
   - Arithmetic operators (`+`, `-`, `*`, `/`, `%`) require integer operands
-  - Comparison operators (`==`, `!=`, `<`, `>`, `<=`, `>=`) require integer operands
+  - Comparison operators (`==`, `!=`, `<`, `>`, `<=`, `>=`) require integer operands and return `bool`
+  - Logical operators (`&&`, `||`) require boolean operands and return `bool`
+  - Unary `!` requires a boolean operand and returns `bool`
   - Built-in functions are validated against their registered signatures
 - Outputs: `[]*CompilerError` and `*TypedProgram`
 
@@ -236,7 +241,7 @@ Linker (ld) → Executable binary
   - 16-byte aligned stack slots
   - Proper handling of nested expressions with register spilling
 - All operations store result in register `x2`
-- Uses ARM64 instructions: `add`, `sub`, `mul`, `sdiv`, `cmp`, `cset`, `msub`, `str`, `ldr`, `stp`, `ldp`
+- Uses ARM64 instructions: `add`, `sub`, `mul`, `sdiv`, `cmp`, `cset`, `msub`, `str`, `ldr`, `stp`, `ldp`, `cbz`, `cbnz`, `b`
 
 ### ARM64 Assembly Details
 
@@ -267,6 +272,11 @@ _start:
 - Greater Than: `cmp x0, x1` + `cset x2, gt`
 - Less/Equal: `cmp x0, x1` + `cset x2, le`
 - Greater/Equal: `cmp x0, x1` + `cset x2, ge`
+
+**Logical operations** (with short-circuit evaluation):
+- Logical NOT (`!`): `cmp x2, #0` + `cset x2, eq`
+- Logical AND (`&&`): Evaluates left, uses `cbz` to skip right if false
+- Logical OR (`||`): Evaluates left, uses `cbnz` to skip right if true
 
 ### Platform Requirements
 
@@ -308,7 +318,6 @@ Example files use `@test:` directives in header comments to specify expectations
 
 ```slang
 // @test: exit_code=42
-// @test: requires_system_asm=true
 fn main() {
     42
 }
@@ -326,7 +335,6 @@ Supported directives:
 - `stdout=text` - Expected stdout output
 - `stderr=text` - Expected stderr output
 - `skip=reason` - Skip the test with a reason
-- `requires_system_asm=true` - Test requires system assembler (sl tests only)
 - `expect_error=true` - Test expects a compilation error
 - `error_stage=lexer|parser|semantic` - Which stage should produce the error
 - `error_contains=text` - Error message should contain this text
@@ -419,6 +427,11 @@ fn main(): void {
 
     val result = x * 2 + y   // complex expressions work correctly
     print(result)            // prints 99
+
+    // Boolean variables
+    val isValid = true
+    val isGreater = x > y    // comparison returns bool
+    print(isValid && isGreater)  // prints "true" or "false"
 }
 ```
 
@@ -441,7 +454,6 @@ x = 20         // Error: cannot assign to immutable variable 'x'
 
 - No parentheses support in expressions
 - No control flow (if/else, loops)
-- print() requires system assembler (`--assembler system`)
 
 ## Module Information
 

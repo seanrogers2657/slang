@@ -54,15 +54,15 @@ type Emitter interface {
 
 	// ABI constants
 	StackAlignment() int
-	ResultReg() string       // Register for integer expression results (e.g., "x2")
-	FloatResultReg() string  // Register for float expression results (e.g., "d0")
-	LeftReg() string         // Register for left operand (e.g., "x0")
-	RightReg() string        // Register for right operand (e.g., "x1")
-	FloatLeftReg() string    // Register for float left operand (e.g., "d1")
-	FloatRightReg() string   // Register for float right operand (e.g., "d0")
-	ArgRegs() []string       // Registers for function arguments
-	FramePointer() string    // Frame pointer register (e.g., "x29")
-	LinkReg() string         // Link register (e.g., "x30")
+	ResultReg() string      // Register for integer expression results (e.g., "x2")
+	FloatResultReg() string // Register for float expression results (e.g., "d0")
+	LeftReg() string        // Register for left operand (e.g., "x0")
+	RightReg() string       // Register for right operand (e.g., "x1")
+	FloatLeftReg() string   // Register for float left operand (e.g., "d1")
+	FloatRightReg() string  // Register for float right operand (e.g., "d0")
+	ArgRegs() []string      // Registers for function arguments
+	FramePointer() string   // Frame pointer register (e.g., "x29")
+	LinkReg() string        // Link register (e.g., "x30")
 }
 
 // Target represents a compilation target (architecture + platform).

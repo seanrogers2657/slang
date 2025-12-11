@@ -75,7 +75,7 @@ func (g *TypedCodeGenerator) generateFunctionBasedProgram(builder *strings.Build
 	}
 
 	// Write .data section if needed
-	if len(g.info.FloatLiterals) > 0 || len(g.info.StringLiterals) > 0 || g.info.HasPrint {
+	if len(g.info.FloatLiterals) > 0 || len(g.info.StringLiterals) > 0 || g.info.HasPrint || g.info.HasBoolPrint {
 		EmitDataSection(builder, g.info.HasPrint)
 
 		// Float literals
@@ -92,6 +92,14 @@ func (g *TypedCodeGenerator) generateFunctionBasedProgram(builder *strings.Build
 			escapedStr := EscapeStringForAsm(lit.Value)
 			builder.WriteString(fmt.Sprintf("%s: .asciz \"%s\"\n", lit.Label, escapedStr))
 			builder.WriteString(fmt.Sprintf("%s_len = %d\n", lit.Label, lit.Length))
+		}
+
+		// Boolean string literals for print(bool)
+		if g.info.HasBoolPrint {
+			builder.WriteString("_bool_true: .asciz \"true\"\n")
+			builder.WriteString("_bool_true_len = 4\n")
+			builder.WriteString("_bool_false: .asciz \"false\"\n")
+			builder.WriteString("_bool_false_len = 5\n")
 		}
 
 		builder.WriteString("\n.text\n")
@@ -271,6 +279,9 @@ func (g *TypedCodeGenerator) generateExpr(expr semantic.TypedExpression, ctx *Ba
 	case *semantic.TypedBinaryExpr:
 		return g.generateBinaryExpr(e, ctx)
 
+	case *semantic.TypedUnaryExpr:
+		return g.generateUnaryExpr(e, ctx)
+
 	default:
 		return "", fmt.Errorf("unsupported expression type: %T", expr)
 	}
@@ -301,6 +312,16 @@ func (g *TypedCodeGenerator) generateLiteral(lit *semantic.TypedLiteralExpr) (st
 		return "", nil
 	}
 
+	if lit.LitType == ast.LiteralTypeBoolean {
+		// Boolean literal: true = 1, false = 0
+		if lit.Value == "true" {
+			EmitMoveImm(&builder, "x2", "1")
+		} else {
+			EmitMoveImm(&builder, "x2", "0")
+		}
+		return builder.String(), nil
+	}
+
 	// Integer literal
 	EmitMoveImm(&builder, "x2", lit.Value)
 
@@ -323,6 +344,27 @@ func (g *TypedCodeGenerator) generateLiteral(lit *semantic.TypedLiteralExpr) (st
 	return builder.String(), nil
 }
 
+func (g *TypedCodeGenerator) generateUnaryExpr(expr *semantic.TypedUnaryExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Generate operand (result in x2)
+	operandCode, err := g.generateExpr(expr.Operand, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(operandCode)
+
+	if expr.Op == "!" {
+		// Logical NOT: flip 0 <-> 1
+		// x2 = (x2 == 0) ? 1 : 0
+		builder.WriteString("    cmp x2, #0\n")
+		builder.WriteString("    cset x2, eq\n")
+		return builder.String(), nil
+	}
+
+	return "", fmt.Errorf("unknown unary operator: %s", expr.Op)
+}
+
 func (g *TypedCodeGenerator) generateBinaryExpr(expr *semantic.TypedBinaryExpr, ctx *BaseContext) (string, error) {
 	if semantic.IsFloatType(expr.Type) {
 		return g.generateFloatBinaryExpr(expr, ctx)
@@ -331,6 +373,14 @@ func (g *TypedCodeGenerator) generateBinaryExpr(expr *semantic.TypedBinaryExpr, 
 }
 
 func (g *TypedCodeGenerator) generateIntBinaryExpr(expr *semantic.TypedBinaryExpr, ctx *BaseContext) (string, error) {
+	// Handle short-circuit logical operators specially
+	if expr.Op == "&&" {
+		return g.generateLogicalAnd(expr, ctx)
+	}
+	if expr.Op == "||" {
+		return g.generateLogicalOr(expr, ctx)
+	}
+
 	builder := strings.Builder{}
 
 	_, leftIsBinary := expr.Left.(*semantic.TypedBinaryExpr)
@@ -371,6 +421,70 @@ func (g *TypedCodeGenerator) generateIntBinaryExpr(expr *semantic.TypedBinaryExp
 		return "", err
 	}
 	builder.WriteString(opCode)
+
+	return builder.String(), nil
+}
+
+// generateLogicalAnd generates code for && with short-circuit evaluation.
+// If the left operand is false (0), we skip the right operand entirely.
+func (g *TypedCodeGenerator) generateLogicalAnd(expr *semantic.TypedBinaryExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+	endLabel := ctx.NextLabel("and_end")
+
+	// Evaluate left operand (result in x2)
+	leftCode, err := g.generateExpr(expr.Left, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(leftCode)
+
+	// If left is false (0), short-circuit to end with result 0
+	builder.WriteString(fmt.Sprintf("    cbz x2, %s\n", endLabel))
+
+	// Evaluate right operand (result becomes the final result in x2)
+	rightCode, err := g.generateExpr(expr.Right, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(rightCode)
+
+	// End label - x2 already has the correct result
+	builder.WriteString(fmt.Sprintf("%s:\n", endLabel))
+
+	return builder.String(), nil
+}
+
+// generateLogicalOr generates code for || with short-circuit evaluation.
+// If the left operand is true (non-zero), we skip the right operand and return 1.
+func (g *TypedCodeGenerator) generateLogicalOr(expr *semantic.TypedBinaryExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+	trueLabel := ctx.NextLabel("or_true")
+	endLabel := ctx.NextLabel("or_end")
+
+	// Evaluate left operand (result in x2)
+	leftCode, err := g.generateExpr(expr.Left, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(leftCode)
+
+	// If left is true (non-zero), short-circuit to true label
+	builder.WriteString(fmt.Sprintf("    cbnz x2, %s\n", trueLabel))
+
+	// Evaluate right operand (result becomes the final result in x2)
+	rightCode, err := g.generateExpr(expr.Right, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(rightCode)
+	builder.WriteString(fmt.Sprintf("    b %s\n", endLabel))
+
+	// True label - set result to 1
+	builder.WriteString(fmt.Sprintf("%s:\n", trueLabel))
+	builder.WriteString("    mov x2, #1\n")
+
+	// End label
+	builder.WriteString(fmt.Sprintf("%s:\n", endLabel))
 
 	return builder.String(), nil
 }
@@ -519,6 +633,42 @@ func (g *TypedCodeGenerator) generatePrintBuiltin(call *semantic.TypedCallExpr, 
 		return "", fmt.Errorf("only string literals are supported for print")
 	}
 
+	// Check if argument is a boolean
+	if _, isBool := argType.(semantic.BooleanType); isBool {
+		// Generate boolean expression (result in x2: 0 or 1)
+		code, err := g.generateExpr(arg, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+
+		// Branch based on boolean value
+		falseLabel := ctx.NextLabel("print_false")
+		endLabel := ctx.NextLabel("print_end")
+
+		builder.WriteString(fmt.Sprintf("    cbz x2, %s\n", falseLabel))
+
+		// Print "true"
+		EmitLoadAddress(&builder, "x1", "_bool_true")
+		builder.WriteString("    mov x2, #4\n") // length of "true"
+		builder.WriteString("    mov x0, #1\n")
+		builder.WriteString("    mov x16, #4\n")
+		builder.WriteString("    svc #0x80\n")
+		builder.WriteString(fmt.Sprintf("    b %s\n", endLabel))
+
+		// Print "false"
+		builder.WriteString(fmt.Sprintf("%s:\n", falseLabel))
+		EmitLoadAddress(&builder, "x1", "_bool_false")
+		builder.WriteString("    mov x2, #5\n") // length of "false"
+		builder.WriteString("    mov x0, #1\n")
+		builder.WriteString("    mov x16, #4\n")
+		builder.WriteString("    svc #0x80\n")
+
+		builder.WriteString(fmt.Sprintf("%s:\n", endLabel))
+		EmitNewline(&builder)
+		return builder.String(), nil
+	}
+
 	// Handle integer printing
 	code, err := g.generateExpr(arg, ctx)
 	if err != nil {
@@ -529,4 +679,3 @@ func (g *TypedCodeGenerator) generatePrintBuiltin(call *semantic.TypedCallExpr, 
 	EmitPrintInt(&builder)
 	return builder.String(), nil
 }
-

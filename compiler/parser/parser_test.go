@@ -904,10 +904,10 @@ func TestParserVariableDeclaration(t *testing.T) {
 
 func TestParserMutableVariableDeclaration(t *testing.T) {
 	tests := []struct {
-		name        string
-		source      string
-		varName     string
-		mutable     bool
+		name    string
+		source  string
+		varName string
+		mutable bool
 	}{
 		{
 			name:    "immutable variable with val",
@@ -964,9 +964,9 @@ func TestParserMutableVariableDeclaration(t *testing.T) {
 
 func TestParserAssignmentStatement(t *testing.T) {
 	tests := []struct {
-		name     string
-		source   string
-		varName  string
+		name    string
+		source  string
+		varName string
 	}{
 		{
 			name:    "simple assignment",
@@ -1311,6 +1311,560 @@ func TestParserOptionalReturnType(t *testing.T) {
 
 			if len(fnDecl.Body.Statements) != tt.expectedBody {
 				t.Errorf("expected %d statements in body, got %d", tt.expectedBody, len(fnDecl.Body.Statements))
+			}
+		})
+	}
+}
+
+func TestParserBooleanLiterals(t *testing.T) {
+	tests := []struct {
+		name     string
+		tokens   []lexer.Token
+		expected *ast.LiteralExpr
+	}{
+		{
+			name: "true literal",
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeTrue, Value: "true", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+			},
+			expected: &ast.LiteralExpr{
+				Kind:  ast.LiteralTypeBoolean,
+				Value: "true",
+			},
+		},
+		{
+			name: "false literal",
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeFalse, Value: "false", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+			},
+			expected: &ast.LiteralExpr{
+				Kind:  ast.LiteralTypeBoolean,
+				Value: "false",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewParser(tt.tokens)
+			literal := p.ParseLiteral()
+
+			if literal == nil {
+				t.Fatal("expected literal, got nil")
+			}
+
+			litExpr, ok := literal.(*ast.LiteralExpr)
+			if !ok {
+				t.Fatal("expected LiteralExpr")
+			}
+
+			if litExpr.Kind != tt.expected.Kind {
+				t.Errorf("expected type %d, got %d", tt.expected.Kind, litExpr.Kind)
+			}
+
+			if litExpr.Value != tt.expected.Value {
+				t.Errorf("expected value %q, got %q", tt.expected.Value, litExpr.Value)
+			}
+		})
+	}
+}
+
+func TestParserUnaryNot(t *testing.T) {
+	tests := []struct {
+		name        string
+		source      string
+		description string
+		validate    func(t *testing.T, expr ast.Expression)
+	}{
+		{
+			name:        "not true",
+			source:      "!true",
+			description: "should parse as UnaryExpr with ! operator",
+			validate: func(t *testing.T, expr ast.Expression) {
+				unaryExpr, ok := expr.(*ast.UnaryExpr)
+				if !ok {
+					t.Fatalf("expected UnaryExpr, got %T", expr)
+				}
+				if unaryExpr.Op != "!" {
+					t.Errorf("expected operator '!', got %q", unaryExpr.Op)
+				}
+				litExpr, ok := unaryExpr.Operand.(*ast.LiteralExpr)
+				if !ok {
+					t.Fatalf("expected LiteralExpr operand, got %T", unaryExpr.Operand)
+				}
+				if litExpr.Value != "true" {
+					t.Errorf("expected operand 'true', got %q", litExpr.Value)
+				}
+			},
+		},
+		{
+			name:        "not false",
+			source:      "!false",
+			description: "should parse as UnaryExpr with ! operator",
+			validate: func(t *testing.T, expr ast.Expression) {
+				unaryExpr, ok := expr.(*ast.UnaryExpr)
+				if !ok {
+					t.Fatalf("expected UnaryExpr, got %T", expr)
+				}
+				litExpr, ok := unaryExpr.Operand.(*ast.LiteralExpr)
+				if !ok {
+					t.Fatalf("expected LiteralExpr operand, got %T", unaryExpr.Operand)
+				}
+				if litExpr.Value != "false" {
+					t.Errorf("expected operand 'false', got %q", litExpr.Value)
+				}
+			},
+		},
+		{
+			name:        "double not",
+			source:      "!!true",
+			description: "should parse as nested UnaryExpr",
+			validate: func(t *testing.T, expr ast.Expression) {
+				outerUnary, ok := expr.(*ast.UnaryExpr)
+				if !ok {
+					t.Fatalf("expected UnaryExpr, got %T", expr)
+				}
+				innerUnary, ok := outerUnary.Operand.(*ast.UnaryExpr)
+				if !ok {
+					t.Fatalf("expected nested UnaryExpr, got %T", outerUnary.Operand)
+				}
+				litExpr, ok := innerUnary.Operand.(*ast.LiteralExpr)
+				if !ok {
+					t.Fatalf("expected LiteralExpr innermost, got %T", innerUnary.Operand)
+				}
+				if litExpr.Value != "true" {
+					t.Errorf("expected innermost operand 'true', got %q", litExpr.Value)
+				}
+			},
+		},
+		{
+			name:        "not identifier",
+			source:      "!x",
+			description: "should parse as UnaryExpr with identifier operand",
+			validate: func(t *testing.T, expr ast.Expression) {
+				unaryExpr, ok := expr.(*ast.UnaryExpr)
+				if !ok {
+					t.Fatalf("expected UnaryExpr, got %T", expr)
+				}
+				identExpr, ok := unaryExpr.Operand.(*ast.IdentifierExpr)
+				if !ok {
+					t.Fatalf("expected IdentifierExpr operand, got %T", unaryExpr.Operand)
+				}
+				if identExpr.Name != "x" {
+					t.Errorf("expected identifier 'x', got %q", identExpr.Name)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			if program == nil {
+				t.Fatal("expected program, got nil")
+			}
+
+			if len(program.Statements) != 1 {
+				t.Fatalf("expected 1 statement, got %d", len(program.Statements))
+			}
+
+			stmt := program.Statements[0]
+			exprStmt, ok := stmt.(*ast.ExprStmt)
+			if !ok {
+				t.Fatal("expected ExprStmt")
+			}
+
+			tt.validate(t, exprStmt.Expr)
+		})
+	}
+}
+
+func TestParserLogicalOperators(t *testing.T) {
+	tests := []struct {
+		name        string
+		source      string
+		description string
+		validate    func(t *testing.T, expr ast.Expression)
+	}{
+		{
+			name:        "logical and",
+			source:      "a && b",
+			description: "should parse as BinaryExpr with && operator",
+			validate: func(t *testing.T, expr ast.Expression) {
+				binExpr, ok := expr.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr, got %T", expr)
+				}
+				if binExpr.Op != "&&" {
+					t.Errorf("expected operator '&&', got %q", binExpr.Op)
+				}
+			},
+		},
+		{
+			name:        "logical or",
+			source:      "a || b",
+			description: "should parse as BinaryExpr with || operator",
+			validate: func(t *testing.T, expr ast.Expression) {
+				binExpr, ok := expr.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr, got %T", expr)
+				}
+				if binExpr.Op != "||" {
+					t.Errorf("expected operator '||', got %q", binExpr.Op)
+				}
+			},
+		},
+		{
+			name:        "true and false",
+			source:      "true && false",
+			description: "should parse boolean literals with && operator",
+			validate: func(t *testing.T, expr ast.Expression) {
+				binExpr, ok := expr.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr, got %T", expr)
+				}
+				if binExpr.Op != "&&" {
+					t.Errorf("expected operator '&&', got %q", binExpr.Op)
+				}
+				leftLit, ok := binExpr.Left.(*ast.LiteralExpr)
+				if !ok {
+					t.Fatalf("expected LiteralExpr left, got %T", binExpr.Left)
+				}
+				if leftLit.Value != "true" {
+					t.Errorf("expected left 'true', got %q", leftLit.Value)
+				}
+				rightLit, ok := binExpr.Right.(*ast.LiteralExpr)
+				if !ok {
+					t.Fatalf("expected LiteralExpr right, got %T", binExpr.Right)
+				}
+				if rightLit.Value != "false" {
+					t.Errorf("expected right 'false', got %q", rightLit.Value)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			if program == nil {
+				t.Fatal("expected program, got nil")
+			}
+
+			if len(program.Statements) != 1 {
+				t.Fatalf("expected 1 statement, got %d", len(program.Statements))
+			}
+
+			stmt := program.Statements[0]
+			exprStmt, ok := stmt.(*ast.ExprStmt)
+			if !ok {
+				t.Fatal("expected ExprStmt")
+			}
+
+			tt.validate(t, exprStmt.Expr)
+		})
+	}
+}
+
+func TestParserBooleanPrecedence(t *testing.T) {
+	tests := []struct {
+		name        string
+		source      string
+		description string
+		validate    func(t *testing.T, expr ast.Expression)
+	}{
+		{
+			name:        "and binds tighter than or",
+			source:      "a || b && c",
+			description: "should parse as a || (b && c)",
+			validate: func(t *testing.T, expr ast.Expression) {
+				// Top level should be ||
+				binExpr, ok := expr.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr, got %T", expr)
+				}
+				if binExpr.Op != "||" {
+					t.Errorf("expected top-level operator '||', got %q", binExpr.Op)
+				}
+
+				// Left should be identifier 'a'
+				leftIdent, ok := binExpr.Left.(*ast.IdentifierExpr)
+				if !ok {
+					t.Fatalf("expected IdentifierExpr left, got %T", binExpr.Left)
+				}
+				if leftIdent.Name != "a" {
+					t.Errorf("expected left 'a', got %q", leftIdent.Name)
+				}
+
+				// Right should be && expression
+				rightBin, ok := binExpr.Right.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr right, got %T", binExpr.Right)
+				}
+				if rightBin.Op != "&&" {
+					t.Errorf("expected right operator '&&', got %q", rightBin.Op)
+				}
+			},
+		},
+		{
+			name:        "comparison binds tighter than and",
+			source:      "a == b && c == d",
+			description: "should parse as (a == b) && (c == d)",
+			validate: func(t *testing.T, expr ast.Expression) {
+				// Top level should be &&
+				binExpr, ok := expr.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr, got %T", expr)
+				}
+				if binExpr.Op != "&&" {
+					t.Errorf("expected top-level operator '&&', got %q", binExpr.Op)
+				}
+
+				// Left should be == expression
+				leftBin, ok := binExpr.Left.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr left, got %T", binExpr.Left)
+				}
+				if leftBin.Op != "==" {
+					t.Errorf("expected left operator '==', got %q", leftBin.Op)
+				}
+
+				// Right should be == expression
+				rightBin, ok := binExpr.Right.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr right, got %T", binExpr.Right)
+				}
+				if rightBin.Op != "==" {
+					t.Errorf("expected right operator '==', got %q", rightBin.Op)
+				}
+			},
+		},
+		{
+			name:        "not binds tighter than and",
+			source:      "!a && b",
+			description: "should parse as (!a) && b",
+			validate: func(t *testing.T, expr ast.Expression) {
+				// Top level should be &&
+				binExpr, ok := expr.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr, got %T", expr)
+				}
+				if binExpr.Op != "&&" {
+					t.Errorf("expected top-level operator '&&', got %q", binExpr.Op)
+				}
+
+				// Left should be unary !
+				leftUnary, ok := binExpr.Left.(*ast.UnaryExpr)
+				if !ok {
+					t.Fatalf("expected UnaryExpr left, got %T", binExpr.Left)
+				}
+				if leftUnary.Op != "!" {
+					t.Errorf("expected left operator '!', got %q", leftUnary.Op)
+				}
+			},
+		},
+		{
+			name:        "arithmetic binds tighter than comparison in boolean context",
+			source:      "x + 1 < 10 && y > 0",
+			description: "should parse as ((x + 1) < 10) && (y > 0)",
+			validate: func(t *testing.T, expr ast.Expression) {
+				// Top level should be &&
+				binExpr, ok := expr.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr, got %T", expr)
+				}
+				if binExpr.Op != "&&" {
+					t.Errorf("expected top-level operator '&&', got %q", binExpr.Op)
+				}
+
+				// Left should be < expression
+				leftBin, ok := binExpr.Left.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr left, got %T", binExpr.Left)
+				}
+				if leftBin.Op != "<" {
+					t.Errorf("expected left operator '<', got %q", leftBin.Op)
+				}
+
+				// Left's left should be + expression
+				leftLeftBin, ok := leftBin.Left.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr left.left, got %T", leftBin.Left)
+				}
+				if leftLeftBin.Op != "+" {
+					t.Errorf("expected left.left operator '+', got %q", leftLeftBin.Op)
+				}
+			},
+		},
+		{
+			name:        "complex boolean expression",
+			source:      "a || b && c || d",
+			description: "should parse as (a || (b && c)) || d due to left-associativity of ||",
+			validate: func(t *testing.T, expr ast.Expression) {
+				// Top level should be ||
+				binExpr, ok := expr.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr, got %T", expr)
+				}
+				if binExpr.Op != "||" {
+					t.Errorf("expected top-level operator '||', got %q", binExpr.Op)
+				}
+
+				// Right should be identifier 'd'
+				rightIdent, ok := binExpr.Right.(*ast.IdentifierExpr)
+				if !ok {
+					t.Fatalf("expected IdentifierExpr right, got %T", binExpr.Right)
+				}
+				if rightIdent.Name != "d" {
+					t.Errorf("expected right 'd', got %q", rightIdent.Name)
+				}
+
+				// Left should be || expression
+				leftBin, ok := binExpr.Left.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr left, got %T", binExpr.Left)
+				}
+				if leftBin.Op != "||" {
+					t.Errorf("expected left operator '||', got %q", leftBin.Op)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			if program == nil {
+				t.Fatal("expected program, got nil")
+			}
+
+			if len(program.Statements) != 1 {
+				t.Fatalf("expected 1 statement, got %d", len(program.Statements))
+			}
+
+			stmt := program.Statements[0]
+			exprStmt, ok := stmt.(*ast.ExprStmt)
+			if !ok {
+				t.Fatal("expected ExprStmt")
+			}
+
+			tt.validate(t, exprStmt.Expr)
+		})
+	}
+}
+
+func TestParserBooleanInFunction(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "boolean variable declaration",
+			source: `fn main(): void {
+    val x = true
+}`,
+		},
+		{
+			name: "boolean expression in variable",
+			source: `fn main(): void {
+    val x = true && false
+}`,
+		},
+		{
+			name: "comparison result in variable",
+			source: `fn main(): void {
+    val x = 5 < 10
+}`,
+		},
+		{
+			name: "complex boolean in variable",
+			source: `fn main(): void {
+    val x = 5 < 10 && 3 > 1
+}`,
+		},
+		{
+			name: "negation in variable",
+			source: `fn main(): void {
+    val x = !true
+}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			if program == nil {
+				t.Fatal("expected program, got nil")
+			}
+
+			if len(program.Declarations) != 1 {
+				t.Fatalf("expected 1 declaration, got %d", len(program.Declarations))
+			}
+
+			fnDecl, ok := program.Declarations[0].(*ast.FunctionDecl)
+			if !ok {
+				t.Fatal("expected FunctionDecl")
+			}
+
+			if len(fnDecl.Body.Statements) != 1 {
+				t.Fatalf("expected 1 statement in body, got %d", len(fnDecl.Body.Statements))
+			}
+
+			_, ok = fnDecl.Body.Statements[0].(*ast.VarDeclStmt)
+			if !ok {
+				t.Fatalf("expected VarDeclStmt, got %T", fnDecl.Body.Statements[0])
 			}
 		})
 	}

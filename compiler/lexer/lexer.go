@@ -37,6 +37,11 @@ const (
 	TokenTypeComma
 	TokenTypeColon
 	TokenTypeReturn
+	TokenTypeTrue
+	TokenTypeFalse
+	TokenTypeAnd
+	TokenTypeOr
+	TokenTypeNot
 )
 
 // String returns a human-readable name for the token type
@@ -96,6 +101,16 @@ func (t TokenType) String() string {
 		return "COLON"
 	case TokenTypeReturn:
 		return "RETURN"
+	case TokenTypeTrue:
+		return "TRUE"
+	case TokenTypeFalse:
+		return "FALSE"
+	case TokenTypeAnd:
+		return "AND"
+	case TokenTypeOr:
+		return "OR"
+	case TokenTypeNot:
+		return "NOT"
 	default:
 		return "UNKNOWN"
 	}
@@ -342,6 +357,18 @@ func (p *lexer) ParseIdentifierOrKeyword() {
 			Value: ident,
 			Pos:   startPos,
 		})
+	case "true":
+		p.Tokens = append(p.Tokens, Token{
+			Type:  TokenTypeTrue,
+			Value: ident,
+			Pos:   startPos,
+		})
+	case "false":
+		p.Tokens = append(p.Tokens, Token{
+			Type:  TokenTypeFalse,
+			Value: ident,
+			Pos:   startPos,
+		})
 	default:
 		p.Tokens = append(p.Tokens, Token{
 			Type:  TokenTypeIdentifier,
@@ -433,14 +460,37 @@ func (p *lexer) Parse() {
 				p.advance()
 			}
 		} else if b == '!' {
-			// Check for !=
+			// Check for != or standalone !
 			pos := p.currentPos()
 			if p.Index+1 < len(p.Source) && p.Source[p.Index+1] == '=' {
 				p.Tokens = append(p.Tokens, Token{Type: TokenTypeNotEqual, Value: "!=", Pos: pos})
 				p.advance()
 				p.advance()
 			} else {
-				p.Errors = append(p.Errors, fmt.Errorf("unexpected character: %q", b))
+				// Standalone ! (logical NOT)
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeNot, Value: "!", Pos: pos})
+				p.advance()
+			}
+		} else if b == '&' {
+			// Check for &&
+			pos := p.currentPos()
+			if p.Index+1 < len(p.Source) && p.Source[p.Index+1] == '&' {
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeAnd, Value: "&&", Pos: pos})
+				p.advance()
+				p.advance()
+			} else {
+				p.Errors = append(p.Errors, fmt.Errorf("unexpected character: %q (bitwise & not supported, use && for logical AND)", b))
+				return
+			}
+		} else if b == '|' {
+			// Check for ||
+			pos := p.currentPos()
+			if p.Index+1 < len(p.Source) && p.Source[p.Index+1] == '|' {
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeOr, Value: "||", Pos: pos})
+				p.advance()
+				p.advance()
+			} else {
+				p.Errors = append(p.Errors, fmt.Errorf("unexpected character: %q (bitwise | not supported, use || for logical OR)", b))
 				return
 			}
 		} else if b == '<' {

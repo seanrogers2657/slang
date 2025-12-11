@@ -127,11 +127,7 @@ func runSlangTest(t *testing.T, tc *testutil.TestExpectation) {
 
 	// If stdout expectations exist, build and run
 	if tc.Stdout != "" || tc.ExitCode != 0 || tc.StderrContains != "" {
-		if tc.RequiresSystemAsm {
-			runWithSystemAsm(t, tc, asmOutput)
-		} else {
-			runWithSlasm(t, tc, asmOutput)
-		}
+		runWithSlasm(t, tc, asmOutput)
 	}
 }
 
@@ -149,42 +145,6 @@ func runWithSlasm(t *testing.T, tc *testutil.TestExpectation, asmOutput string) 
 	})
 	if err != nil {
 		t.Fatalf("slasm build failed: %v", err)
-	}
-
-	runAndCheck(t, tc, outputPath)
-}
-
-func runWithSystemAsm(t *testing.T, tc *testutil.TestExpectation, asmOutput string) {
-	t.Helper()
-
-	tmpDir := t.TempDir()
-	safeName := strings.ReplaceAll(tc.Name, "/", "_")
-	asmPath := filepath.Join(tmpDir, fmt.Sprintf("%s.s", safeName))
-	objPath := filepath.Join(tmpDir, fmt.Sprintf("%s.o", safeName))
-	outputPath := filepath.Join(tmpDir, fmt.Sprintf("test_%s", safeName))
-
-	// Write assembly to file
-	if err := os.WriteFile(asmPath, []byte(asmOutput), 0644); err != nil {
-		t.Fatalf("failed to write asm file: %v", err)
-	}
-
-	// Assemble with system assembler
-	asCmd := exec.Command("as", "-arch", "arm64", "-o", objPath, asmPath)
-	if output, err := asCmd.CombinedOutput(); err != nil {
-		t.Fatalf("system assembler failed: %v\n%s", err, output)
-	}
-
-	// Link
-	ldCmd := exec.Command("ld",
-		"-o", outputPath,
-		"-lSystem",
-		"-syslibroot", "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
-		"-e", "_start",
-		"-arch", "arm64",
-		objPath,
-	)
-	if output, err := ldCmd.CombinedOutput(); err != nil {
-		t.Fatalf("linker failed: %v\n%s", err, output)
 	}
 
 	runAndCheck(t, tc, outputPath)

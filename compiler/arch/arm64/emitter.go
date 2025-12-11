@@ -247,21 +247,25 @@ func (e *Emitter) EmitMoveReg(dst, src string) string {
 // For values that fit in 16 bits, uses a simple MOV.
 // For larger values, uses MOVZ/MOVK sequence to build the value in chunks.
 func (e *Emitter) EmitMoveImm(reg, value string) string {
-	// Try to parse as int64 to determine if we need extended loading
-	val, err := strconv.ParseInt(value, 10, 64)
+	// Try to parse as uint64 first (handles large unsigned values like u64 max)
+	uval, err := strconv.ParseUint(value, 10, 64)
 	if err != nil {
-		// If parsing fails, just emit a simple mov (may fail at assembly time)
-		return fmt.Sprintf("    mov %s, #%s\n", reg, value)
+		// Try parsing as signed int64 (handles negative values)
+		val, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			// If parsing fails, just emit a simple mov (may fail at assembly time)
+			return fmt.Sprintf("    mov %s, #%s\n", reg, value)
+		}
+		uval = uint64(val)
 	}
 
-	// For small positive values that fit in 16 bits, use simple mov
-	if val >= 0 && val <= 65535 {
-		return fmt.Sprintf("    mov %s, #%d\n", reg, val)
+	// For small values that fit in 16 bits, use simple mov
+	if uval <= 65535 {
+		return fmt.Sprintf("    mov %s, #%d\n", reg, uval)
 	}
 
 	// For larger values, use MOVZ/MOVK sequence
 	var b strings.Builder
-	uval := uint64(val)
 
 	// Find the first non-zero 16-bit chunk
 	firstChunk := true

@@ -686,3 +686,53 @@ func TestAnalyzeUnknownUnaryOperator(t *testing.T) {
 		test.expectErrorContaining("unknown unary operator")
 	})
 }
+
+func TestAnalyzeGroupingExpression(t *testing.T) {
+	t.Run("simple grouping preserves type", func(t *testing.T) {
+		test := newTest(t)
+		// (42)
+		result := test.analyzer.analyzeExpression(groupExpr(intLit("42")))
+		test.expectType(result, TypeInteger)
+		test.expectNoErrors()
+	})
+
+	t.Run("grouped addition returns integer", func(t *testing.T) {
+		test := newTest(t)
+		// (2 + 3)
+		result := test.analyzer.analyzeExpression(groupExpr(binExpr(intLit("2"), "+", intLit("3"))))
+		test.expectType(result, TypeInteger)
+		test.expectNoErrors()
+	})
+
+	t.Run("grouped comparison returns boolean", func(t *testing.T) {
+		test := newTest(t)
+		// (5 > 3)
+		result := test.analyzer.analyzeExpression(groupExpr(binExpr(intLit("5"), ">", intLit("3"))))
+		test.expectType(result, TypeBoolean)
+		test.expectNoErrors()
+	})
+
+	t.Run("nested grouping preserves type", func(t *testing.T) {
+		test := newTest(t)
+		// ((42))
+		result := test.analyzer.analyzeExpression(groupExpr(groupExpr(intLit("42"))))
+		test.expectType(result, TypeInteger)
+		test.expectNoErrors()
+	})
+
+	t.Run("grouped string literal", func(t *testing.T) {
+		test := newTest(t)
+		// ("hello")
+		result := test.analyzer.analyzeExpression(groupExpr(strLit("hello")))
+		test.expectType(result, TypeString)
+		test.expectNoErrors()
+	})
+
+	t.Run("type error inside grouping propagates", func(t *testing.T) {
+		test := newTest(t)
+		// ("a" + 5) - type error
+		result := test.analyzer.analyzeExpression(groupExpr(binExpr(strLit("a"), "+", intLit("5"))))
+		test.expectType(result, TypeError)
+		test.expectErrorContaining("requires numeric operands")
+	})
+}

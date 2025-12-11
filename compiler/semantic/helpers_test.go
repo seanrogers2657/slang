@@ -198,3 +198,11 @@ func (at *analyzerTest) expectStage(stage string) {
 		at.t.Errorf("expected stage %q, got %q", stage, at.analyzer.errors[0].Stage)
 	}
 }
+
+func groupExpr(inner ast.Expression) *ast.GroupingExpr {
+	return &ast.GroupingExpr{
+		Expr:       inner,
+		LeftParen:  pos(1, 1),
+		RightParen: pos(1, 10),
+	}
+}

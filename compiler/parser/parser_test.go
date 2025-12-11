@@ -1920,3 +1920,215 @@ func TestParserMultipleVariables(t *testing.T) {
 		t.Fatalf("expected print() call, got %T", exprStmt.Expr)
 	}
 }
+
+func TestParserGroupingExpressions(t *testing.T) {
+	tests := []struct {
+		name   string
+		tokens []lexer.Token
+		check  func(t *testing.T, expr ast.Expression)
+	}{
+		{
+			name: "simple grouping",
+			// (5)
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeLParen, Value: "(", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 1, Column: 2, Offset: 1}},
+				{Type: lexer.TokenTypeRParen, Value: ")", Pos: ast.Position{Line: 1, Column: 3, Offset: 2}},
+			},
+			check: func(t *testing.T, expr ast.Expression) {
+				group, ok := expr.(*ast.GroupingExpr)
+				if !ok {
+					t.Fatalf("expected GroupingExpr, got %T", expr)
+				}
+				lit, ok := group.Expr.(*ast.LiteralExpr)
+				if !ok {
+					t.Fatalf("expected LiteralExpr inside grouping, got %T", group.Expr)
+				}
+				if lit.Value != "5" {
+					t.Errorf("expected value 5, got %s", lit.Value)
+				}
+			},
+		},
+		{
+			name: "grouped addition",
+			// (2 + 3)
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeLParen, Value: "(", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeInteger, Value: "2", Pos: ast.Position{Line: 1, Column: 2, Offset: 1}},
+				{Type: lexer.TokenTypePlus, Value: "+", Pos: ast.Position{Line: 1, Column: 4, Offset: 3}},
+				{Type: lexer.TokenTypeInteger, Value: "3", Pos: ast.Position{Line: 1, Column: 6, Offset: 5}},
+				{Type: lexer.TokenTypeRParen, Value: ")", Pos: ast.Position{Line: 1, Column: 7, Offset: 6}},
+			},
+			check: func(t *testing.T, expr ast.Expression) {
+				group, ok := expr.(*ast.GroupingExpr)
+				if !ok {
+					t.Fatalf("expected GroupingExpr, got %T", expr)
+				}
+				bin, ok := group.Expr.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr inside grouping, got %T", group.Expr)
+				}
+				if bin.Op != "+" {
+					t.Errorf("expected operator +, got %s", bin.Op)
+				}
+			},
+		},
+		{
+			name: "precedence override - grouped addition then multiply",
+			// (2 + 3) * 4
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeLParen, Value: "(", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeInteger, Value: "2", Pos: ast.Position{Line: 1, Column: 2, Offset: 1}},
+				{Type: lexer.TokenTypePlus, Value: "+", Pos: ast.Position{Line: 1, Column: 4, Offset: 3}},
+				{Type: lexer.TokenTypeInteger, Value: "3", Pos: ast.Position{Line: 1, Column: 6, Offset: 5}},
+				{Type: lexer.TokenTypeRParen, Value: ")", Pos: ast.Position{Line: 1, Column: 7, Offset: 6}},
+				{Type: lexer.TokenTypeMultiply, Value: "*", Pos: ast.Position{Line: 1, Column: 9, Offset: 8}},
+				{Type: lexer.TokenTypeInteger, Value: "4", Pos: ast.Position{Line: 1, Column: 11, Offset: 10}},
+			},
+			check: func(t *testing.T, expr ast.Expression) {
+				// Should be: BinaryExpr(GroupingExpr(2+3), *, 4)
+				bin, ok := expr.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr at top level, got %T", expr)
+				}
+				if bin.Op != "*" {
+					t.Errorf("expected top-level operator *, got %s", bin.Op)
+				}
+				group, ok := bin.Left.(*ast.GroupingExpr)
+				if !ok {
+					t.Fatalf("expected GroupingExpr on left, got %T", bin.Left)
+				}
+				innerBin, ok := group.Expr.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr inside grouping, got %T", group.Expr)
+				}
+				if innerBin.Op != "+" {
+					t.Errorf("expected inner operator +, got %s", innerBin.Op)
+				}
+			},
+		},
+		{
+			name: "nested grouping",
+			// ((5))
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeLParen, Value: "(", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeLParen, Value: "(", Pos: ast.Position{Line: 1, Column: 2, Offset: 1}},
+				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 1, Column: 3, Offset: 2}},
+				{Type: lexer.TokenTypeRParen, Value: ")", Pos: ast.Position{Line: 1, Column: 4, Offset: 3}},
+				{Type: lexer.TokenTypeRParen, Value: ")", Pos: ast.Position{Line: 1, Column: 5, Offset: 4}},
+			},
+			check: func(t *testing.T, expr ast.Expression) {
+				outer, ok := expr.(*ast.GroupingExpr)
+				if !ok {
+					t.Fatalf("expected outer GroupingExpr, got %T", expr)
+				}
+				inner, ok := outer.Expr.(*ast.GroupingExpr)
+				if !ok {
+					t.Fatalf("expected inner GroupingExpr, got %T", outer.Expr)
+				}
+				lit, ok := inner.Expr.(*ast.LiteralExpr)
+				if !ok {
+					t.Fatalf("expected LiteralExpr inside inner grouping, got %T", inner.Expr)
+				}
+				if lit.Value != "5" {
+					t.Errorf("expected value 5, got %s", lit.Value)
+				}
+			},
+		},
+		{
+			name: "complex expression with multiple groups",
+			// (1 + 2) * (3 + 4)
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeLParen, Value: "(", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeInteger, Value: "1", Pos: ast.Position{Line: 1, Column: 2, Offset: 1}},
+				{Type: lexer.TokenTypePlus, Value: "+", Pos: ast.Position{Line: 1, Column: 4, Offset: 3}},
+				{Type: lexer.TokenTypeInteger, Value: "2", Pos: ast.Position{Line: 1, Column: 6, Offset: 5}},
+				{Type: lexer.TokenTypeRParen, Value: ")", Pos: ast.Position{Line: 1, Column: 7, Offset: 6}},
+				{Type: lexer.TokenTypeMultiply, Value: "*", Pos: ast.Position{Line: 1, Column: 9, Offset: 8}},
+				{Type: lexer.TokenTypeLParen, Value: "(", Pos: ast.Position{Line: 1, Column: 11, Offset: 10}},
+				{Type: lexer.TokenTypeInteger, Value: "3", Pos: ast.Position{Line: 1, Column: 12, Offset: 11}},
+				{Type: lexer.TokenTypePlus, Value: "+", Pos: ast.Position{Line: 1, Column: 14, Offset: 13}},
+				{Type: lexer.TokenTypeInteger, Value: "4", Pos: ast.Position{Line: 1, Column: 16, Offset: 15}},
+				{Type: lexer.TokenTypeRParen, Value: ")", Pos: ast.Position{Line: 1, Column: 17, Offset: 16}},
+			},
+			check: func(t *testing.T, expr ast.Expression) {
+				// Should be: BinaryExpr(GroupingExpr(1+2), *, GroupingExpr(3+4))
+				bin, ok := expr.(*ast.BinaryExpr)
+				if !ok {
+					t.Fatalf("expected BinaryExpr at top level, got %T", expr)
+				}
+				if bin.Op != "*" {
+					t.Errorf("expected top-level operator *, got %s", bin.Op)
+				}
+				leftGroup, ok := bin.Left.(*ast.GroupingExpr)
+				if !ok {
+					t.Fatalf("expected GroupingExpr on left, got %T", bin.Left)
+				}
+				rightGroup, ok := bin.Right.(*ast.GroupingExpr)
+				if !ok {
+					t.Fatalf("expected GroupingExpr on right, got %T", bin.Right)
+				}
+				leftBin, ok := leftGroup.Expr.(*ast.BinaryExpr)
+				if !ok || leftBin.Op != "+" {
+					t.Errorf("expected left inner + operator")
+				}
+				rightBin, ok := rightGroup.Expr.(*ast.BinaryExpr)
+				if !ok || rightBin.Op != "+" {
+					t.Errorf("expected right inner + operator")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewParser(tt.tokens)
+			expr := p.ParseBinaryExpression()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("unexpected errors: %v", p.Errors)
+			}
+
+			if expr == nil {
+				t.Fatal("expected expression, got nil")
+			}
+
+			tt.check(t, expr)
+		})
+	}
+}
+
+func TestParserGroupingErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		tokens []lexer.Token
+	}{
+		{
+			name: "unclosed grouping",
+			// (5
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeLParen, Value: "(", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeInteger, Value: "5", Pos: ast.Position{Line: 1, Column: 2, Offset: 1}},
+			},
+		},
+		{
+			name: "empty grouping",
+			// ()
+			tokens: []lexer.Token{
+				{Type: lexer.TokenTypeLParen, Value: "(", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+				{Type: lexer.TokenTypeRParen, Value: ")", Pos: ast.Position{Line: 1, Column: 2, Offset: 1}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewParser(tt.tokens)
+			expr := p.ParseBinaryExpression()
+
+			if expr != nil && len(p.Errors) == 0 {
+				t.Fatal("expected error, got successful parse")
+			}
+		})
+	}
+}

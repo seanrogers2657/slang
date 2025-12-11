@@ -495,6 +495,9 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 		return a.analyzeIdentifier(e)
 	case *ast.CallExpr:
 		return a.analyzeCallExpr(e)
+	case *ast.GroupingExpr:
+		// Grouping is purely syntactic for precedence; just analyze the inner expression
+		return a.analyzeExpression(e.Expr)
 	default:
 		a.addError("unknown expression type", expr.Pos(), expr.End())
 		return &TypedLiteralExpr{

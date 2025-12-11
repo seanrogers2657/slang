@@ -463,6 +463,34 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 
 // parsePrimary parses primary expressions (literals, identifiers, grouping, etc.)
 func (p *parser) parsePrimary() ast.Expression {
+	// Check for grouping expression (parenthesized expression)
+	if p.CurrentToken().Type == lexer.TokenTypeLParen {
+		leftParen := p.CurrentToken().Pos
+		p.advance() // consume '('
+
+		// Parse the inner expression with lowest precedence
+		expr := p.parseExpression(precedenceLowest)
+		if expr == nil {
+			p.Errors = append(p.Errors, fmt.Errorf("expected expression after '('"))
+			return nil
+		}
+
+		// Expect ')'
+		if p.isAtEnd() || p.CurrentToken().Type != lexer.TokenTypeRParen {
+			p.Errors = append(p.Errors, fmt.Errorf("expected ')' to close grouping expression"))
+			return nil
+		}
+
+		rightParen := p.CurrentToken().Pos
+		p.advance() // consume ')'
+
+		return &ast.GroupingExpr{
+			Expr:       expr,
+			LeftParen:  leftParen,
+			RightParen: rightParen,
+		}
+	}
+
 	// Check for unary NOT operator
 	if p.CurrentToken().Type == lexer.TokenTypeNot {
 		opPos := p.CurrentToken().Pos

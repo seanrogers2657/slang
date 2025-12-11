@@ -2425,6 +2425,308 @@ func TestEncodeLdrh(t *testing.T) {
 	}
 }
 
+func TestEncodeCbz(t *testing.T) {
+	tests := []struct {
+		name        string
+		register    string
+		targetAddr  uint64
+		currentAddr uint64
+		expectedHex string
+	}{
+		{
+			name:        "cbz x0, forward 1 instruction",
+			register:    "x0",
+			targetAddr:  0x04,
+			currentAddr: 0x00,
+			expectedHex: "200000b4", // cbz x0, +1 (0xB4000020)
+		},
+		{
+			name:        "cbz x1, forward 4 instructions",
+			register:    "x1",
+			targetAddr:  0x10,
+			currentAddr: 0x00,
+			expectedHex: "810000b4", // cbz x1, +4 (0xB4000081)
+		},
+		{
+			name:        "cbz x2, backward 1 instruction",
+			register:    "x2",
+			targetAddr:  0x00,
+			currentAddr: 0x04,
+			expectedHex: "e2ffffb4", // cbz x2, -1 (0xB4FFFFE2)
+		},
+		{
+			name:        "cbz x3, backward 4 instructions",
+			register:    "x3",
+			targetAddr:  0x00,
+			currentAddr: 0x10,
+			expectedHex: "83ffffb4", // cbz x3, -4 (0xB4FFFF83)
+		},
+		{
+			name:        "cbz x0, to self (infinite loop)",
+			register:    "x0",
+			targetAddr:  0x08,
+			currentAddr: 0x08,
+			expectedHex: "000000b4", // cbz x0, +0 (0xB4000000)
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			symbolTable := NewSymbolTable()
+			symbolTable.Define("target", tt.targetAddr, SectionText, 1, 1)
+
+			encoder := NewEncoder(symbolTable, nil)
+
+			inst := &Instruction{
+				Mnemonic: "cbz",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: tt.register},
+					{Type: OperandLabel, Value: "target"},
+				},
+				Line:   1,
+				Column: 1,
+			}
+
+			bytes, err := encoder.Encode(inst, tt.currentAddr)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(bytes)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeCbz_Errors(t *testing.T) {
+	tests := []struct {
+		name        string
+		inst        *Instruction
+		expectError string
+	}{
+		{
+			name: "missing operand",
+			inst: &Instruction{
+				Mnemonic: "cbz",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: "x0"},
+				},
+				Line:   1,
+				Column: 1,
+			},
+			expectError: "cbz requires 2 operands",
+		},
+		{
+			name: "wrong first operand type",
+			inst: &Instruction{
+				Mnemonic: "cbz",
+				Operands: []*Operand{
+					{Type: OperandLabel, Value: "target"},
+					{Type: OperandLabel, Value: "target"},
+				},
+				Line:   1,
+				Column: 1,
+			},
+			expectError: "cbz first operand must be a register",
+		},
+		{
+			name: "wrong second operand type",
+			inst: &Instruction{
+				Mnemonic: "cbz",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: "x0"},
+					{Type: OperandRegister, Value: "x1"},
+				},
+				Line:   1,
+				Column: 1,
+			},
+			expectError: "cbz second operand must be a label",
+		},
+		{
+			name: "undefined label",
+			inst: &Instruction{
+				Mnemonic: "cbz",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: "x0"},
+					{Type: OperandLabel, Value: "undefined_label"},
+				},
+				Line:   1,
+				Column: 1,
+			},
+			expectError: "undefined label",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			symbolTable := NewSymbolTable()
+			encoder := NewEncoder(symbolTable, nil)
+
+			_, err := encoder.Encode(tt.inst, 0)
+			if err == nil {
+				t.Fatalf("Expected error containing '%s', got nil", tt.expectError)
+			}
+
+			if !contains(err.Error(), tt.expectError) {
+				t.Errorf("Expected error containing '%s', got '%s'", tt.expectError, err.Error())
+			}
+		})
+	}
+}
+
+func TestEncodeCbnz(t *testing.T) {
+	tests := []struct {
+		name        string
+		register    string
+		targetAddr  uint64
+		currentAddr uint64
+		expectedHex string
+	}{
+		{
+			name:        "cbnz x0, forward 1 instruction",
+			register:    "x0",
+			targetAddr:  0x04,
+			currentAddr: 0x00,
+			expectedHex: "200000b5", // cbnz x0, +1 (0xB5000020)
+		},
+		{
+			name:        "cbnz x1, forward 4 instructions",
+			register:    "x1",
+			targetAddr:  0x10,
+			currentAddr: 0x00,
+			expectedHex: "810000b5", // cbnz x1, +4 (0xB5000081)
+		},
+		{
+			name:        "cbnz x2, backward 1 instruction",
+			register:    "x2",
+			targetAddr:  0x00,
+			currentAddr: 0x04,
+			expectedHex: "e2ffffb5", // cbnz x2, -1 (0xB5FFFFE2)
+		},
+		{
+			name:        "cbnz x3, backward 4 instructions",
+			register:    "x3",
+			targetAddr:  0x00,
+			currentAddr: 0x10,
+			expectedHex: "83ffffb5", // cbnz x3, -4 (0xB5FFFF83)
+		},
+		{
+			name:        "cbnz x0, to self (infinite loop)",
+			register:    "x0",
+			targetAddr:  0x08,
+			currentAddr: 0x08,
+			expectedHex: "000000b5", // cbnz x0, +0 (0xB5000000)
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			symbolTable := NewSymbolTable()
+			symbolTable.Define("target", tt.targetAddr, SectionText, 1, 1)
+
+			encoder := NewEncoder(symbolTable, nil)
+
+			inst := &Instruction{
+				Mnemonic: "cbnz",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: tt.register},
+					{Type: OperandLabel, Value: "target"},
+				},
+				Line:   1,
+				Column: 1,
+			}
+
+			bytes, err := encoder.Encode(inst, tt.currentAddr)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(bytes)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeCbnz_Errors(t *testing.T) {
+	tests := []struct {
+		name        string
+		inst        *Instruction
+		expectError string
+	}{
+		{
+			name: "missing operand",
+			inst: &Instruction{
+				Mnemonic: "cbnz",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: "x0"},
+				},
+				Line:   1,
+				Column: 1,
+			},
+			expectError: "cbnz requires 2 operands",
+		},
+		{
+			name: "wrong first operand type",
+			inst: &Instruction{
+				Mnemonic: "cbnz",
+				Operands: []*Operand{
+					{Type: OperandLabel, Value: "target"},
+					{Type: OperandLabel, Value: "target"},
+				},
+				Line:   1,
+				Column: 1,
+			},
+			expectError: "cbnz first operand must be a register",
+		},
+		{
+			name: "wrong second operand type",
+			inst: &Instruction{
+				Mnemonic: "cbnz",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: "x0"},
+					{Type: OperandRegister, Value: "x1"},
+				},
+				Line:   1,
+				Column: 1,
+			},
+			expectError: "cbnz second operand must be a label",
+		},
+		{
+			name: "undefined label",
+			inst: &Instruction{
+				Mnemonic: "cbnz",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: "x0"},
+					{Type: OperandLabel, Value: "undefined_label"},
+				},
+				Line:   1,
+				Column: 1,
+			},
+			expectError: "undefined label",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			symbolTable := NewSymbolTable()
+			encoder := NewEncoder(symbolTable, nil)
+
+			_, err := encoder.Encode(tt.inst, 0)
+			if err == nil {
+				t.Fatalf("Expected error containing '%s', got nil", tt.expectError)
+			}
+
+			if !contains(err.Error(), tt.expectError) {
+				t.Errorf("Expected error containing '%s', got '%s'", tt.expectError, err.Error())
+			}
+		})
+	}
+}
+
 func TestEncodeStrh(t *testing.T) {
 	tests := []struct {
 		name        string

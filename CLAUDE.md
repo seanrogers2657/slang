@@ -25,6 +25,10 @@ This repository follows strict organizational rules:
 
 4. **Testing Documentation**: Testing guides and documentation should be in `docs/` (e.g., `docs/TESTING.md`)
 
+## Important Rules
+
+- **Never delete files without permission**: Do not use `rm`, `git rm`, or any other file deletion commands without explicit user approval. Always ask before removing any files or directories.
+
 ## Project Overview
 
 **Slang** is a compiler for a simple programming language written in Go. It targets ARM64 assembly for macOS. The compiler follows a traditional four-stage pipeline:

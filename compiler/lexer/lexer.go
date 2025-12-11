@@ -2,6 +2,7 @@ package lexer
 
 import (
 	"fmt"
+	"strings"
 	"unicode"
 
 	"github.com/seanrogers2657/slang/compiler/ast"
@@ -169,7 +170,7 @@ func (p *lexer) advance() {
 
 func (p *lexer) ParseNumber() {
 	startPos := p.currentPos()
-	number := ""
+	var number strings.Builder
 	isFloat := false
 
 	// Parse integer part
@@ -178,7 +179,7 @@ func (p *lexer) ParseNumber() {
 		if !unicode.IsDigit(rune(currentChar)) {
 			break
 		}
-		number += string(currentChar)
+		number.WriteByte(currentChar)
 		p.advance()
 	}
 
@@ -188,7 +189,7 @@ func (p *lexer) ParseNumber() {
 		// (to avoid treating "5.method()" as a float)
 		if p.Index+1 < len(p.Source) && unicode.IsDigit(rune(p.Source[p.Index+1])) {
 			isFloat = true
-			number += "."
+			number.WriteByte('.')
 			p.advance()
 
 			// Parse fractional part
@@ -197,7 +198,7 @@ func (p *lexer) ParseNumber() {
 				if !unicode.IsDigit(rune(currentChar)) {
 					break
 				}
-				number += string(currentChar)
+				number.WriteByte(currentChar)
 				p.advance()
 			}
 		}
@@ -206,12 +207,12 @@ func (p *lexer) ParseNumber() {
 	// Check for exponent (e or E)
 	if p.Index < len(p.Source) && (p.Source[p.Index] == 'e' || p.Source[p.Index] == 'E') {
 		isFloat = true
-		number += string(p.Source[p.Index])
+		number.WriteByte(p.Source[p.Index])
 		p.advance()
 
 		// Check for optional sign
 		if p.Index < len(p.Source) && (p.Source[p.Index] == '+' || p.Source[p.Index] == '-') {
-			number += string(p.Source[p.Index])
+			number.WriteByte(p.Source[p.Index])
 			p.advance()
 		}
 
@@ -222,7 +223,7 @@ func (p *lexer) ParseNumber() {
 			if !unicode.IsDigit(rune(currentChar)) {
 				break
 			}
-			number += string(currentChar)
+			number.WriteByte(currentChar)
 			p.advance()
 			hasExponentDigits = true
 		}
@@ -240,7 +241,7 @@ func (p *lexer) ParseNumber() {
 
 	p.Tokens = append(p.Tokens, Token{
 		Type:  tokenType,
-		Value: number,
+		Value: number.String(),
 		Pos:   startPos,
 	})
 }
@@ -250,7 +251,7 @@ func (p *lexer) ParseString() {
 	// Skip opening quote
 	p.advance()
 
-	str := ""
+	var str strings.Builder
 	for p.Index < len(p.Source) {
 		currentChar := p.Source[p.Index]
 
@@ -259,34 +260,40 @@ func (p *lexer) ParseString() {
 			p.advance() // Skip closing quote
 			p.Tokens = append(p.Tokens, Token{
 				Type:  TokenTypeString,
-				Value: str,
+				Value: str.String(),
 				Pos:   startPos,
 			})
 			return
 		}
 
 		// Handle escape sequences
-		if currentChar == '\\' && p.Index+1 < len(p.Source) {
+		if currentChar == '\\' {
 			p.advance()
+			// Check bounds after advancing (fixes potential out-of-bounds read)
+			if p.Index >= len(p.Source) {
+				p.Errors = append(p.Errors, fmt.Errorf("unterminated escape sequence"))
+				return
+			}
 			nextChar := p.Source[p.Index]
 			switch nextChar {
 			case 'n':
-				str += "\n"
+				str.WriteByte('\n')
 			case 't':
-				str += "\t"
+				str.WriteByte('\t')
 			case 'r':
-				str += "\r"
+				str.WriteByte('\r')
 			case '\\':
-				str += "\\"
+				str.WriteByte('\\')
 			case '"':
-				str += "\""
+				str.WriteByte('"')
 			default:
 				// Unknown escape sequence, just include the backslash
-				str += "\\" + string(nextChar)
+				str.WriteByte('\\')
+				str.WriteByte(nextChar)
 			}
 			p.advance()
 		} else {
-			str += string(currentChar)
+			str.WriteByte(currentChar)
 			p.advance()
 		}
 	}
@@ -310,16 +317,18 @@ func (p *lexer) skipLineComment() {
 
 func (p *lexer) ParseIdentifierOrKeyword() {
 	startPos := p.currentPos()
-	ident := ""
+	var ident strings.Builder
+	isFirst := true
 	for p.Index < len(p.Source) {
 		currentChar := p.Source[p.Index]
 
 		// Identifiers start with a letter, then can contain letters, digits, or underscores
-		if len(ident) == 0 {
+		if isFirst {
 			// First character must be a letter
 			if !unicode.IsLetter(rune(currentChar)) {
 				break
 			}
+			isFirst = false
 		} else {
 			// Subsequent characters can be letters, digits, or underscores
 			if !unicode.IsLetter(rune(currentChar)) && !unicode.IsDigit(rune(currentChar)) && currentChar != '_' {
@@ -327,52 +336,54 @@ func (p *lexer) ParseIdentifierOrKeyword() {
 			}
 		}
 
-		ident += string(currentChar)
+		ident.WriteByte(currentChar)
 		p.advance()
 	}
 
+	identStr := ident.String()
+
 	// Check if it's a recognized keyword
-	switch ident {
+	switch identStr {
 	case "fn":
 		p.Tokens = append(p.Tokens, Token{
 			Type:  TokenTypeFn,
-			Value: ident,
+			Value: identStr,
 			Pos:   startPos,
 		})
 	case "val":
 		p.Tokens = append(p.Tokens, Token{
 			Type:  TokenTypeVal,
-			Value: ident,
+			Value: identStr,
 			Pos:   startPos,
 		})
 	case "var":
 		p.Tokens = append(p.Tokens, Token{
 			Type:  TokenTypeVar,
-			Value: ident,
+			Value: identStr,
 			Pos:   startPos,
 		})
 	case "return":
 		p.Tokens = append(p.Tokens, Token{
 			Type:  TokenTypeReturn,
-			Value: ident,
+			Value: identStr,
 			Pos:   startPos,
 		})
 	case "true":
 		p.Tokens = append(p.Tokens, Token{
 			Type:  TokenTypeTrue,
-			Value: ident,
+			Value: identStr,
 			Pos:   startPos,
 		})
 	case "false":
 		p.Tokens = append(p.Tokens, Token{
 			Type:  TokenTypeFalse,
-			Value: ident,
+			Value: identStr,
 			Pos:   startPos,
 		})
 	default:
 		p.Tokens = append(p.Tokens, Token{
 			Type:  TokenTypeIdentifier,
-			Value: ident,
+			Value: identStr,
 			Pos:   startPos,
 		})
 	}
@@ -381,15 +392,12 @@ func (p *lexer) ParseIdentifierOrKeyword() {
 func (p *lexer) Parse() {
 	for p.Index < len(p.Source) {
 		b := p.Source[p.Index]
-		// spew.Printf("parsing %v\n", string(b))
 
 		if b == '\n' {
-			// spew.Dump("is newline")
 			pos := p.currentPos()
 			p.Tokens = append(p.Tokens, Token{Type: TokenTypeNewline, Value: "\n", Pos: pos})
 			p.advance()
 		} else if unicode.IsSpace(rune(b)) {
-			// spew.Dump("is space")
 			p.advance()
 		} else if unicode.IsLetter(rune(b)) {
 			p.ParseIdentifierOrKeyword()
@@ -422,7 +430,6 @@ func (p *lexer) Parse() {
 			p.Tokens = append(p.Tokens, Token{Type: TokenTypeColon, Value: ":", Pos: pos})
 			p.advance()
 		} else if b == '+' {
-			// spew.Dump("is plus")
 			pos := p.currentPos()
 			p.Tokens = append(p.Tokens, Token{Type: TokenTypePlus, Value: "+", Pos: pos})
 			p.advance()
@@ -516,7 +523,6 @@ func (p *lexer) Parse() {
 				p.advance()
 			}
 		} else {
-			// spew.Dump("has parsing error")
 			p.Errors = append(p.Errors, fmt.Errorf("unexpected character: %q", b))
 			return
 		}

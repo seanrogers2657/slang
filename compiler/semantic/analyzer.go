@@ -786,7 +786,7 @@ func (a *Analyzer) analyzeUnaryExpression(expr *ast.UnaryExpr) TypedExpression {
 	}
 
 	// Unknown unary operator
-	a.addError(fmt.Sprintf("unknown unary operator: '%s'", expr.Op), expr.OpPos, expr.OpPos)
+	a.addError(fmt.Sprintf("unknown operator '%s'", expr.Op), expr.OpPos, expr.OpPos)
 	return &TypedUnaryExpr{
 		Type:       TypeError,
 		Op:         expr.Op,
@@ -909,7 +909,7 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 	}
 
 	// Unknown operator
-	a.addError(fmt.Sprintf("unknown binary operator: '%s'", op), leftPos, rightPos)
+	a.addError(fmt.Sprintf("unknown operator '%s'", op), leftPos, rightPos)
 	return TypeError
 }
 

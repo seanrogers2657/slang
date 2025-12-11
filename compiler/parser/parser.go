@@ -57,10 +57,16 @@ func (p *parser) getPrecedence(tokenType lexer.TokenType) precedence {
 }
 
 func (p *parser) PreviousToken() lexer.Token {
+	if p.Index <= 0 {
+		return lexer.Token{}
+	}
 	return p.Source[p.Index-1]
 }
 
 func (p *parser) CurrentToken() lexer.Token {
+	if p.isAtEnd() {
+		return lexer.Token{}
+	}
 	return p.Source[p.Index]
 }
 
@@ -349,7 +355,6 @@ func (p *parser) ParseReturnStatement() ast.Statement {
 }
 
 func (p *parser) ParseLiteral() ast.Expression {
-	//spew.Dump("parsing literal")
 	if p.CurrentToken().Type == lexer.TokenTypeInteger {
 		token := p.CurrentToken()
 		literal := &ast.LiteralExpr{

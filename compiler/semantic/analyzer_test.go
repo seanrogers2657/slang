@@ -683,7 +683,7 @@ func TestAnalyzeUnknownUnaryOperator(t *testing.T) {
 		test := newTest(t)
 		result := test.analyzer.analyzeUnaryExpression(unaryExpr("~", intLit("5")))
 		test.expectType(result, TypeError)
-		test.expectErrorContaining("unknown unary operator")
+		test.expectErrorContaining("unknown operator '~'")
 	})
 }
 

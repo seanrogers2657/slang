@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/seanrogers2657/slang/assembler"
 	nativeasm "github.com/seanrogers2657/slang/assembler/slasm"
 	"github.com/seanrogers2657/slang/assembler/system"
@@ -499,7 +498,7 @@ func main() {
 						return err
 					}
 
-					spew.Dump("compilation done")
+					fmt.Println("Compilation successful")
 					fmt.Println(timer.Summary())
 					return nil
 				},

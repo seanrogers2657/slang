@@ -9,6 +9,11 @@ import (
 	"github.com/seanrogers2657/slang/errors"
 )
 
+// maxFunctionParameters is the maximum number of parameters a function can have.
+// This limit exists because the ARM64 calling convention only supports passing
+// the first 8 arguments in registers (x0-x7).
+const maxFunctionParameters = 8
+
 // toErrorPos converts an ast.Position to an errors.Position
 func toErrorPos(p ast.Position) errors.Position {
 	return errors.Position{Line: p.Line, Column: p.Column, Offset: p.Offset}
@@ -145,6 +150,15 @@ func (a *Analyzer) registerFunction(fn *ast.FunctionDecl) {
 		return
 	}
 
+	// Check for too many parameters
+	if len(fn.Parameters) > maxFunctionParameters {
+		a.addError(
+			fmt.Sprintf("function '%s' has %d parameters, maximum allowed is %d",
+				fn.Name, len(fn.Parameters), maxFunctionParameters),
+			fn.NamePos, fn.NamePos,
+		).WithHint("consider passing a struct or reducing the number of parameters")
+	}
+
 	// Convert parameter types
 	paramTypes := make([]Type, len(fn.Parameters))
 	for i, param := range fn.Parameters {
@@ -219,6 +233,16 @@ func (a *Analyzer) analyzeFunctionDecl(fn *ast.FunctionDecl) TypedDeclaration {
 
 	// Analyze the function body
 	typedBody := a.analyzeBlockStmt(fn.Body)
+
+	// Check that non-void functions return on all paths
+	if _, isVoid := fnInfo.ReturnType.(VoidType); !isVoid {
+		if !allPathsReturn(typedBody.Statements) {
+			a.addError(
+				fmt.Sprintf("function '%s' does not return a value on all code paths", fn.Name),
+				fn.NamePos, fn.NamePos,
+			).WithHint("ensure all branches end with a return statement")
+		}
+	}
 
 	// Exit the function scope
 	a.exitScope()
@@ -738,6 +762,15 @@ func (a *Analyzer) analyzeCallExpr(call *ast.CallExpr) TypedExpression {
 		)
 	}
 
+	// Check for too many arguments (redundant with parameter check, but catches mismatches)
+	if len(call.Arguments) > maxFunctionParameters {
+		a.addError(
+			fmt.Sprintf("call to '%s' has %d arguments, maximum allowed is %d",
+				call.Name, len(call.Arguments), maxFunctionParameters),
+			call.LeftParen, call.RightParen,
+		).WithHint("consider passing a struct or reducing the number of parameters")
+	}
+
 	// Analyze arguments and check types
 	typedArgs := make([]TypedExpression, len(call.Arguments))
 	for i, arg := range call.Arguments {
@@ -1226,4 +1259,53 @@ func isFloatType(t Type) bool {
 		return true
 	}
 	return false
+}
+
+// allPathsReturn checks if a list of statements guarantees a return on all code paths.
+// This is used to verify that non-void functions return a value.
+func allPathsReturn(stmts []TypedStatement) bool {
+	for _, stmt := range stmts {
+		if statementReturns(stmt) {
+			return true
+		}
+	}
+	return false
+}
+
+// statementReturns checks if a single statement guarantees a return.
+func statementReturns(stmt TypedStatement) bool {
+	switch s := stmt.(type) {
+	case *TypedReturnStmt:
+		return true
+	case *TypedIfStmt:
+		// If statement only guarantees return if both branches exist and both return
+		if s.ElseBranch == nil {
+			return false
+		}
+		thenReturns := blockReturns(s.ThenBranch)
+		elseReturns := branchReturns(s.ElseBranch)
+		return thenReturns && elseReturns
+	case *TypedBlockStmt:
+		return allPathsReturn(s.Statements)
+	default:
+		return false
+	}
+}
+
+// blockReturns checks if a block statement guarantees a return.
+func blockReturns(block *TypedBlockStmt) bool {
+	return allPathsReturn(block.Statements)
+}
+
+// branchReturns checks if an else branch (which can be a block or another if) returns.
+func branchReturns(branch TypedStatement) bool {
+	switch b := branch.(type) {
+	case *TypedBlockStmt:
+		return allPathsReturn(b.Statements)
+	case *TypedIfStmt:
+		// else if: recursively check
+		return statementReturns(b)
+	default:
+		return false
+	}
 }

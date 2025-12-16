@@ -1,6 +1,7 @@
 package semantic
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/seanrogers2657/slang/compiler/ast"
@@ -684,6 +685,195 @@ func TestAnalyzeUnknownUnaryOperator(t *testing.T) {
 		result := test.analyzer.analyzeUnaryExpression(unaryExpr("~", intLit("5")))
 		test.expectType(result, TypeError)
 		test.expectErrorContaining("unknown operator '~'")
+	})
+}
+
+func TestAnalyzeReturnPathAnalysis(t *testing.T) {
+	t.Run("void function without return is valid", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil, exprStmt(intLit("42"))),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		for _, err := range errs {
+			if strings.Contains(err.Message, "does not return") {
+				t.Errorf("unexpected return path error: %s", err.Message)
+			}
+		}
+	})
+
+	t.Run("non-void function with return is valid", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil),
+			funcDecl("getVal", "i64", nil, returnStmt(intLit("42"))),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		for _, err := range errs {
+			if strings.Contains(err.Message, "does not return") {
+				t.Errorf("unexpected return path error: %s", err.Message)
+			}
+		}
+	})
+
+	t.Run("non-void function without return is error", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil),
+			funcDecl("getVal", "i64", nil, exprStmt(intLit("42"))),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		found := false
+		for _, err := range errs {
+			if strings.Contains(err.Message, "does not return a value on all code paths") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected error about missing return")
+		}
+	})
+
+	t.Run("if-else both returning is valid", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil),
+			funcDecl("getVal", "i64", nil,
+				ifStmtWithElse(
+					boolLit("true"),
+					[]ast.Statement{returnStmtAST(intLit("1"))},
+					[]ast.Statement{returnStmtAST(intLit("2"))},
+				),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		for _, err := range errs {
+			if strings.Contains(err.Message, "does not return") {
+				t.Errorf("unexpected return path error: %s", err.Message)
+			}
+		}
+	})
+
+	t.Run("if without else is error", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil),
+			funcDecl("getVal", "i64", nil,
+				ifStmtNoElse(
+					boolLit("true"),
+					[]ast.Statement{returnStmtAST(intLit("1"))},
+				),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		found := false
+		for _, err := range errs {
+			if strings.Contains(err.Message, "does not return a value on all code paths") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected error about missing return on else branch")
+		}
+	})
+
+	t.Run("if-else with only one branch returning is error", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil),
+			funcDecl("getVal", "i64", nil,
+				ifStmtWithElse(
+					boolLit("true"),
+					[]ast.Statement{returnStmtAST(intLit("1"))},
+					[]ast.Statement{exprStmt(intLit("2"))}, // no return
+				),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		found := false
+		for _, err := range errs {
+			if strings.Contains(err.Message, "does not return a value on all code paths") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected error about missing return in else branch")
+		}
+	})
+}
+
+func TestAnalyzeMaxFunctionParameters(t *testing.T) {
+	t.Run("function with 8 parameters is valid", func(t *testing.T) {
+		test := newTest(t)
+		params := make([]ast.Parameter, 8)
+		for i := 0; i < 8; i++ {
+			params[i] = param("p"+string(rune('0'+i)), "i64")
+		}
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil),
+			funcDecl("eightParams", "void", params),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		for _, err := range errs {
+			if strings.Contains(err.Message, "parameters") && strings.Contains(err.Message, "maximum") {
+				t.Errorf("unexpected parameter limit error: %s", err.Message)
+			}
+		}
+	})
+
+	t.Run("function with 9 parameters is error", func(t *testing.T) {
+		test := newTest(t)
+		params := make([]ast.Parameter, 9)
+		for i := 0; i < 9; i++ {
+			params[i] = param("p"+string(rune('0'+i)), "i64")
+		}
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil),
+			funcDecl("nineParams", "void", params),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		found := false
+		for _, err := range errs {
+			if strings.Contains(err.Message, "9 parameters") && strings.Contains(err.Message, "maximum") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected error about too many parameters")
+		}
+	})
+
+	t.Run("function call with 9 arguments is error", func(t *testing.T) {
+		test := newTest(t)
+		// Create a function with 9 params (which will also error)
+		// and try to call it with 9 args
+		params := make([]ast.Parameter, 9)
+		for i := 0; i < 9; i++ {
+			params[i] = param("p"+string(rune('0'+i)), "i64")
+		}
+		args := make([]ast.Expression, 9)
+		for i := 0; i < 9; i++ {
+			args[i] = intLit("1")
+		}
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil, exprStmt(callExpr("nineParams", args...))),
+			funcDecl("nineParams", "void", params),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		foundCallError := false
+		for _, err := range errs {
+			if strings.Contains(err.Message, "9 arguments") && strings.Contains(err.Message, "maximum") {
+				foundCallError = true
+				break
+			}
+		}
+		if !foundCallError {
+			t.Error("expected error about too many arguments in call")
+		}
 	})
 }
 

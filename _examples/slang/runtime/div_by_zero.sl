@@ -7,7 +7,7 @@ fn main(): void {
 }
 
 fn call4(x: int, y: int): int {
-    call3(x, y)
+    return call3(x, y)
 }
 
 fn call3(x: int, y: int): int {
@@ -15,17 +15,17 @@ fn call3(x: int, y: int): int {
     // another one
     // comment
     // another one
-    call2(x, y)
+    return call2(x, y)
 }
 
 fn call2(x: int, y: int): int {
     // comment
     // another one
-    call1(x, y)
+    return call1(x, y)
 }
 
 fn call1(x: int, y: int): int {
-    div(x, y)
+    return div(x, y)
 }
 
 fn div(x: int, y: int): int {

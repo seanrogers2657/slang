@@ -94,8 +94,36 @@ func EmitBinaryExprSetup(eval *BinaryExprEvaluator) (string, error) {
 	return builder.String(), nil
 }
 
+// EmitFloatPushToStack pushes the d0 register onto the stack.
+func EmitFloatPushToStack(builder *strings.Builder) {
+	builder.WriteString("    str d0, [sp, #-16]!\n")
+}
+
+// EmitFloatPopToD1 pops from the stack into the d1 register.
+func EmitFloatPopToD1(builder *strings.Builder) {
+	builder.WriteString("    ldr d1, [sp], #16\n")
+}
+
+// EmitFloatPopToD0 pops from the stack into the d0 register.
+func EmitFloatPopToD0(builder *strings.Builder) {
+	builder.WriteString("    ldr d0, [sp], #16\n")
+}
+
+// FloatBinaryExprEvaluator provides callbacks for generating float binary expression code.
+type FloatBinaryExprEvaluator struct {
+	// GenerateLeft generates code to evaluate the left operand (result in d0)
+	GenerateLeft func() (string, error)
+	// GenerateRight generates code to evaluate the right operand (result in d0)
+	GenerateRight func() (string, error)
+	// LeftIsComplex returns true if the left operand is a complex expression
+	LeftIsComplex bool
+	// RightIsComplex returns true if the right operand is a complex expression
+	RightIsComplex bool
+}
+
 // EmitFloatBinaryExprSetup generates register setup for float binary expressions.
 // After this code executes, d1 contains the left operand and d0 contains the right.
+// This is the simple version that assumes sequential evaluation is safe.
 func EmitFloatBinaryExprSetup(generateLeft, generateRight func() (string, error)) (string, error) {
 	builder := strings.Builder{}
 
@@ -114,6 +142,84 @@ func EmitFloatBinaryExprSetup(generateLeft, generateRight func() (string, error)
 	}
 	builder.WriteString(rightCode)
 	// Now d1 = left, d0 = right
+
+	return builder.String(), nil
+}
+
+// EmitFloatBinaryExprSetupWithComplexity generates register setup for float binary expressions
+// with proper handling of complex operands that may clobber d0/d1.
+// After this code executes, d1 contains the left operand and d0 contains the right.
+func EmitFloatBinaryExprSetupWithComplexity(eval *FloatBinaryExprEvaluator) (string, error) {
+	builder := strings.Builder{}
+
+	switch {
+	case eval.LeftIsComplex && eval.RightIsComplex:
+		// Both complex: evaluate left → push to stack → evaluate right → pop left to d1
+		leftCode, err := eval.GenerateLeft()
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(leftCode)
+		EmitFloatPushToStack(&builder)
+
+		rightCode, err := eval.GenerateRight()
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(rightCode)
+		// d0 now has right, pop left into d1
+		EmitFloatPopToD1(&builder)
+
+	case eval.RightIsComplex:
+		// Right is complex: evaluate right first → push → evaluate left → fmov d1, d0 → pop right to d0
+		rightCode, err := eval.GenerateRight()
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(rightCode)
+		EmitFloatPushToStack(&builder)
+
+		leftCode, err := eval.GenerateLeft()
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(leftCode)
+		builder.WriteString("    fmov d1, d0\n") // move left to d1
+		EmitFloatPopToD0(&builder)               // restore right to d0
+
+	case eval.LeftIsComplex:
+		// Left is complex: evaluate left → push → evaluate right → pop left to d1
+		leftCode, err := eval.GenerateLeft()
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(leftCode)
+		EmitFloatPushToStack(&builder)
+
+		rightCode, err := eval.GenerateRight()
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(rightCode)
+		// d0 now has right, pop left into d1
+		EmitFloatPopToD1(&builder)
+
+	default:
+		// Both simple: use original sequential evaluation
+		leftCode, err := eval.GenerateLeft()
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(leftCode)
+		builder.WriteString("    fmov d1, d0\n") // save left to d1
+
+		rightCode, err := eval.GenerateRight()
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(rightCode)
+		// Now d1 = left, d0 = right
+	}
 
 	return builder.String(), nil
 }

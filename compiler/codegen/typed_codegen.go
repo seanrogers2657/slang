@@ -574,10 +574,22 @@ func (g *TypedCodeGenerator) generateLogicalOr(expr *semantic.TypedBinaryExpr, c
 func (g *TypedCodeGenerator) generateFloatBinaryExpr(expr *semantic.TypedBinaryExpr, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
-	setupCode, err := EmitFloatBinaryExprSetup(
-		func() (string, error) { return g.generateExpr(expr.Left, ctx) },
-		func() (string, error) { return g.generateExpr(expr.Right, ctx) },
-	)
+	// Check if operands are complex (need register preservation)
+	leftIsComplex := isComplexOperand(expr.Left)
+	rightIsComplex := isComplexOperand(expr.Right)
+
+	eval := &FloatBinaryExprEvaluator{
+		LeftIsComplex:  leftIsComplex,
+		RightIsComplex: rightIsComplex,
+		GenerateLeft: func() (string, error) {
+			return g.generateExpr(expr.Left, ctx)
+		},
+		GenerateRight: func() (string, error) {
+			return g.generateExpr(expr.Right, ctx)
+		},
+	}
+
+	setupCode, err := EmitFloatBinaryExprSetupWithComplexity(eval)
 	if err != nil {
 		return "", err
 	}

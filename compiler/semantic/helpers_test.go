@@ -206,3 +206,97 @@ func groupExpr(inner ast.Expression) *ast.GroupingExpr {
 		RightParen: pos(1, 10),
 	}
 }
+
+func param(name string, typeName string) ast.Parameter {
+	return ast.Parameter{
+		Name:     name,
+		NamePos:  pos(1, 1),
+		Colon:    pos(1, 2),
+		TypeName: typeName,
+		TypePos:  pos(1, 4),
+	}
+}
+
+func funcDecl(name string, returnType string, params []ast.Parameter, stmts ...ast.Statement) *ast.FunctionDecl {
+	return &ast.FunctionDecl{
+		FnKeyword:  pos(1, 1),
+		Name:       name,
+		NamePos:    pos(1, 4),
+		LeftParen:  pos(1, 5),
+		Parameters: params,
+		RightParen: pos(1, 6),
+		ReturnType: returnType,
+		ReturnPos:  pos(1, 9),
+		Body: &ast.BlockStmt{
+			LeftBrace:  pos(1, 10),
+			Statements: stmts,
+			RightBrace: pos(1, 20),
+		},
+	}
+}
+
+func programWithFuncs(funcs ...*ast.FunctionDecl) *ast.Program {
+	decls := make([]ast.Declaration, len(funcs))
+	for i, f := range funcs {
+		decls[i] = f
+	}
+	return &ast.Program{
+		Declarations: decls,
+		StartPos:     pos(1, 1),
+		EndPos:       pos(1, 1),
+	}
+}
+
+func callExpr(name string, args ...ast.Expression) *ast.CallExpr {
+	return &ast.CallExpr{
+		Name:       name,
+		NamePos:    pos(1, 1),
+		LeftParen:  pos(1, 2),
+		Arguments:  args,
+		RightParen: pos(1, 10),
+	}
+}
+
+func returnStmt(value ast.Expression) *ast.ReturnStmt {
+	return &ast.ReturnStmt{
+		Keyword: pos(1, 1),
+		Value:   value,
+	}
+}
+
+func returnStmtAST(value ast.Expression) ast.Statement {
+	return &ast.ReturnStmt{
+		Keyword: pos(1, 1),
+		Value:   value,
+	}
+}
+
+func ifStmtWithElse(cond ast.Expression, thenStmts []ast.Statement, elseStmts []ast.Statement) ast.Statement {
+	return &ast.IfStmt{
+		IfKeyword: pos(1, 1),
+		Condition: cond,
+		ThenBranch: &ast.BlockStmt{
+			LeftBrace:  pos(1, 5),
+			Statements: thenStmts,
+			RightBrace: pos(1, 10),
+		},
+		ElseKeyword: pos(1, 12),
+		ElseBranch: &ast.BlockStmt{
+			LeftBrace:  pos(1, 17),
+			Statements: elseStmts,
+			RightBrace: pos(1, 22),
+		},
+	}
+}
+
+func ifStmtNoElse(cond ast.Expression, thenStmts []ast.Statement) ast.Statement {
+	return &ast.IfStmt{
+		IfKeyword: pos(1, 1),
+		Condition: cond,
+		ThenBranch: &ast.BlockStmt{
+			LeftBrace:  pos(1, 5),
+			Statements: thenStmts,
+			RightBrace: pos(1, 10),
+		},
+	}
+}

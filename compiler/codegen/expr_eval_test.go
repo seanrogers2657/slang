@@ -319,6 +319,127 @@ func TestEmitFloatBinaryExprSetup_RightError(t *testing.T) {
 	}
 }
 
+func TestEmitFloatBinaryExprSetupWithComplexity_BothSimple(t *testing.T) {
+	eval := &FloatBinaryExprEvaluator{
+		LeftIsComplex:  false,
+		RightIsComplex: false,
+		GenerateLeft: func() (string, error) {
+			return "    ; left\n", nil
+		},
+		GenerateRight: func() (string, error) {
+			return "    ; right\n", nil
+		},
+	}
+
+	output, err := EmitFloatBinaryExprSetupWithComplexity(eval)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Both simple: uses fmov d1, d0 pattern
+	if !strings.Contains(output, "fmov d1, d0") {
+		t.Errorf("expected fmov d1, d0 for simple case, got:\n%s", output)
+	}
+	// Should NOT use stack
+	if strings.Contains(output, "str d0") || strings.Contains(output, "ldr d") {
+		t.Errorf("simple case should not use stack, got:\n%s", output)
+	}
+}
+
+func TestEmitFloatBinaryExprSetupWithComplexity_BothComplex(t *testing.T) {
+	eval := &FloatBinaryExprEvaluator{
+		LeftIsComplex:  true,
+		RightIsComplex: true,
+		GenerateLeft: func() (string, error) {
+			return "    ; left complex\n", nil
+		},
+		GenerateRight: func() (string, error) {
+			return "    ; right complex\n", nil
+		},
+	}
+
+	output, err := EmitFloatBinaryExprSetupWithComplexity(eval)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Both complex: push left, pop to d1
+	expected := []string{
+		"; left complex",
+		"str d0, [sp, #-16]!", // push left
+		"; right complex",
+		"ldr d1, [sp], #16", // pop to d1
+	}
+	for _, exp := range expected {
+		if !strings.Contains(output, exp) {
+			t.Errorf("expected %q in output, got:\n%s", exp, output)
+		}
+	}
+}
+
+func TestEmitFloatBinaryExprSetupWithComplexity_LeftComplex(t *testing.T) {
+	eval := &FloatBinaryExprEvaluator{
+		LeftIsComplex:  true,
+		RightIsComplex: false,
+		GenerateLeft: func() (string, error) {
+			return "    ; left complex\n", nil
+		},
+		GenerateRight: func() (string, error) {
+			return "    ; right simple\n", nil
+		},
+	}
+
+	output, err := EmitFloatBinaryExprSetupWithComplexity(eval)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Left complex: push left, evaluate right, pop to d1
+	expected := []string{
+		"; left complex",
+		"str d0, [sp, #-16]!", // push left
+		"; right simple",
+		"ldr d1, [sp], #16", // pop to d1
+	}
+	for _, exp := range expected {
+		if !strings.Contains(output, exp) {
+			t.Errorf("expected %q in output, got:\n%s", exp, output)
+		}
+	}
+}
+
+func TestEmitFloatBinaryExprSetupWithComplexity_RightComplex(t *testing.T) {
+	eval := &FloatBinaryExprEvaluator{
+		LeftIsComplex:  false,
+		RightIsComplex: true,
+		GenerateLeft: func() (string, error) {
+			return "    ; left simple\n", nil
+		},
+		GenerateRight: func() (string, error) {
+			return "    ; right complex\n", nil
+		},
+	}
+
+	output, err := EmitFloatBinaryExprSetupWithComplexity(eval)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Right complex: eval right, push, eval left, fmov d1, d0, pop to d0
+	expected := []string{
+		"; right complex",
+		"str d0, [sp, #-16]!", // push right
+		"; left simple",
+		"fmov d1, d0",      // move left to d1
+		"ldr d0, [sp], #16", // pop right to d0
+	}
+	for _, exp := range expected {
+		if !strings.Contains(output, exp) {
+			t.Errorf("expected %q in output, got:\n%s", exp, output)
+		}
+	}
+}
+
 func TestEmitCallSetup_NoArgs(t *testing.T) {
 	output, err := EmitCallSetup(0, func(i int) (string, error) {
 		t.Error("should not be called for 0 args")

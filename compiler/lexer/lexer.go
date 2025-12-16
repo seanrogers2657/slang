@@ -23,7 +23,8 @@ var keywords = map[string]TokenType{
 type TokenType int
 
 const (
-	TokenTypeInteger TokenType = iota
+	TokenTypeInvalid TokenType = iota // Zero value, used to detect uninitialized tokens
+	TokenTypeInteger
 	TokenTypeFloat
 	TokenTypeString
 	TokenTypePlus
@@ -62,6 +63,8 @@ const (
 // String returns a human-readable name for the token type
 func (t TokenType) String() string {
 	switch t {
+	case TokenTypeInvalid:
+		return "INVALID"
 	case TokenTypeInteger:
 		return "INTEGER"
 	case TokenTypeFloat:

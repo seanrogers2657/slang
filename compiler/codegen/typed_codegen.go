@@ -650,6 +650,16 @@ func (g *TypedCodeGenerator) generateOperandToReg(expr semantic.TypedExpression,
 			EmitMoveReg(&builder, reg, "x2")
 		}
 
+	case *semantic.TypedUnaryExpr:
+		code, err := g.generateUnaryExpr(e, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+		if reg != "x2" {
+			EmitMoveReg(&builder, reg, "x2")
+		}
+
 	default:
 		return "", fmt.Errorf("unsupported operand type: %T", expr)
 	}

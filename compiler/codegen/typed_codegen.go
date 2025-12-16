@@ -309,6 +309,8 @@ func (g *TypedCodeGenerator) generateIfStmt(stmt *semantic.TypedIfStmt, ctx *Bas
 				}
 				builder.WriteString(stmtCode)
 			}
+		default:
+			return "", fmt.Errorf("unexpected else branch type: %T", elseBranch)
 		}
 	}
 
@@ -395,7 +397,7 @@ func (g *TypedCodeGenerator) generateLiteral(lit *semantic.TypedLiteralExpr) (st
 	// Integer literal
 	EmitMoveImm(&builder, "x2", lit.Value)
 
-	// Sign extend for smaller types
+	// Sign extend for smaller types (i64/u64 don't need extension)
 	switch lit.Type.(type) {
 	case semantic.I8Type:
 		builder.WriteString("    sxtb x2, w2\n")
@@ -409,6 +411,8 @@ func (g *TypedCodeGenerator) generateLiteral(lit *semantic.TypedLiteralExpr) (st
 		builder.WriteString("    and x2, x2, #0xFFFF\n")
 	case semantic.U32Type:
 		builder.WriteString("    mov w2, w2\n")
+	default:
+		// i64, u64, IntegerType: no sign extension needed for 64-bit values
 	}
 
 	return builder.String(), nil

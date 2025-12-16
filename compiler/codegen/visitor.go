@@ -69,6 +69,9 @@ func (info *ProgramInfo) collectFromTypedStatement(stmt semantic.TypedStatement,
 		for _, bodyStmt := range s.Statements {
 			info.collectFromTypedStatement(bodyStmt, floatIdx, stringIdx)
 		}
+	default:
+		// Unknown statement type - panic to catch missing cases during development
+		panic(fmt.Sprintf("collectFromTypedStatement: unhandled statement type %T", stmt))
 	}
 }
 
@@ -117,6 +120,23 @@ func (info *ProgramInfo) collectFromTypedExpr(expr semantic.TypedExpression, flo
 
 	case *semantic.TypedUnaryExpr:
 		info.collectFromTypedExpr(e.Operand, floatIdx, stringIdx)
+
+	case *semantic.TypedIdentifierExpr:
+		// Variable references don't contain literals - nothing to collect
+
+	case *semantic.TypedIfStmt:
+		// If expression: collect from condition and branches
+		info.collectFromTypedExpr(e.Condition, floatIdx, stringIdx)
+		for _, bodyStmt := range e.ThenBranch.Statements {
+			info.collectFromTypedStatement(bodyStmt, floatIdx, stringIdx)
+		}
+		if e.ElseBranch != nil {
+			info.collectFromTypedStatement(e.ElseBranch, floatIdx, stringIdx)
+		}
+
+	default:
+		// Unknown expression type - panic to catch missing cases during development
+		panic(fmt.Sprintf("collectFromTypedExpr: unhandled expression type %T", expr))
 	}
 }
 

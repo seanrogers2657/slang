@@ -71,7 +71,7 @@ func runSlangTest(t *testing.T, tc *testutil.TestExpectation) {
 
 	if len(l.Errors) > 0 {
 		if tc.ExpectError && tc.ErrorStage == "lexer" {
-			checkErrorContains(t, l.Errors, tc.ErrorContains)
+			checkCompilerErrorContains(t, l.Errors, tc.ErrorContains)
 			return
 		}
 		t.Fatalf("lexer errors: %v", l.Errors)
@@ -99,7 +99,7 @@ func runSlangTest(t *testing.T, tc *testutil.TestExpectation) {
 
 	if len(semanticErrors) > 0 {
 		if tc.ExpectError && tc.ErrorStage == "semantic" {
-			checkSemanticErrorContains(t, semanticErrors, tc.ErrorContains)
+			checkCompilerErrorContains(t, semanticErrors, tc.ErrorContains)
 			return
 		}
 		t.Fatalf("semantic errors: %v", semanticErrors)
@@ -207,7 +207,9 @@ func checkErrorContains(t *testing.T, errors []error, contains string) {
 	t.Errorf("no error contains %q, got: %v", contains, errors)
 }
 
-func checkSemanticErrorContains(t *testing.T, errs []*slangErrors.CompilerError, contains string) {
+// checkCompilerErrorContains checks if any CompilerError contains the expected string.
+// Used for lexer and semantic errors which both use CompilerError.
+func checkCompilerErrorContains(t *testing.T, errs []*slangErrors.CompilerError, contains string) {
 	t.Helper()
 	if contains == "" {
 		return

@@ -528,10 +528,10 @@ func (a *Analyzer) analyzeReturnStatement(stmt *ast.ReturnStmt) TypedStatement {
 	}
 }
 
-// analyzeIfStatement analyzes an if statement
-func (a *Analyzer) analyzeIfStatement(stmt *ast.IfStmt) TypedStatement {
-	// Analyze the condition
-	typedCond := a.analyzeExpression(stmt.Condition)
+// analyzeIfCondition analyzes an if condition and validates it's a boolean.
+// This is shared between analyzeIfStatement and analyzeIfExpression.
+func (a *Analyzer) analyzeIfCondition(condition ast.Expression) TypedExpression {
+	typedCond := a.analyzeExpression(condition)
 	condType := typedCond.GetType()
 
 	// Check that condition is boolean
@@ -539,10 +539,18 @@ func (a *Analyzer) analyzeIfStatement(stmt *ast.IfStmt) TypedStatement {
 		if _, isErr := condType.(ErrorType); !isErr {
 			a.addError(
 				fmt.Sprintf("if condition must be boolean, got '%s'", condType.String()),
-				stmt.Condition.Pos(), stmt.Condition.End(),
+				condition.Pos(), condition.End(),
 			).WithHint("use a comparison like x > 0 or a boolean expression")
 		}
 	}
+
+	return typedCond
+}
+
+// analyzeIfStatement analyzes an if statement
+func (a *Analyzer) analyzeIfStatement(stmt *ast.IfStmt) TypedStatement {
+	// Analyze and validate the condition
+	typedCond := a.analyzeIfCondition(stmt.Condition)
 
 	// Analyze the then branch (with its own scope)
 	a.enterScope()
@@ -577,19 +585,8 @@ func (a *Analyzer) analyzeIfStatement(stmt *ast.IfStmt) TypedStatement {
 
 // analyzeIfExpression analyzes an if expression (if used in expression context)
 func (a *Analyzer) analyzeIfExpression(stmt *ast.IfStmt) TypedExpression {
-	// Analyze the condition
-	typedCond := a.analyzeExpression(stmt.Condition)
-	condType := typedCond.GetType()
-
-	// Check that condition is boolean
-	if _, isBool := condType.(BooleanType); !isBool {
-		if _, isErr := condType.(ErrorType); !isErr {
-			a.addError(
-				fmt.Sprintf("if condition must be boolean, got '%s'", condType.String()),
-				stmt.Condition.Pos(), stmt.Condition.End(),
-			).WithHint("use a comparison like x > 0 or a boolean expression")
-		}
-	}
+	// Analyze and validate the condition
+	typedCond := a.analyzeIfCondition(stmt.Condition)
 
 	// If expressions require an else branch
 	if stmt.ElseBranch == nil {

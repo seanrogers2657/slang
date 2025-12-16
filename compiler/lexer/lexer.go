@@ -6,6 +6,7 @@ import (
 	"unicode"
 
 	"github.com/seanrogers2657/slang/compiler/ast"
+	"github.com/seanrogers2657/slang/errors"
 )
 
 // keywords maps keyword strings to their token types
@@ -145,26 +146,49 @@ type Token struct {
 }
 
 type lexer struct {
-	Source []byte
-	Index  int
+	Source   []byte
+	Index    int
+	Filename string // source filename for error reporting
 
 	// Position tracking
 	Line   int // current line (1-indexed)
 	Column int // current column (1-indexed)
 
-	Errors []error
+	Errors []*errors.CompilerError
 	Tokens []Token
 }
 
 func NewLexer(source []byte) *lexer {
-	lexer := &lexer{
-		Source: source,
-		Index:  0,
-		Line:   1,
-		Column: 1,
-	}
+	return NewLexerWithFilename(source, "")
+}
 
-	return lexer
+// NewLexerWithFilename creates a new lexer with a source filename for error reporting
+func NewLexerWithFilename(source []byte, filename string) *lexer {
+	return &lexer{
+		Source:   source,
+		Filename: filename,
+		Index:    0,
+		Line:     1,
+		Column:   1,
+	}
+}
+
+// addError creates and adds a compiler error at the current position
+func (p *lexer) addError(message string) *errors.CompilerError {
+	pos := errors.Position{Line: p.Line, Column: p.Column, Offset: p.Index}
+	err := errors.NewError(message, p.Filename, pos, "lexer")
+	err.Tool = errors.ToolSL
+	p.Errors = append(p.Errors, err)
+	return err
+}
+
+// addErrorAt creates and adds a compiler error at a specific position
+func (p *lexer) addErrorAt(message string, startPos ast.Position) *errors.CompilerError {
+	pos := errors.Position{Line: startPos.Line, Column: startPos.Column, Offset: startPos.Offset}
+	err := errors.NewError(message, p.Filename, pos, "lexer")
+	err.Tool = errors.ToolSL
+	p.Errors = append(p.Errors, err)
+	return err
 }
 
 // currentPos returns the current position in the source
@@ -250,7 +274,7 @@ func (p *lexer) ParseNumber() {
 		}
 
 		if !hasExponentDigits {
-			p.Errors = append(p.Errors, fmt.Errorf("invalid float literal: exponent has no digits"))
+			p.addErrorAt("invalid float literal: exponent has no digits", startPos)
 			return
 		}
 	}
@@ -292,7 +316,7 @@ func (p *lexer) ParseString() {
 			p.advance()
 			// Check bounds after advancing (fixes potential out-of-bounds read)
 			if p.Index >= len(p.Source) {
-				p.Errors = append(p.Errors, fmt.Errorf("unterminated escape sequence"))
+				p.addErrorAt("unterminated escape sequence", startPos)
 				return
 			}
 			nextChar := p.Source[p.Index]
@@ -320,7 +344,7 @@ func (p *lexer) ParseString() {
 	}
 
 	// If we reach here, the string wasn't closed
-	p.Errors = append(p.Errors, fmt.Errorf("unterminated string literal"))
+	p.addErrorAt("unterminated string literal", startPos)
 }
 
 // skipLineComment skips a // comment until end of line
@@ -473,7 +497,7 @@ func (p *lexer) Parse() {
 				p.advance()
 				p.advance()
 			} else {
-				p.Errors = append(p.Errors, fmt.Errorf("%d:%d: unexpected character: %q (bitwise & not supported, use && for logical AND)", p.Line, p.Column, b))
+				p.addError(fmt.Sprintf("unexpected character: %q (bitwise & not supported, use && for logical AND)", b))
 				p.advance() // skip invalid character and continue lexing
 			}
 		} else if b == '|' {
@@ -484,7 +508,7 @@ func (p *lexer) Parse() {
 				p.advance()
 				p.advance()
 			} else {
-				p.Errors = append(p.Errors, fmt.Errorf("%d:%d: unexpected character: %q (bitwise | not supported, use || for logical OR)", p.Line, p.Column, b))
+				p.addError(fmt.Sprintf("unexpected character: %q (bitwise | not supported, use || for logical OR)", b))
 				p.advance() // skip invalid character and continue lexing
 			}
 		} else if b == '<' {
@@ -510,7 +534,7 @@ func (p *lexer) Parse() {
 				p.advance()
 			}
 		} else {
-			p.Errors = append(p.Errors, fmt.Errorf("%d:%d: unexpected character: %q", p.Line, p.Column, b))
+			p.addError(fmt.Sprintf("unexpected character: %q", b))
 			p.advance() // skip invalid character and continue lexing
 		}
 	}

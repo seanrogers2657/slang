@@ -1,6 +1,7 @@
 package lexer
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -336,24 +337,24 @@ func TestLexerExpressions(t *testing.T) {
 
 func TestLexerErrors(t *testing.T) {
 	tests := []struct {
-		name          string
-		input         string
-		expectedError string
+		name            string
+		input           string
+		expectedContain string // error message should contain this substring
 	}{
 		{
-			name:          "unexpected character",
-			input:         "2 @ 5",
-			expectedError: "unexpected character: '@'",
+			name:            "unexpected character",
+			input:           "2 @ 5",
+			expectedContain: "unexpected character: '@'",
 		},
 		{
-			name:          "single ampersand",
-			input:         "a & b",
-			expectedError: "unexpected character: '&' (bitwise & not supported, use && for logical AND)",
+			name:            "single ampersand",
+			input:           "a & b",
+			expectedContain: "unexpected character: '&' (bitwise & not supported, use && for logical AND)",
 		},
 		{
-			name:          "single pipe",
-			input:         "a | b",
-			expectedError: "unexpected character: '|' (bitwise | not supported, use || for logical OR)",
+			name:            "single pipe",
+			input:           "a | b",
+			expectedContain: "unexpected character: '|' (bitwise | not supported, use || for logical OR)",
 		},
 	}
 
@@ -366,8 +367,59 @@ func TestLexerErrors(t *testing.T) {
 				t.Fatalf("expected error, got none")
 			}
 
-			if l.Errors[0].Error() != tt.expectedError {
-				t.Errorf("expected error %q, got %q", tt.expectedError, l.Errors[0].Error())
+			errMsg := l.Errors[0].Error()
+			if !strings.Contains(errMsg, tt.expectedContain) {
+				t.Errorf("expected error containing %q, got %q", tt.expectedContain, errMsg)
+			}
+		})
+	}
+}
+
+func TestLexerErrorRecovery(t *testing.T) {
+	// Test that lexer continues after errors and reports multiple errors
+	tests := []struct {
+		name           string
+		input          string
+		expectedErrors int
+		expectedTokens int // number of valid tokens produced despite errors
+	}{
+		{
+			name:           "multiple invalid characters",
+			input:          "@ # $",
+			expectedErrors: 3,
+			expectedTokens: 0,
+		},
+		{
+			name:           "valid tokens around invalid character",
+			input:          "1 + @ + 2",
+			expectedErrors: 1,
+			expectedTokens: 4, // INTEGER, PLUS, PLUS, INTEGER
+		},
+		{
+			name:           "mixed bitwise and valid operators",
+			input:          "a & b | c && d",
+			expectedErrors: 2, // single & and single |
+			expectedTokens: 5, // IDENTIFIER(a), IDENTIFIER(b), IDENTIFIER(c), AND, IDENTIFIER(d)
+		},
+		{
+			name:           "continues after error on different lines",
+			input:          "val x = @\nval y = 5",
+			expectedErrors: 1,
+			expectedTokens: 8, // VAL, IDENTIFIER, ASSIGN, NEWLINE, VAL, IDENTIFIER, ASSIGN, INTEGER
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			l.Parse()
+
+			if len(l.Errors) != tt.expectedErrors {
+				t.Errorf("expected %d errors, got %d: %v", tt.expectedErrors, len(l.Errors), l.Errors)
+			}
+
+			if len(l.Tokens) != tt.expectedTokens {
+				t.Errorf("expected %d tokens, got %d: %v", tt.expectedTokens, len(l.Tokens), l.Tokens)
 			}
 		})
 	}

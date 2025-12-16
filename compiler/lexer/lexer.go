@@ -8,6 +8,18 @@ import (
 	"github.com/seanrogers2657/slang/compiler/ast"
 )
 
+// keywords maps keyword strings to their token types
+var keywords = map[string]TokenType{
+	"fn":     TokenTypeFn,
+	"val":    TokenTypeVal,
+	"var":    TokenTypeVar,
+	"return": TokenTypeReturn,
+	"true":   TokenTypeTrue,
+	"false":  TokenTypeFalse,
+	"if":     TokenTypeIf,
+	"else":   TokenTypeElse,
+}
+
 type TokenType int
 
 const (
@@ -348,63 +360,17 @@ func (p *lexer) ParseIdentifierOrKeyword() {
 
 	identStr := ident.String()
 
-	// Check if it's a recognized keyword
-	switch identStr {
-	case "fn":
-		p.Tokens = append(p.Tokens, Token{
-			Type:  TokenTypeFn,
-			Value: identStr,
-			Pos:   startPos,
-		})
-	case "val":
-		p.Tokens = append(p.Tokens, Token{
-			Type:  TokenTypeVal,
-			Value: identStr,
-			Pos:   startPos,
-		})
-	case "var":
-		p.Tokens = append(p.Tokens, Token{
-			Type:  TokenTypeVar,
-			Value: identStr,
-			Pos:   startPos,
-		})
-	case "return":
-		p.Tokens = append(p.Tokens, Token{
-			Type:  TokenTypeReturn,
-			Value: identStr,
-			Pos:   startPos,
-		})
-	case "true":
-		p.Tokens = append(p.Tokens, Token{
-			Type:  TokenTypeTrue,
-			Value: identStr,
-			Pos:   startPos,
-		})
-	case "false":
-		p.Tokens = append(p.Tokens, Token{
-			Type:  TokenTypeFalse,
-			Value: identStr,
-			Pos:   startPos,
-		})
-	case "if":
-		p.Tokens = append(p.Tokens, Token{
-			Type:  TokenTypeIf,
-			Value: identStr,
-			Pos:   startPos,
-		})
-	case "else":
-		p.Tokens = append(p.Tokens, Token{
-			Type:  TokenTypeElse,
-			Value: identStr,
-			Pos:   startPos,
-		})
-	default:
-		p.Tokens = append(p.Tokens, Token{
-			Type:  TokenTypeIdentifier,
-			Value: identStr,
-			Pos:   startPos,
-		})
+	// Check if it's a recognized keyword, otherwise it's an identifier
+	tokenType := TokenTypeIdentifier
+	if kwType, ok := keywords[identStr]; ok {
+		tokenType = kwType
 	}
+
+	p.Tokens = append(p.Tokens, Token{
+		Type:  tokenType,
+		Value: identStr,
+		Pos:   startPos,
+	})
 }
 
 func (p *lexer) Parse() {
@@ -504,8 +470,8 @@ func (p *lexer) Parse() {
 				p.advance()
 				p.advance()
 			} else {
-				p.Errors = append(p.Errors, fmt.Errorf("unexpected character: %q (bitwise & not supported, use && for logical AND)", b))
-				return
+				p.Errors = append(p.Errors, fmt.Errorf("%d:%d: unexpected character: %q (bitwise & not supported, use && for logical AND)", p.Line, p.Column, b))
+				p.advance() // skip invalid character and continue lexing
 			}
 		} else if b == '|' {
 			// Check for ||
@@ -515,8 +481,8 @@ func (p *lexer) Parse() {
 				p.advance()
 				p.advance()
 			} else {
-				p.Errors = append(p.Errors, fmt.Errorf("unexpected character: %q (bitwise | not supported, use || for logical OR)", b))
-				return
+				p.Errors = append(p.Errors, fmt.Errorf("%d:%d: unexpected character: %q (bitwise | not supported, use || for logical OR)", p.Line, p.Column, b))
+				p.advance() // skip invalid character and continue lexing
 			}
 		} else if b == '<' {
 			// Check for <=
@@ -541,8 +507,8 @@ func (p *lexer) Parse() {
 				p.advance()
 			}
 		} else {
-			p.Errors = append(p.Errors, fmt.Errorf("unexpected character: %q", b))
-			return
+			p.Errors = append(p.Errors, fmt.Errorf("%d:%d: unexpected character: %q", p.Line, p.Column, b))
+			p.advance() // skip invalid character and continue lexing
 		}
 	}
 }

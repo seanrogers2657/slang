@@ -185,6 +185,8 @@ func (g *TypedCodeGenerator) generateStmt(stmt semantic.TypedStatement, ctx *Bas
 		return g.generateAssignStmt(s, ctx)
 	case *semantic.TypedReturnStmt:
 		return g.generateReturnStmt(s, ctx)
+	case *semantic.TypedIfStmt:
+		return g.generateIfStmt(s, ctx)
 	default:
 		return "", fmt.Errorf("unknown statement type: %T", s)
 	}
@@ -254,6 +256,70 @@ func (g *TypedCodeGenerator) generateReturnStmt(stmt *semantic.TypedReturnStmt, 
 	return builder.String(), nil
 }
 
+func (g *TypedCodeGenerator) generateIfStmt(stmt *semantic.TypedIfStmt, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Generate condition (result in x2: 0 = false, non-zero = true)
+	condCode, err := g.generateExpr(stmt.Condition, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(condCode)
+
+	// Generate labels
+	elseLabel := ctx.NextLabel("if_else")
+	endLabel := ctx.NextLabel("if_end")
+
+	// Branch to else if condition is false (x2 == 0)
+	builder.WriteString(fmt.Sprintf("    cbz x2, %s\n", elseLabel))
+
+	// Generate then branch
+	for _, stmt := range stmt.ThenBranch.Statements {
+		stmtCode, err := g.generateStmt(stmt, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(stmtCode)
+	}
+
+	// Jump over else branch (only if there is one)
+	if stmt.ElseBranch != nil {
+		builder.WriteString(fmt.Sprintf("    b %s\n", endLabel))
+	}
+
+	// Else label
+	builder.WriteString(fmt.Sprintf("%s:\n", elseLabel))
+
+	// Generate else branch if present
+	if stmt.ElseBranch != nil {
+		switch elseBranch := stmt.ElseBranch.(type) {
+		case *semantic.TypedIfStmt:
+			// else if: recursively generate
+			elseCode, err := g.generateIfStmt(elseBranch, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(elseCode)
+		case *semantic.TypedBlockStmt:
+			// else block
+			for _, stmt := range elseBranch.Statements {
+				stmtCode, err := g.generateStmt(stmt, ctx)
+				if err != nil {
+					return "", err
+				}
+				builder.WriteString(stmtCode)
+			}
+		}
+	}
+
+	// End label (only needed if there was an else branch)
+	if stmt.ElseBranch != nil {
+		builder.WriteString(fmt.Sprintf("%s:\n", endLabel))
+	}
+
+	return builder.String(), nil
+}
+
 func (g *TypedCodeGenerator) generateExpr(expr semantic.TypedExpression, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
@@ -281,6 +347,10 @@ func (g *TypedCodeGenerator) generateExpr(expr semantic.TypedExpression, ctx *Ba
 
 	case *semantic.TypedUnaryExpr:
 		return g.generateUnaryExpr(e, ctx)
+
+	case *semantic.TypedIfStmt:
+		// If expression: generate like a statement, result will be in x2
+		return g.generateIfStmt(e, ctx)
 
 	default:
 		return "", fmt.Errorf("unsupported expression type: %T", expr)
@@ -365,6 +435,17 @@ func (g *TypedCodeGenerator) generateUnaryExpr(expr *semantic.TypedUnaryExpr, ct
 	return "", fmt.Errorf("unknown unary operator: %s", expr.Op)
 }
 
+// isComplexOperand returns true if the operand requires register preservation
+// during binary expression evaluation (i.e., it may clobber x0/x1).
+func isComplexOperand(expr semantic.TypedExpression) bool {
+	switch expr.(type) {
+	case *semantic.TypedBinaryExpr, *semantic.TypedIfStmt, *semantic.TypedCallExpr:
+		return true
+	default:
+		return false
+	}
+}
+
 func (g *TypedCodeGenerator) generateBinaryExpr(expr *semantic.TypedBinaryExpr, ctx *BaseContext) (string, error) {
 	if semantic.IsFloatType(expr.Type) {
 		return g.generateFloatBinaryExpr(expr, ctx)
@@ -383,12 +464,13 @@ func (g *TypedCodeGenerator) generateIntBinaryExpr(expr *semantic.TypedBinaryExp
 
 	builder := strings.Builder{}
 
-	_, leftIsBinary := expr.Left.(*semantic.TypedBinaryExpr)
-	_, rightIsBinary := expr.Right.(*semantic.TypedBinaryExpr)
+	// Check if operands are complex (need register preservation)
+	leftIsComplex := isComplexOperand(expr.Left)
+	rightIsComplex := isComplexOperand(expr.Right)
 
 	eval := &BinaryExprEvaluator{
-		LeftIsComplex:  leftIsBinary,
-		RightIsComplex: rightIsBinary,
+		LeftIsComplex:  leftIsComplex,
+		RightIsComplex: rightIsComplex,
 		GenerateLeft: func() (string, error) {
 			return g.generateExpr(expr.Left, ctx)
 		},
@@ -538,6 +620,16 @@ func (g *TypedCodeGenerator) generateOperandToReg(expr semantic.TypedExpression,
 
 	case *semantic.TypedCallExpr:
 		code, err := g.generateCallExpr(e, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+		if reg != "x2" {
+			EmitMoveReg(&builder, reg, "x2")
+		}
+
+	case *semantic.TypedIfStmt:
+		code, err := g.generateIfStmt(e, ctx)
 		if err != nil {
 			return "", err
 		}

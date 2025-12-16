@@ -43,6 +43,8 @@ const (
 	TokenTypeAnd
 	TokenTypeOr
 	TokenTypeNot
+	TokenTypeIf
+	TokenTypeElse
 )
 
 // String returns a human-readable name for the token type
@@ -112,6 +114,10 @@ func (t TokenType) String() string {
 		return "OR"
 	case TokenTypeNot:
 		return "NOT"
+	case TokenTypeIf:
+		return "IF"
+	case TokenTypeElse:
+		return "ELSE"
 	default:
 		return "UNKNOWN"
 	}
@@ -377,6 +383,18 @@ func (p *lexer) ParseIdentifierOrKeyword() {
 	case "false":
 		p.Tokens = append(p.Tokens, Token{
 			Type:  TokenTypeFalse,
+			Value: identStr,
+			Pos:   startPos,
+		})
+	case "if":
+		p.Tokens = append(p.Tokens, Token{
+			Type:  TokenTypeIf,
+			Value: identStr,
+			Pos:   startPos,
+		})
+	case "else":
+		p.Tokens = append(p.Tokens, Token{
+			Type:  TokenTypeElse,
 			Value: identStr,
 			Pos:   startPos,
 		})

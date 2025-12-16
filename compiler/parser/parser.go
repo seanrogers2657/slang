@@ -221,6 +221,11 @@ func (p *parser) ParseStatement() ast.Statement {
 		return p.ParseReturnStatement()
 	}
 
+	// Check if it's an if statement
+	if p.CurrentToken().Type == lexer.TokenTypeIf {
+		return p.ParseIfStatement()
+	}
+
 	// Check if it's an immutable variable declaration (val)
 	if p.CurrentToken().Type == lexer.TokenTypeVal {
 		return p.ParseVarDecl(false)
@@ -352,6 +357,79 @@ func (p *parser) ParseReturnStatement() ast.Statement {
 		Keyword: keywordPos,
 		Value:   value,
 	}
+}
+
+// ParseIfStatement parses an if statement: if <condition> { <body> } [else { <body> } | else if ...]
+func (p *parser) ParseIfStatement() ast.Statement {
+	// Get position of 'if' keyword
+	ifKeyword := p.CurrentToken().Pos
+	p.advance() // consume 'if'
+
+	// Parse the condition expression
+	condition := p.parseExpression(precedenceLowest)
+	if condition == nil {
+		p.Errors = append(p.Errors, fmt.Errorf("expected condition after 'if'"))
+		return nil
+	}
+
+	// Skip newlines before the block
+	p.skipNewlines()
+
+	// Parse the then branch (required block)
+	thenBranch := p.ParseBlockStmt()
+	if thenBranch == nil {
+		return nil
+	}
+
+	// Check for optional else clause
+	var elseKeyword ast.Position
+	var elseBranch ast.Statement
+
+	// Skip newlines to check for else
+	// But first save position in case there's no else
+	savedIndex := p.Index
+	p.skipNewlines()
+
+	if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeElse {
+		elseKeyword = p.CurrentToken().Pos
+		p.advance() // consume 'else'
+
+		// Skip newlines after else
+		p.skipNewlines()
+
+		// Check if it's 'else if' or just 'else'
+		if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeIf {
+			// else if: recursively parse if statement
+			elseBranch = p.ParseIfStatement()
+		} else {
+			// else: parse block
+			elseBranch = p.ParseBlockStmt()
+		}
+	} else {
+		// No else clause, restore position
+		p.Index = savedIndex
+	}
+
+	return &ast.IfStmt{
+		IfKeyword:   ifKeyword,
+		Condition:   condition,
+		ThenBranch:  thenBranch,
+		ElseKeyword: elseKeyword,
+		ElseBranch:  elseBranch,
+	}
+}
+
+// parseIfExpression parses an if expression (same as if statement, but in expression context)
+// Returns *ast.IfStmt which implements both Statement and Expression interfaces
+func (p *parser) parseIfExpression() ast.Expression {
+	// Reuse ParseIfStatement since the syntax is identical
+	// The *ast.IfStmt type implements both Statement and Expression
+	stmt := p.ParseIfStatement()
+	if stmt == nil {
+		return nil
+	}
+	// Type assertion is safe because ParseIfStatement always returns *ast.IfStmt
+	return stmt.(*ast.IfStmt)
 }
 
 func (p *parser) ParseLiteral() ast.Expression {
@@ -494,6 +572,11 @@ func (p *parser) parsePrimary() ast.Expression {
 			LeftParen:  leftParen,
 			RightParen: rightParen,
 		}
+	}
+
+	// Check for if expression
+	if p.CurrentToken().Type == lexer.TokenTypeIf {
+		return p.parseIfExpression()
 	}
 
 	// Check for unary NOT operator

@@ -255,6 +255,34 @@ func (a *Analyzer) analyzeBlockStmt(block *ast.BlockStmt) *TypedBlockStmt {
 	}
 }
 
+// analyzeBlockStmtForExpression analyzes a block in expression context.
+// The last statement, if it's an IfStmt, is analyzed as an expression.
+func (a *Analyzer) analyzeBlockStmtForExpression(block *ast.BlockStmt) *TypedBlockStmt {
+	typedStmts := make([]TypedStatement, 0, len(block.Statements))
+
+	for i, stmt := range block.Statements {
+		var typedStmt TypedStatement
+		// For the last statement, check if it's an IfStmt that should be an expression
+		if i == len(block.Statements)-1 {
+			if ifStmt, ok := stmt.(*ast.IfStmt); ok {
+				// Analyze as expression to get proper type
+				typedStmt = a.analyzeIfExpression(ifStmt).(*TypedIfStmt)
+			} else {
+				typedStmt = a.analyzeStatement(stmt)
+			}
+		} else {
+			typedStmt = a.analyzeStatement(stmt)
+		}
+		typedStmts = append(typedStmts, typedStmt)
+	}
+
+	return &TypedBlockStmt{
+		LeftBrace:  block.LeftBrace,
+		Statements: typedStmts,
+		RightBrace: block.RightBrace,
+	}
+}
+
 // analyzeStatement performs semantic analysis on a statement
 func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 	switch s := stmt.(type) {
@@ -268,6 +296,8 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 		return a.analyzeAssignStatement(s)
 	case *ast.ReturnStmt:
 		return a.analyzeReturnStatement(s)
+	case *ast.IfStmt:
+		return a.analyzeIfStatement(s)
 	default:
 		a.addError("unknown statement type", stmt.Pos(), stmt.End())
 		return &TypedExprStmt{
@@ -474,6 +504,163 @@ func (a *Analyzer) analyzeReturnStatement(stmt *ast.ReturnStmt) TypedStatement {
 	}
 }
 
+// analyzeIfStatement analyzes an if statement
+func (a *Analyzer) analyzeIfStatement(stmt *ast.IfStmt) TypedStatement {
+	// Analyze the condition
+	typedCond := a.analyzeExpression(stmt.Condition)
+	condType := typedCond.GetType()
+
+	// Check that condition is boolean
+	if _, isBool := condType.(BooleanType); !isBool {
+		if _, isErr := condType.(ErrorType); !isErr {
+			a.addError(
+				fmt.Sprintf("if condition must be boolean, got '%s'", condType.String()),
+				stmt.Condition.Pos(), stmt.Condition.End(),
+			).WithHint("use a comparison like x > 0 or a boolean expression")
+		}
+	}
+
+	// Analyze the then branch (with its own scope)
+	a.enterScope()
+	typedThenBranch := a.analyzeBlockStmt(stmt.ThenBranch)
+	a.exitScope()
+
+	// Analyze the else branch if present
+	var typedElseBranch TypedStatement
+	if stmt.ElseBranch != nil {
+		switch elseBranch := stmt.ElseBranch.(type) {
+		case *ast.IfStmt:
+			// else if: recursively analyze (no extra scope needed, the if will create its own)
+			typedElseBranch = a.analyzeIfStatement(elseBranch)
+		case *ast.BlockStmt:
+			// else block: create scope
+			a.enterScope()
+			typedElseBranch = a.analyzeBlockStmt(elseBranch)
+			a.exitScope()
+		default:
+			a.addError("unexpected else branch type", stmt.ElseBranch.Pos(), stmt.ElseBranch.End())
+		}
+	}
+
+	return &TypedIfStmt{
+		IfKeyword:   stmt.IfKeyword,
+		Condition:   typedCond,
+		ThenBranch:  typedThenBranch,
+		ElseKeyword: stmt.ElseKeyword,
+		ElseBranch:  typedElseBranch,
+	}
+}
+
+// analyzeIfExpression analyzes an if expression (if used in expression context)
+func (a *Analyzer) analyzeIfExpression(stmt *ast.IfStmt) TypedExpression {
+	// Analyze the condition
+	typedCond := a.analyzeExpression(stmt.Condition)
+	condType := typedCond.GetType()
+
+	// Check that condition is boolean
+	if _, isBool := condType.(BooleanType); !isBool {
+		if _, isErr := condType.(ErrorType); !isErr {
+			a.addError(
+				fmt.Sprintf("if condition must be boolean, got '%s'", condType.String()),
+				stmt.Condition.Pos(), stmt.Condition.End(),
+			).WithHint("use a comparison like x > 0 or a boolean expression")
+		}
+	}
+
+	// If expressions require an else branch
+	if stmt.ElseBranch == nil {
+		a.addError(
+			"if expression must have an else branch",
+			stmt.IfKeyword, stmt.ThenBranch.End(),
+		).WithHint("add an else branch to provide a value for all cases")
+		// Still analyze the then branch
+		a.enterScope()
+		typedThenBranch := a.analyzeBlockStmt(stmt.ThenBranch)
+		a.exitScope()
+		return &TypedIfStmt{
+			IfKeyword:   stmt.IfKeyword,
+			Condition:   typedCond,
+			ThenBranch:  typedThenBranch,
+			ElseKeyword: stmt.ElseKeyword,
+			ElseBranch:  nil,
+			ResultType:  TypeError,
+		}
+	}
+
+	// Analyze the then branch (with its own scope)
+	a.enterScope()
+	typedThenBranch := a.analyzeBlockStmtForExpression(stmt.ThenBranch)
+	thenType := a.getBlockResultType(typedThenBranch)
+	a.exitScope()
+
+	// Analyze the else branch
+	var typedElseBranch TypedStatement
+	var elseType Type
+
+	switch elseBranch := stmt.ElseBranch.(type) {
+	case *ast.IfStmt:
+		// else if: recursively analyze as expression
+		typedElseExpr := a.analyzeIfExpression(elseBranch)
+		typedElseBranch = typedElseExpr.(*TypedIfStmt)
+		elseType = typedElseExpr.GetType()
+	case *ast.BlockStmt:
+		// else block: create scope
+		a.enterScope()
+		typedBlock := a.analyzeBlockStmtForExpression(elseBranch)
+		typedElseBranch = typedBlock
+		elseType = a.getBlockResultType(typedBlock)
+		a.exitScope()
+	default:
+		a.addError("unexpected else branch type", stmt.ElseBranch.Pos(), stmt.ElseBranch.End())
+		elseType = TypeError
+	}
+
+	// Check that both branches have the same type
+	var resultType Type = thenType
+	if _, isErr := thenType.(ErrorType); !isErr {
+		if _, isErr := elseType.(ErrorType); !isErr {
+			if !thenType.Equals(elseType) {
+				a.addError(
+					fmt.Sprintf("if expression branches have different types: '%s' and '%s'",
+						thenType.String(), elseType.String()),
+					stmt.IfKeyword, stmt.End(),
+				).WithHint("both branches must evaluate to the same type")
+				resultType = TypeError
+			}
+		} else {
+			resultType = TypeError
+		}
+	} else {
+		resultType = TypeError
+	}
+
+	return &TypedIfStmt{
+		IfKeyword:   stmt.IfKeyword,
+		Condition:   typedCond,
+		ThenBranch:  typedThenBranch,
+		ElseKeyword: stmt.ElseKeyword,
+		ElseBranch:  typedElseBranch,
+		ResultType:  resultType,
+	}
+}
+
+// getBlockResultType returns the type of a block's result (last expression)
+func (a *Analyzer) getBlockResultType(block *TypedBlockStmt) Type {
+	if len(block.Statements) == 0 {
+		return TypeVoid
+	}
+	// The result is the last statement's type if it's an expression statement
+	lastStmt := block.Statements[len(block.Statements)-1]
+	if exprStmt, ok := lastStmt.(*TypedExprStmt); ok {
+		return exprStmt.Expr.GetType()
+	}
+	// If last statement is an if-expression, get its type
+	if ifStmt, ok := lastStmt.(*TypedIfStmt); ok {
+		return ifStmt.GetType()
+	}
+	return TypeVoid
+}
+
 // analyzeExprStatement analyzes an expression statement
 func (a *Analyzer) analyzeExprStatement(stmt *ast.ExprStmt) TypedStatement {
 	typedExpr := a.analyzeExpression(stmt.Expr)
@@ -498,6 +685,9 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 	case *ast.GroupingExpr:
 		// Grouping is purely syntactic for precedence; just analyze the inner expression
 		return a.analyzeExpression(e.Expr)
+	case *ast.IfStmt:
+		// If can be used as an expression
+		return a.analyzeIfExpression(e)
 	default:
 		a.addError("unknown expression type", expr.Pos(), expr.End())
 		return &TypedLiteralExpr{

@@ -172,6 +172,32 @@ func (s *TypedReturnStmt) End() ast.Position {
 func (s *TypedReturnStmt) GetType() Type  { return TypeVoid }
 func (s *TypedReturnStmt) typedStmtNode() {}
 
+// TypedIfStmt represents a typed if statement/expression
+type TypedIfStmt struct {
+	IfKeyword   ast.Position
+	Condition   TypedExpression
+	ThenBranch  *TypedBlockStmt
+	ElseKeyword ast.Position
+	ElseBranch  TypedStatement // nil, *TypedBlockStmt, or *TypedIfStmt (else-if)
+	ResultType  Type           // non-nil when used as expression
+}
+
+func (s *TypedIfStmt) Pos() ast.Position { return s.IfKeyword }
+func (s *TypedIfStmt) End() ast.Position {
+	if s.ElseBranch != nil {
+		return s.ElseBranch.End()
+	}
+	return s.ThenBranch.End()
+}
+func (s *TypedIfStmt) GetType() Type {
+	if s.ResultType != nil {
+		return s.ResultType
+	}
+	return TypeVoid
+}
+func (s *TypedIfStmt) typedStmtNode() {}
+func (s *TypedIfStmt) typedExprNode() {} // TypedIfStmt can also be used as an expression
+
 // ============================================================================
 // Typed Declarations
 // ============================================================================

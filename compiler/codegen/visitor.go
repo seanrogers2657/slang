@@ -54,6 +54,21 @@ func (info *ProgramInfo) collectFromTypedStatement(stmt semantic.TypedStatement,
 		if s.Value != nil {
 			info.collectFromTypedExpr(s.Value, floatIdx, stringIdx)
 		}
+	case *semantic.TypedIfStmt:
+		// Collect from condition
+		info.collectFromTypedExpr(s.Condition, floatIdx, stringIdx)
+		// Collect from then branch
+		for _, bodyStmt := range s.ThenBranch.Statements {
+			info.collectFromTypedStatement(bodyStmt, floatIdx, stringIdx)
+		}
+		// Collect from else branch if present
+		if s.ElseBranch != nil {
+			info.collectFromTypedStatement(s.ElseBranch, floatIdx, stringIdx)
+		}
+	case *semantic.TypedBlockStmt:
+		for _, bodyStmt := range s.Statements {
+			info.collectFromTypedStatement(bodyStmt, floatIdx, stringIdx)
+		}
 	}
 }
 
@@ -109,11 +124,36 @@ func (info *ProgramInfo) collectFromTypedExpr(expr semantic.TypedExpression, flo
 func CountTypedVariables(stmts []semantic.TypedStatement) int {
 	count := 0
 	for _, stmt := range stmts {
-		if _, ok := stmt.(*semantic.TypedVarDeclStmt); ok {
-			count++
-		}
+		count += countTypedVarsInStmt(stmt)
 	}
 	return count
+}
+
+// countTypedVarsInStmt counts variables in a single statement (recursive)
+func countTypedVarsInStmt(stmt semantic.TypedStatement) int {
+	switch s := stmt.(type) {
+	case *semantic.TypedVarDeclStmt:
+		return 1
+	case *semantic.TypedIfStmt:
+		count := 0
+		// Count in then branch
+		for _, bodyStmt := range s.ThenBranch.Statements {
+			count += countTypedVarsInStmt(bodyStmt)
+		}
+		// Count in else branch if present
+		if s.ElseBranch != nil {
+			count += countTypedVarsInStmt(s.ElseBranch)
+		}
+		return count
+	case *semantic.TypedBlockStmt:
+		count := 0
+		for _, bodyStmt := range s.Statements {
+			count += countTypedVarsInStmt(bodyStmt)
+		}
+		return count
+	default:
+		return 0
+	}
 }
 
 // FindStringLiteral finds a string literal by value in the collected literals.

@@ -181,6 +181,25 @@ func (r *ReturnStmt) End() Position {
 }
 func (r *ReturnStmt) stmtNode() {}
 
+// IfStmt represents an if statement with optional else/else-if branches
+type IfStmt struct {
+	IfKeyword   Position   // position of 'if'
+	Condition   Expression // boolean condition
+	ThenBranch  *BlockStmt // required block for true case
+	ElseKeyword Position   // position of 'else' (zero if none)
+	ElseBranch  Statement  // optional: either *BlockStmt or *IfStmt for else-if
+}
+
+func (i *IfStmt) Pos() Position { return i.IfKeyword }
+func (i *IfStmt) End() Position {
+	if i.ElseBranch != nil {
+		return i.ElseBranch.End()
+	}
+	return i.ThenBranch.End()
+}
+func (i *IfStmt) stmtNode() {}
+func (i *IfStmt) exprNode() {} // IfStmt can also be used as an expression
+
 // ============================================================================
 // Declarations
 // ============================================================================

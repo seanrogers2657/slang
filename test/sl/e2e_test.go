@@ -83,7 +83,7 @@ func runSlangTest(t *testing.T, tc *testutil.TestExpectation) {
 
 	if len(p.Errors) > 0 {
 		if tc.ExpectError && tc.ErrorStage == "parser" {
-			checkErrorContains(t, p.Errors, tc.ErrorContains)
+			checkCompilerErrorContains(t, p.Errors, tc.ErrorContains)
 			return
 		}
 		t.Fatalf("parser errors: %v", p.Errors)

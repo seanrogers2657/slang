@@ -5,6 +5,7 @@ import (
 
 	"github.com/seanrogers2657/slang/compiler/ast"
 	"github.com/seanrogers2657/slang/compiler/lexer"
+	"github.com/seanrogers2657/slang/errors"
 )
 
 // Precedence levels for operators (higher = tighter binding)
@@ -21,19 +22,45 @@ const (
 )
 
 func NewParser(source []lexer.Token) *parser {
-	parser := &parser{
-		Source: source,
-		Index:  0,
-	}
+	return NewParserWithFilename(source, "")
+}
 
-	return parser
+// NewParserWithFilename creates a new parser with a source filename for error reporting
+func NewParserWithFilename(source []lexer.Token, filename string) *parser {
+	return &parser{
+		Source:   source,
+		Index:    0,
+		Filename: filename,
+	}
 }
 
 type parser struct {
-	Source []lexer.Token
-	Index  int
+	Source   []lexer.Token
+	Index    int
+	Filename string // source filename for error reporting
 
-	Errors []error
+	Errors []*errors.CompilerError
+}
+
+// toErrorPos converts an ast.Position to an errors.Position
+func toErrorPos(p ast.Position) errors.Position {
+	return errors.Position{Line: p.Line, Column: p.Column, Offset: p.Offset}
+}
+
+// addError creates and adds a compiler error at a specific position
+func (p *parser) addError(message string, pos ast.Position) *errors.CompilerError {
+	err := errors.NewError(message, p.Filename, toErrorPos(pos), "parser")
+	err.Tool = errors.ToolSL
+	p.Errors = append(p.Errors, err)
+	return err
+}
+
+// addErrorWithSpan creates and adds a compiler error spanning from start to end position
+func (p *parser) addErrorWithSpan(message string, startPos, endPos ast.Position) *errors.CompilerError {
+	err := errors.NewErrorWithSpan(message, p.Filename, toErrorPos(startPos), toErrorPos(endPos), "parser")
+	err.Tool = errors.ToolSL
+	p.Errors = append(p.Errors, err)
+	return err
 }
 
 // getPrecedence returns the precedence level for the current token
@@ -76,6 +103,18 @@ func (p *parser) isAtEnd() bool {
 
 func (p *parser) skipNewlines() {
 	for !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeNewline {
+		p.Index++
+	}
+}
+
+// skipUntilFn skips tokens until we find a 'fn' keyword or reach end of input.
+// This is used for error recovery to continue parsing after a syntax error.
+func (p *parser) skipUntilFn() {
+	for !p.isAtEnd() {
+		// If we find 'fn' at the start of a line (after newlines), stop
+		if p.CurrentToken().Type == lexer.TokenTypeFn {
+			return
+		}
 		p.Index++
 	}
 }
@@ -165,12 +204,21 @@ func (p *parser) Parse() *ast.Program {
 				break
 			}
 
+			// Check if current token is 'fn' before trying to parse
+			if p.CurrentToken().Type != lexer.TokenTypeFn {
+				// Report error for unexpected token and try to recover
+				p.addError(fmt.Sprintf("expected function declaration, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+				// Skip tokens until we find 'fn' or reach end
+				p.skipUntilFn()
+				continue
+			}
+
 			fnDecl := p.ParseFunctionDecl()
 			if fnDecl != nil {
 				program.Declarations = append(program.Declarations, fnDecl)
 			} else {
-				// If parsing failed, break to avoid infinite loop
-				break
+				// If parsing failed, try to recover by skipping to next 'fn'
+				p.skipUntilFn()
 			}
 
 			// Skip newlines after function declaration
@@ -198,7 +246,7 @@ func (p *parser) Parse() *ast.Program {
 					p.skipNewlines() // Skip any additional newlines
 				} else {
 					// Error: expected newline or end of input
-					p.Errors = append(p.Errors, fmt.Errorf("expected newline after statement, got %s", p.CurrentToken().Value))
+					p.addError(fmt.Sprintf("expected newline after statement, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 					break
 				}
 			}
@@ -261,7 +309,7 @@ func (p *parser) ParseVarDecl(mutable bool) ast.Statement {
 
 	// Expect identifier
 	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-		p.Errors = append(p.Errors, fmt.Errorf("expected identifier after '%s', got %s", keywordName, p.CurrentToken().Value))
+		p.addError(fmt.Sprintf("expected identifier after '%s', got '%s'", keywordName, p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
@@ -280,7 +328,7 @@ func (p *parser) ParseVarDecl(mutable bool) ast.Statement {
 
 		// Expect type identifier
 		if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-			p.Errors = append(p.Errors, fmt.Errorf("expected type after ':', got %s", p.CurrentToken().Value))
+			p.addError(fmt.Sprintf("expected type after ':', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 			return nil
 		}
 
@@ -291,7 +339,7 @@ func (p *parser) ParseVarDecl(mutable bool) ast.Statement {
 
 	// Expect '='
 	if p.CurrentToken().Type != lexer.TokenTypeAssign {
-		p.Errors = append(p.Errors, fmt.Errorf("expected '=' after variable name, got %s", p.CurrentToken().Value))
+		p.addError(fmt.Sprintf("expected '=' after variable name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
@@ -301,7 +349,7 @@ func (p *parser) ParseVarDecl(mutable bool) ast.Statement {
 	// Parse the initializer expression
 	initializer := p.parseExpression(precedenceLowest)
 	if initializer == nil {
-		p.Errors = append(p.Errors, fmt.Errorf("expected expression after '='"))
+		p.addError("expected expression after '='", equalsPos)
 		return nil
 	}
 
@@ -329,7 +377,7 @@ func (p *parser) ParseAssignment() ast.Statement {
 
 	value := p.parseExpression(precedenceLowest)
 	if value == nil {
-		p.Errors = append(p.Errors, fmt.Errorf("expected expression after '='"))
+		p.addError("expected expression after '='", equalsPos)
 		return nil
 	}
 
@@ -368,7 +416,7 @@ func (p *parser) ParseIfStatement() ast.Statement {
 	// Parse the condition expression
 	condition := p.parseExpression(precedenceLowest)
 	if condition == nil {
-		p.Errors = append(p.Errors, fmt.Errorf("expected condition after 'if'"))
+		p.addError("expected condition after 'if'", ifKeyword)
 		return nil
 	}
 
@@ -527,7 +575,7 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 		// For right-associative, we would use opPrec - 1
 		right := p.parseExpression(opPrec)
 		if right == nil {
-			p.Errors = append(p.Errors, fmt.Errorf("expected expression after operator '%s'", op))
+			p.addError(fmt.Sprintf("expected expression after operator '%s'", op), opPos)
 			return nil
 		}
 
@@ -554,13 +602,13 @@ func (p *parser) parsePrimary() ast.Expression {
 		// Parse the inner expression with lowest precedence
 		expr := p.parseExpression(precedenceLowest)
 		if expr == nil {
-			p.Errors = append(p.Errors, fmt.Errorf("expected expression after '('"))
+			p.addError("expected expression after '('", leftParen)
 			return nil
 		}
 
 		// Expect ')'
 		if p.isAtEnd() || p.CurrentToken().Type != lexer.TokenTypeRParen {
-			p.Errors = append(p.Errors, fmt.Errorf("expected ')' to close grouping expression"))
+			p.addError("expected ')' to close grouping expression", p.PreviousToken().Pos)
 			return nil
 		}
 
@@ -587,7 +635,7 @@ func (p *parser) parsePrimary() ast.Expression {
 		// Parse the operand (recursively call parsePrimary for highest precedence)
 		operand := p.parsePrimary()
 		if operand == nil {
-			p.Errors = append(p.Errors, fmt.Errorf("expected expression after '!'"))
+			p.addError("expected expression after '!'", opPos)
 			return nil
 		}
 
@@ -648,7 +696,7 @@ func (p *parser) parseCallExpr(name string, namePos ast.Position) ast.Expression
 
 	// Expect ')'
 	if p.isAtEnd() || p.CurrentToken().Type != lexer.TokenTypeRParen {
-		p.Errors = append(p.Errors, fmt.Errorf("expected ')' after function arguments, got %s", p.CurrentToken().Value))
+		p.addError(fmt.Sprintf("expected ')' after function arguments, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
@@ -670,7 +718,7 @@ func (p *parser) ParseBinaryExpression() ast.Expression {
 	expr := p.parseExpression(precedenceLowest)
 	if expr == nil && len(p.Errors) == 0 {
 		// Add error if no expression was parsed and no error was set
-		p.Errors = append(p.Errors, fmt.Errorf("unsupported operation: %s", p.CurrentToken().Value))
+		p.addError(fmt.Sprintf("unsupported operation: '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 	}
 	return expr
 }
@@ -679,7 +727,7 @@ func (p *parser) ParseBinaryExpression() ast.Expression {
 func (p *parser) ParseBlockStmt() *ast.BlockStmt {
 	// Expect '{'
 	if p.CurrentToken().Type != lexer.TokenTypeLBrace {
-		p.Errors = append(p.Errors, fmt.Errorf("expected '{', got %s", p.CurrentToken().Value))
+		p.addError(fmt.Sprintf("expected '{', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
@@ -704,7 +752,7 @@ func (p *parser) ParseBlockStmt() *ast.BlockStmt {
 				p.advance()      // consume newline
 				p.skipNewlines() // skip any additional newlines
 			} else {
-				p.Errors = append(p.Errors, fmt.Errorf("expected newline or '}' after statement, got %s", p.CurrentToken().Value))
+				p.addError(fmt.Sprintf("expected newline or '}' after statement, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 				break
 			}
 		}
@@ -712,7 +760,7 @@ func (p *parser) ParseBlockStmt() *ast.BlockStmt {
 
 	// Expect '}'
 	if p.isAtEnd() || p.CurrentToken().Type != lexer.TokenTypeRBrace {
-		p.Errors = append(p.Errors, fmt.Errorf("expected '}' to close block"))
+		p.addError("expected '}' to close block", leftBrace)
 		return nil
 	}
 
@@ -730,7 +778,7 @@ func (p *parser) ParseBlockStmt() *ast.BlockStmt {
 func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 	// Expect 'fn' keyword
 	if p.CurrentToken().Type != lexer.TokenTypeFn {
-		p.Errors = append(p.Errors, fmt.Errorf("expected 'fn', got %s", p.CurrentToken().Value))
+		p.addError(fmt.Sprintf("expected 'fn', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
@@ -739,7 +787,7 @@ func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 
 	// Expect identifier (function name)
 	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-		p.Errors = append(p.Errors, fmt.Errorf("expected function name, got %s", p.CurrentToken().Value))
+		p.addError(fmt.Sprintf("expected function name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
@@ -749,7 +797,7 @@ func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 
 	// Expect '('
 	if p.CurrentToken().Type != lexer.TokenTypeLParen {
-		p.Errors = append(p.Errors, fmt.Errorf("expected '(' after function name, got %s", p.CurrentToken().Value))
+		p.addError(fmt.Sprintf("expected '(' after function name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
@@ -761,7 +809,7 @@ func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 
 	// Expect ')'
 	if p.CurrentToken().Type != lexer.TokenTypeRParen {
-		p.Errors = append(p.Errors, fmt.Errorf("expected ')' after parameters, got %s", p.CurrentToken().Value))
+		p.addError(fmt.Sprintf("expected ')' after parameters, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
@@ -772,11 +820,12 @@ func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 	var returnType string
 	var returnPos ast.Position
 	if p.CurrentToken().Type == lexer.TokenTypeColon {
+		colonPos := p.CurrentToken().Pos
 		p.advance() // consume ':'
 
 		// Expect return type identifier
 		if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-			p.Errors = append(p.Errors, fmt.Errorf("expected return type, got %s", p.CurrentToken().Value))
+			p.addError(fmt.Sprintf("expected return type, got '%s'", p.CurrentToken().Value), colonPos)
 			return nil
 		}
 
@@ -842,7 +891,7 @@ func (p *parser) parseParameterList() []ast.Parameter {
 func (p *parser) parseParameter() *ast.Parameter {
 	// Expect identifier (parameter name)
 	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-		p.Errors = append(p.Errors, fmt.Errorf("expected parameter name, got %s", p.CurrentToken().Value))
+		p.addError(fmt.Sprintf("expected parameter name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
@@ -852,7 +901,7 @@ func (p *parser) parseParameter() *ast.Parameter {
 
 	// Expect ':'
 	if p.CurrentToken().Type != lexer.TokenTypeColon {
-		p.Errors = append(p.Errors, fmt.Errorf("expected ':' after parameter name, got %s", p.CurrentToken().Value))
+		p.addError(fmt.Sprintf("expected ':' after parameter name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
@@ -861,7 +910,7 @@ func (p *parser) parseParameter() *ast.Parameter {
 
 	// Expect type identifier
 	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-		p.Errors = append(p.Errors, fmt.Errorf("expected parameter type, got %s", p.CurrentToken().Value))
+		p.addError(fmt.Sprintf("expected parameter type, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 

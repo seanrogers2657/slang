@@ -94,18 +94,44 @@ func (i *IdentifierExpr) Pos() Position { return i.StartPos }
 func (i *IdentifierExpr) End() Position { return i.EndPos }
 func (i *IdentifierExpr) exprNode()     {}
 
-// CallExpr represents a function call (e.g., add(1, 2))
+// NamedArgument represents a named argument in a call (e.g., x: 10)
+type NamedArgument struct {
+	Name     string     // argument name
+	NamePos  Position   // position of name
+	Colon    Position   // position of ':'
+	Value    Expression // argument value
+}
+
+// CallExpr represents a function call (e.g., add(1, 2)) or struct construction
 type CallExpr struct {
-	Name       string       // function name
-	NamePos    Position     // position of function name
-	LeftParen  Position     // position of '('
-	Arguments  []Expression // list of argument expressions
-	RightParen Position     // position of ')'
+	Name           string          // function/struct name
+	NamePos        Position        // position of function/struct name
+	LeftParen      Position        // position of '('
+	Arguments      []Expression    // list of positional argument expressions
+	NamedArguments []NamedArgument // list of named arguments (e.g., x: 10, y: 20)
+	RightParen     Position        // position of ')'
 }
 
 func (c *CallExpr) Pos() Position { return c.NamePos }
 func (c *CallExpr) End() Position { return c.RightParen }
 func (c *CallExpr) exprNode()     {}
+
+// HasNamedArguments returns true if the call uses named arguments
+func (c *CallExpr) HasNamedArguments() bool { return len(c.NamedArguments) > 0 }
+
+// FieldAccessExpr represents field access (e.g., p.x, rect.topLeft.x)
+type FieldAccessExpr struct {
+	Object   Expression // the struct expression
+	Dot      Position   // position of '.'
+	Field    string     // field name
+	FieldPos Position   // position of field name
+}
+
+func (f *FieldAccessExpr) Pos() Position { return f.Object.Pos() }
+func (f *FieldAccessExpr) End() Position {
+	return Position{Line: f.FieldPos.Line, Column: f.FieldPos.Column + len(f.Field), Offset: f.FieldPos.Offset + len(f.Field)}
+}
+func (f *FieldAccessExpr) exprNode() {}
 
 // ============================================================================
 // Statements
@@ -165,6 +191,20 @@ type AssignStmt struct {
 func (a *AssignStmt) Pos() Position { return a.NamePos }
 func (a *AssignStmt) End() Position { return a.Value.End() }
 func (a *AssignStmt) stmtNode()     {}
+
+// FieldAssignStmt represents a field assignment (e.g., p.y = 25)
+type FieldAssignStmt struct {
+	Object   Expression // the struct expression (could be nested: rect.topLeft)
+	Dot      Position   // position of '.'
+	Field    string     // field name
+	FieldPos Position   // position of field name
+	Equals   Position   // position of '='
+	Value    Expression // value expression
+}
+
+func (f *FieldAssignStmt) Pos() Position { return f.Object.Pos() }
+func (f *FieldAssignStmt) End() Position { return f.Value.End() }
+func (f *FieldAssignStmt) stmtNode()     {}
 
 // ReturnStmt represents a return statement (e.g., return x + 1)
 type ReturnStmt struct {
@@ -240,6 +280,36 @@ type FunctionDecl struct {
 func (f *FunctionDecl) Pos() Position { return f.FnKeyword }
 func (f *FunctionDecl) End() Position { return f.Body.End() }
 func (f *FunctionDecl) declNode()     {}
+
+// StructField represents a field in a struct definition (e.g., val x: i64)
+type StructField struct {
+	Keyword  Position // position of 'val' or 'var' keyword
+	Mutable  bool     // true for var, false for val
+	Name     string   // field name
+	NamePos  Position // position of field name
+	Colon    Position // position of ':'
+	TypeName string   // type name (e.g., "i64", "Point")
+	TypePos  Position // position of type name
+}
+
+func (f *StructField) Pos() Position { return f.Keyword }
+func (f *StructField) End() Position {
+	return Position{Line: f.TypePos.Line, Column: f.TypePos.Column + len(f.TypeName), Offset: f.TypePos.Offset + len(f.TypeName)}
+}
+
+// StructDecl represents a struct declaration (e.g., struct Point(val x: i64, var y: i64))
+type StructDecl struct {
+	StructKeyword Position      // position of 'struct' keyword
+	Name          string        // struct name
+	NamePos       Position      // position of struct name
+	LeftParen     Position      // position of '('
+	Fields        []StructField // list of fields
+	RightParen    Position      // position of ')'
+}
+
+func (s *StructDecl) Pos() Position { return s.StructKeyword }
+func (s *StructDecl) End() Position { return s.RightParen }
+func (s *StructDecl) declNode()     {}
 
 // ============================================================================
 // Program

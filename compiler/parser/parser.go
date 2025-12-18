@@ -107,14 +107,77 @@ func (p *parser) skipNewlines() {
 	}
 }
 
-// skipUntilFn skips tokens until we find a 'fn' keyword or reach end of input.
+// peekPastNewlinesIs looks ahead past any newlines and returns true if the next non-newline token matches the given type.
+// This is used to support multi-line expressions like chained field access.
+func (p *parser) peekPastNewlinesIs(tokenType lexer.TokenType) bool {
+	i := p.Index
+	for i < len(p.Source) && p.Source[i].Type == lexer.TokenTypeNewline {
+		i++
+	}
+	if i >= len(p.Source) {
+		return false
+	}
+	return p.Source[i].Type == tokenType
+}
+
+// skipUntilDecl skips tokens until we find a 'fn' or 'struct' keyword or reach end of input.
 // This is used for error recovery to continue parsing after a syntax error.
-func (p *parser) skipUntilFn() {
+func (p *parser) skipUntilDecl() {
 	for !p.isAtEnd() {
-		// If we find 'fn' at the start of a line (after newlines), stop
-		if p.CurrentToken().Type == lexer.TokenTypeFn {
+		// If we find 'fn' or 'struct' at the start of a line (after newlines), stop
+		if p.CurrentToken().Type == lexer.TokenTypeFn || p.CurrentToken().Type == lexer.TokenTypeStruct {
 			return
 		}
+		p.Index++
+	}
+}
+
+// skipToNextStatement skips tokens until we find something that could start a new statement.
+// This is used for error recovery within function bodies.
+func (p *parser) skipToNextStatement() {
+	for !p.isAtEnd() {
+		tok := p.CurrentToken().Type
+		// Stop at tokens that could start a new statement
+		switch tok {
+		case lexer.TokenTypeVal, lexer.TokenTypeVar, lexer.TokenTypeIf,
+			lexer.TokenTypeReturn, lexer.TokenTypeRBrace:
+			return
+		case lexer.TokenTypeNewline:
+			// Skip the newline and check next token
+			p.Index++
+			continue
+		}
+		p.Index++
+	}
+}
+
+// skipStructDeclaration skips an entire struct declaration: struct Name(fields...)
+// Used for error recovery when struct is found inside a function.
+func (p *parser) skipStructDeclaration() {
+	// Skip 'struct' keyword
+	if p.CurrentToken().Type == lexer.TokenTypeStruct {
+		p.Index++
+	}
+	// Skip struct name
+	if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeIdentifier {
+		p.Index++
+	}
+	// Skip '(' and everything until matching ')'
+	if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeLParen {
+		p.Index++
+		parenDepth := 1
+		for !p.isAtEnd() && parenDepth > 0 {
+			switch p.CurrentToken().Type {
+			case lexer.TokenTypeLParen:
+				parenDepth++
+			case lexer.TokenTypeRParen:
+				parenDepth--
+			}
+			p.Index++
+		}
+	}
+	// Skip trailing newline if present
+	if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeNewline {
 		p.Index++
 	}
 }
@@ -181,6 +244,9 @@ func (p *parser) getOperatorString(tokenType lexer.TokenType) string {
 
 // Top level parsing
 func (p *parser) Parse() *ast.Program {
+	// Skip leading newlines first to get meaningful start position
+	p.skipNewlines()
+
 	startPos := ast.Position{Line: 1, Column: 1, Offset: 0}
 	if !p.isAtEnd() {
 		startPos = p.CurrentToken().Pos
@@ -192,36 +258,41 @@ func (p *parser) Parse() *ast.Program {
 		StartPos:     startPos,
 	}
 
-	// Skip leading newlines
-	p.skipNewlines()
-
-	// Check if this is a function-based program or legacy statement-based program
-	if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeFn {
-		// New style: parse function declarations
+	// Check if this is a declaration-based program or legacy statement-based program
+	if !p.isAtEnd() && (p.CurrentToken().Type == lexer.TokenTypeFn || p.CurrentToken().Type == lexer.TokenTypeStruct) {
+		// New style: parse declarations (functions and structs)
 		for !p.isAtEnd() {
 			p.skipNewlines()
 			if p.isAtEnd() {
 				break
 			}
 
-			// Check if current token is 'fn' before trying to parse
-			if p.CurrentToken().Type != lexer.TokenTypeFn {
+			// Check if current token is 'fn' or 'struct' before trying to parse
+			if p.CurrentToken().Type == lexer.TokenTypeFn {
+				fnDecl := p.ParseFunctionDecl()
+				if fnDecl != nil {
+					program.Declarations = append(program.Declarations, fnDecl)
+				} else {
+					// If parsing failed, try to recover by skipping to next declaration
+					p.skipUntilDecl()
+				}
+			} else if p.CurrentToken().Type == lexer.TokenTypeStruct {
+				structDecl := p.ParseStructDecl()
+				if structDecl != nil {
+					program.Declarations = append(program.Declarations, structDecl)
+				} else {
+					// If parsing failed, try to recover by skipping to next declaration
+					p.skipUntilDecl()
+				}
+			} else {
 				// Report error for unexpected token and try to recover
-				p.addError(fmt.Sprintf("expected function declaration, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
-				// Skip tokens until we find 'fn' or reach end
-				p.skipUntilFn()
+				p.addError(fmt.Sprintf("expected declaration (fn or struct), got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+				// Skip tokens until we find 'fn' or 'struct' or reach end
+				p.skipUntilDecl()
 				continue
 			}
 
-			fnDecl := p.ParseFunctionDecl()
-			if fnDecl != nil {
-				program.Declarations = append(program.Declarations, fnDecl)
-			} else {
-				// If parsing failed, try to recover by skipping to next 'fn'
-				p.skipUntilFn()
-			}
-
-			// Skip newlines after function declaration
+			// Skip newlines after declaration
 			p.skipNewlines()
 		}
 
@@ -264,6 +335,16 @@ func (p *parser) Parse() *ast.Program {
 }
 
 func (p *parser) ParseStatement() ast.Statement {
+	// Check for struct declaration inside function (not allowed)
+	if p.CurrentToken().Type == lexer.TokenTypeStruct {
+		pos := p.CurrentToken().Pos
+		p.addError("struct declarations are only allowed at the top level", pos).
+			WithHint("move the struct declaration outside of the function")
+		// Skip the entire struct declaration for error recovery
+		p.skipStructDeclaration()
+		return nil
+	}
+
 	// Check if it's a return statement
 	if p.CurrentToken().Type == lexer.TokenTypeReturn {
 		return p.ParseReturnStatement()
@@ -291,13 +372,21 @@ func (p *parser) ParseStatement() ast.Statement {
 		}
 	}
 
-	// Otherwise, it's an expression statement
+	// Otherwise, parse as expression and check if it's a field assignment
 	expr := p.parseExpression(precedenceLowest)
-	if expr != nil {
-		return &ast.ExprStmt{Expr: expr}
+	if expr == nil {
+		return nil
 	}
 
-	return nil
+	// Check if this is a field assignment (field access followed by '=')
+	if fieldAccess, ok := expr.(*ast.FieldAccessExpr); ok {
+		if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeAssign {
+			return p.parseFieldAssignment(fieldAccess)
+		}
+	}
+
+	// Otherwise it's an expression statement
+	return &ast.ExprStmt{Expr: expr}
 }
 
 // ParseVarDecl parses a variable declaration: val <name> = <expr> or val <name>: <type> = <expr>
@@ -386,6 +475,27 @@ func (p *parser) ParseAssignment() ast.Statement {
 		NamePos: namePos,
 		Equals:  equalsPos,
 		Value:   value,
+	}
+}
+
+// parseFieldAssignment parses a field assignment: <expr>.<field> = <expr>
+func (p *parser) parseFieldAssignment(fieldAccess *ast.FieldAccessExpr) ast.Statement {
+	equalsPos := p.CurrentToken().Pos
+	p.advance() // consume '='
+
+	value := p.parseExpression(precedenceLowest)
+	if value == nil {
+		p.addError("expected expression after '='", equalsPos)
+		return nil
+	}
+
+	return &ast.FieldAssignStmt{
+		Object:   fieldAccess.Object,
+		Dot:      fieldAccess.Dot,
+		Field:    fieldAccess.Field,
+		FieldPos: fieldAccess.FieldPos,
+		Equals:   equalsPos,
+		Value:    value,
 	}
 }
 
@@ -553,10 +663,44 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 		return nil
 	}
 
-	// Parse infix (binary operators)
-	for !p.isAtEnd() && p.currentPrecedence() > minPrec {
-		// Stop at newlines (statement terminators)
+	// Parse postfix and infix operators
+	for !p.isAtEnd() {
+		// Handle newlines - but check if next non-newline token is '.' for chained access
 		if p.CurrentToken().Type == lexer.TokenTypeNewline {
+			// Look ahead past newlines to see if there's a '.' (chained field access)
+			if !p.peekPastNewlinesIs(lexer.TokenTypeDot) {
+				break
+			}
+			// Skip the newlines and continue to parse the '.'
+			p.skipNewlines()
+		}
+
+		// Handle field access (dot operator) - highest precedence, left-associative
+		if p.CurrentToken().Type == lexer.TokenTypeDot {
+			dotPos := p.CurrentToken().Pos
+			p.advance() // consume '.'
+
+			// Expect field name
+			if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+				p.addError(fmt.Sprintf("expected field name after '.', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+				return nil
+			}
+
+			fieldName := p.CurrentToken().Value
+			fieldPos := p.CurrentToken().Pos
+			p.advance() // consume field name
+
+			left = &ast.FieldAccessExpr{
+				Object:   left,
+				Dot:      dotPos,
+				Field:    fieldName,
+				FieldPos: fieldPos,
+			}
+			continue
+		}
+
+		// Handle binary operators
+		if p.currentPrecedence() <= minPrec {
 			break
 		}
 
@@ -674,25 +818,69 @@ func (p *parser) parseCallExpr(name string, namePos ast.Position) ast.Expression
 	leftParen := p.CurrentToken().Pos
 	p.advance() // consume '('
 
+	// Skip newlines after '(' for multi-line argument lists
+	p.skipNewlines()
+
 	arguments := []ast.Expression{}
+	namedArguments := []ast.NamedArgument{}
+	hasNamedArgs := false
+	hasPositionalArgs := false
 
 	// Parse arguments
 	if !p.isAtEnd() && p.CurrentToken().Type != lexer.TokenTypeRParen {
-		// Parse first argument
-		arg := p.parseExpression(precedenceLowest)
-		if arg != nil {
-			arguments = append(arguments, arg)
-		}
-
-		// Parse remaining arguments
-		for !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeComma {
-			p.advance() // consume ','
+		// Check if first argument is named (identifier followed by ':')
+		if p.isNamedArgument() {
+			hasNamedArgs = true
+			namedArg := p.parseNamedArgument()
+			if namedArg != nil {
+				namedArguments = append(namedArguments, *namedArg)
+			}
+		} else {
+			hasPositionalArgs = true
 			arg := p.parseExpression(precedenceLowest)
 			if arg != nil {
 				arguments = append(arguments, arg)
 			}
 		}
+
+		// Parse remaining arguments
+		for !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeComma {
+			p.advance() // consume ','
+
+			// Skip newlines after ',' for multi-line argument lists
+			p.skipNewlines()
+
+			// Skip trailing comma
+			if p.CurrentToken().Type == lexer.TokenTypeRParen {
+				break
+			}
+
+			if p.isNamedArgument() {
+				if hasPositionalArgs {
+					p.addError("cannot mix positional and named arguments", p.CurrentToken().Pos)
+					return nil
+				}
+				hasNamedArgs = true
+				namedArg := p.parseNamedArgument()
+				if namedArg != nil {
+					namedArguments = append(namedArguments, *namedArg)
+				}
+			} else {
+				if hasNamedArgs {
+					p.addError("cannot mix positional and named arguments", p.CurrentToken().Pos)
+					return nil
+				}
+				hasPositionalArgs = true
+				arg := p.parseExpression(precedenceLowest)
+				if arg != nil {
+					arguments = append(arguments, arg)
+				}
+			}
+		}
 	}
+
+	// Skip newlines before ')' for multi-line argument lists
+	p.skipNewlines()
 
 	// Expect ')'
 	if p.isAtEnd() || p.CurrentToken().Type != lexer.TokenTypeRParen {
@@ -704,11 +892,58 @@ func (p *parser) parseCallExpr(name string, namePos ast.Position) ast.Expression
 	p.advance() // consume ')'
 
 	return &ast.CallExpr{
-		Name:       name,
-		NamePos:    namePos,
-		LeftParen:  leftParen,
-		Arguments:  arguments,
-		RightParen: rightParen,
+		Name:           name,
+		NamePos:        namePos,
+		LeftParen:      leftParen,
+		Arguments:      arguments,
+		NamedArguments: namedArguments,
+		RightParen:     rightParen,
+	}
+}
+
+// isNamedArgument checks if the current position has a named argument (identifier followed by ':')
+func (p *parser) isNamedArgument() bool {
+	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+		return false
+	}
+	// Look ahead to see if next token is ':'
+	next := p.peek()
+	return next.Type == lexer.TokenTypeColon
+}
+
+// parseNamedArgument parses a named argument: name: expr
+func (p *parser) parseNamedArgument() *ast.NamedArgument {
+	// Current token should be identifier
+	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+		p.addError(fmt.Sprintf("expected argument name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	name := p.CurrentToken().Value
+	namePos := p.CurrentToken().Pos
+	p.advance() // consume identifier
+
+	// Expect ':'
+	if p.CurrentToken().Type != lexer.TokenTypeColon {
+		p.addError(fmt.Sprintf("expected ':' after argument name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	colonPos := p.CurrentToken().Pos
+	p.advance() // consume ':'
+
+	// Parse the value expression
+	value := p.parseExpression(precedenceLowest)
+	if value == nil {
+		p.addError("expected expression after ':'", colonPos)
+		return nil
+	}
+
+	return &ast.NamedArgument{
+		Name:    name,
+		NamePos: namePos,
+		Colon:   colonPos,
+		Value:   value,
 	}
 }
 
@@ -744,17 +979,21 @@ func (p *parser) ParseBlockStmt() *ast.BlockStmt {
 		stmt := p.ParseStatement()
 		if stmt != nil {
 			statements = append(statements, stmt)
-		}
 
-		// After each statement, expect newline or '}'
-		if !p.isAtEnd() && p.CurrentToken().Type != lexer.TokenTypeRBrace {
-			if p.CurrentToken().Type == lexer.TokenTypeNewline {
-				p.advance()      // consume newline
-				p.skipNewlines() // skip any additional newlines
-			} else {
-				p.addError(fmt.Sprintf("expected newline or '}' after statement, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
-				break
+			// After each statement, expect newline or '}'
+			if !p.isAtEnd() && p.CurrentToken().Type != lexer.TokenTypeRBrace {
+				if p.CurrentToken().Type == lexer.TokenTypeNewline {
+					p.advance()      // consume newline
+					p.skipNewlines() // skip any additional newlines
+				} else {
+					p.addError(fmt.Sprintf("expected newline or '}' after statement, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+					break
+				}
 			}
+		} else {
+			// Error recovery: skip to the next statement or end of block
+			// This prevents infinite loops when parsing fails
+			p.skipToNextStatement()
 		}
 	}
 
@@ -919,6 +1158,152 @@ func (p *parser) parseParameter() *ast.Parameter {
 	p.advance() // consume type
 
 	return &ast.Parameter{
+		Name:     name,
+		NamePos:  namePos,
+		Colon:    colonPos,
+		TypeName: typeName,
+		TypePos:  typePos,
+	}
+}
+
+// ParseStructDecl parses a struct declaration: struct <name>(fields)
+func (p *parser) ParseStructDecl() *ast.StructDecl {
+	// Expect 'struct' keyword
+	if p.CurrentToken().Type != lexer.TokenTypeStruct {
+		p.addError(fmt.Sprintf("expected 'struct', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	structKeyword := p.CurrentToken().Pos
+	p.advance() // consume 'struct'
+
+	// Expect identifier (struct name)
+	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+		p.addError(fmt.Sprintf("expected struct name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	name := p.CurrentToken().Value
+	namePos := p.CurrentToken().Pos
+	p.advance() // consume identifier
+
+	// Expect '('
+	if p.CurrentToken().Type != lexer.TokenTypeLParen {
+		p.addError(fmt.Sprintf("expected '(' after struct name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	leftParen := p.CurrentToken().Pos
+	p.advance() // consume '('
+
+	// Skip newlines after opening paren
+	p.skipNewlines()
+
+	// Parse fields
+	fields := p.parseStructFields()
+
+	// Expect ')'
+	if p.CurrentToken().Type != lexer.TokenTypeRParen {
+		p.addError(fmt.Sprintf("expected ')' after struct fields, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	rightParen := p.CurrentToken().Pos
+	p.advance() // consume ')'
+
+	return &ast.StructDecl{
+		StructKeyword: structKeyword,
+		Name:          name,
+		NamePos:       namePos,
+		LeftParen:     leftParen,
+		Fields:        fields,
+		RightParen:    rightParen,
+	}
+}
+
+// parseStructFields parses a comma-separated list of struct fields: val/var name: type, ...
+func (p *parser) parseStructFields() []ast.StructField {
+	fields := []ast.StructField{}
+
+	// Check if there are no fields
+	if p.CurrentToken().Type == lexer.TokenTypeRParen {
+		return fields
+	}
+
+	// Parse first field
+	field := p.parseStructField()
+	if field != nil {
+		fields = append(fields, *field)
+	}
+
+	// Parse remaining fields (comma-separated with optional trailing comma)
+	for p.CurrentToken().Type == lexer.TokenTypeComma {
+		p.advance() // consume ','
+		p.skipNewlines()
+
+		// Check for trailing comma (next token is ')')
+		if p.CurrentToken().Type == lexer.TokenTypeRParen {
+			break
+		}
+
+		field := p.parseStructField()
+		if field != nil {
+			fields = append(fields, *field)
+		}
+	}
+
+	return fields
+}
+
+// parseStructField parses a single struct field: val/var name: type
+func (p *parser) parseStructField() *ast.StructField {
+	// Expect 'val' or 'var' keyword
+	mutable := false
+	if p.CurrentToken().Type == lexer.TokenTypeVar {
+		mutable = true
+	} else if p.CurrentToken().Type != lexer.TokenTypeVal {
+		p.addError(fmt.Sprintf("expected 'val' or 'var' for struct field, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	keyword := p.CurrentToken().Pos
+	p.advance() // consume 'val' or 'var'
+
+	// Expect field name
+	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+		p.addError(fmt.Sprintf("expected field name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	name := p.CurrentToken().Value
+	namePos := p.CurrentToken().Pos
+	p.advance() // consume identifier
+
+	// Expect ':'
+	if p.CurrentToken().Type != lexer.TokenTypeColon {
+		p.addError(fmt.Sprintf("expected ':' after field name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	colonPos := p.CurrentToken().Pos
+	p.advance() // consume ':'
+
+	// Expect type name
+	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+		p.addError(fmt.Sprintf("expected type name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	typeName := p.CurrentToken().Value
+	typePos := p.CurrentToken().Pos
+	p.advance() // consume type
+
+	// Skip newlines after field (for multi-line struct definitions)
+	p.skipNewlines()
+
+	return &ast.StructField{
+		Keyword:  keyword,
+		Mutable:  mutable,
 		Name:     name,
 		NamePos:  namePos,
 		Colon:    colonPos,

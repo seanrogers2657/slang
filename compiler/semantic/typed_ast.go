@@ -91,6 +91,37 @@ func (e *TypedCallExpr) End() ast.Position { return e.RightParen }
 func (e *TypedCallExpr) GetType() Type     { return e.Type }
 func (e *TypedCallExpr) typedExprNode()    {}
 
+// TypedFieldAccessExpr represents a typed field access expression (e.g., p.x)
+type TypedFieldAccessExpr struct {
+	Type     Type            // the type of the field being accessed
+	Object   TypedExpression // the struct expression
+	Dot      ast.Position    // position of '.'
+	Field    string          // field name
+	FieldPos ast.Position    // position of field name
+	Mutable  bool            // whether the field is mutable (for assignment checking)
+}
+
+func (e *TypedFieldAccessExpr) Pos() ast.Position { return e.Object.Pos() }
+func (e *TypedFieldAccessExpr) End() ast.Position {
+	return ast.Position{Line: e.FieldPos.Line, Column: e.FieldPos.Column + len(e.Field), Offset: e.FieldPos.Offset + len(e.Field)}
+}
+func (e *TypedFieldAccessExpr) GetType() Type  { return e.Type }
+func (e *TypedFieldAccessExpr) typedExprNode() {}
+
+// TypedStructLiteralExpr represents a typed struct literal (construction)
+type TypedStructLiteralExpr struct {
+	Type       StructType        // the struct type being constructed
+	TypePos    ast.Position      // position of struct name
+	LeftParen  ast.Position      // position of '('
+	Args       []TypedExpression // typed argument expressions (in field order)
+	RightParen ast.Position      // position of ')'
+}
+
+func (e *TypedStructLiteralExpr) Pos() ast.Position { return e.TypePos }
+func (e *TypedStructLiteralExpr) End() ast.Position { return e.RightParen }
+func (e *TypedStructLiteralExpr) GetType() Type     { return e.Type }
+func (e *TypedStructLiteralExpr) typedExprNode()    {}
+
 // ============================================================================
 // Typed Statements
 // ============================================================================
@@ -155,6 +186,21 @@ func (s *TypedAssignStmt) Pos() ast.Position { return s.NamePos }
 func (s *TypedAssignStmt) End() ast.Position { return s.Value.End() }
 func (s *TypedAssignStmt) GetType() Type     { return TypeVoid }
 func (s *TypedAssignStmt) typedStmtNode()    {}
+
+// TypedFieldAssignStmt represents a typed field assignment (e.g., p.y = 25)
+type TypedFieldAssignStmt struct {
+	Object   TypedExpression // the struct expression (could be nested: rect.topLeft)
+	Dot      ast.Position    // position of '.'
+	Field    string          // field name
+	FieldPos ast.Position    // position of field name
+	Equals   ast.Position    // position of '='
+	Value    TypedExpression // value expression
+}
+
+func (s *TypedFieldAssignStmt) Pos() ast.Position { return s.Object.Pos() }
+func (s *TypedFieldAssignStmt) End() ast.Position { return s.Value.End() }
+func (s *TypedFieldAssignStmt) GetType() Type     { return TypeVoid }
+func (s *TypedFieldAssignStmt) typedStmtNode()    {}
 
 // TypedReturnStmt represents a typed return statement
 type TypedReturnStmt struct {
@@ -234,6 +280,21 @@ func (d *TypedFunctionDecl) Pos() ast.Position { return d.FnKeyword }
 func (d *TypedFunctionDecl) End() ast.Position { return d.Body.End() }
 func (d *TypedFunctionDecl) GetType() Type     { return d.ReturnType }
 func (d *TypedFunctionDecl) typedDeclNode()    {}
+
+// TypedStructDecl represents a typed struct declaration
+type TypedStructDecl struct {
+	StructKeyword ast.Position
+	Name          string
+	NamePos       ast.Position
+	LeftParen     ast.Position
+	StructType    StructType // the full struct type with field info
+	RightParen    ast.Position
+}
+
+func (d *TypedStructDecl) Pos() ast.Position { return d.StructKeyword }
+func (d *TypedStructDecl) End() ast.Position { return d.RightParen }
+func (d *TypedStructDecl) GetType() Type     { return d.StructType }
+func (d *TypedStructDecl) typedDeclNode()    {}
 
 // ============================================================================
 // Typed Program

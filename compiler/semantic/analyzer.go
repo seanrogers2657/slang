@@ -73,6 +73,7 @@ type Analyzer struct {
 	errors            []*errors.CompilerError
 	currentScope      *Scope
 	functions         map[string]FunctionInfo // function registry
+	structs           map[string]StructType   // struct registry
 	currentReturnType Type                    // return type of current function being analyzed
 }
 
@@ -83,6 +84,7 @@ func NewAnalyzer(filename string) *Analyzer {
 		errors:            make([]*errors.CompilerError, 0),
 		currentScope:      newScope(nil), // global scope
 		functions:         make(map[string]FunctionInfo),
+		structs:           make(map[string]StructType),
 		currentReturnType: nil,
 	}
 }
@@ -108,9 +110,16 @@ func (a *Analyzer) Analyze(program *ast.Program) ([]*errors.CompilerError, *Type
 		EndPos:       program.EndPos,
 	}
 
-	// Handle function-based programs
+	// Handle declaration-based programs
 	if len(program.Declarations) > 0 {
-		// First pass: collect all function signatures
+		// First pass: register all struct types (needed for function signatures)
+		for _, decl := range program.Declarations {
+			if structDecl, ok := decl.(*ast.StructDecl); ok {
+				a.registerStruct(structDecl)
+			}
+		}
+
+		// Second pass: collect all function signatures
 		hasMain := false
 		for _, decl := range program.Declarations {
 			if fnDecl, ok := decl.(*ast.FunctionDecl); ok {
@@ -122,11 +131,11 @@ func (a *Analyzer) Analyze(program *ast.Program) ([]*errors.CompilerError, *Type
 		}
 
 		if !hasMain {
-			// Add error if no main function found
-			a.addError("program must have a 'main' function", program.StartPos, program.EndPos)
+			// Add error if no main function found - point to end of file
+			a.addError("program must have a 'main' function", program.EndPos, program.EndPos)
 		}
 
-		// Second pass: analyze function bodies
+		// Third pass: analyze all declarations
 		for _, decl := range program.Declarations {
 			typedDecl := a.analyzeDeclaration(decl)
 			typedProgram.Declarations = append(typedProgram.Declarations, typedDecl)
@@ -159,20 +168,14 @@ func (a *Analyzer) registerFunction(fn *ast.FunctionDecl) {
 		).WithHint("consider passing a struct or reducing the number of parameters")
 	}
 
-	// Convert parameter types
+	// Convert parameter types (supports both primitive and struct types)
 	paramTypes := make([]Type, len(fn.Parameters))
 	for i, param := range fn.Parameters {
-		paramTypes[i] = TypeFromName(param.TypeName)
-		if _, isErr := paramTypes[i].(ErrorType); isErr {
-			a.addError(fmt.Sprintf("unknown type '%s'", param.TypeName), param.TypePos, param.TypePos)
-		}
+		paramTypes[i] = a.resolveTypeName(param.TypeName, param.TypePos)
 	}
 
-	// Convert return type
-	returnType := TypeFromName(fn.ReturnType)
-	if _, isErr := returnType.(ErrorType); isErr {
-		a.addError(fmt.Sprintf("unknown type '%s'", fn.ReturnType), fn.ReturnPos, fn.ReturnPos)
-	}
+	// Convert return type (supports both primitive and struct types)
+	returnType := a.resolveTypeName(fn.ReturnType, fn.ReturnPos)
 
 	a.functions[fn.Name] = FunctionInfo{
 		ParamTypes: paramTypes,
@@ -180,11 +183,74 @@ func (a *Analyzer) registerFunction(fn *ast.FunctionDecl) {
 	}
 }
 
+// registerStruct registers a struct type in the struct registry
+func (a *Analyzer) registerStruct(s *ast.StructDecl) {
+	// Check for duplicate struct
+	if _, exists := a.structs[s.Name]; exists {
+		a.addError(fmt.Sprintf("struct '%s' is already declared", s.Name), s.NamePos, s.NamePos)
+		return
+	}
+
+	// Convert field types
+	fields := make([]StructFieldInfo, len(s.Fields))
+	for i, field := range s.Fields {
+		fieldType := a.resolveTypeName(field.TypeName, field.TypePos)
+		fields[i] = StructFieldInfo{
+			Name:    field.Name,
+			Type:    fieldType,
+			Mutable: field.Mutable,
+			Index:   i,
+		}
+	}
+
+	a.structs[s.Name] = StructType{
+		Name:   s.Name,
+		Fields: fields,
+	}
+}
+
+// resolveTypeName converts a type name string to a Type, checking both primitive types and structs
+func (a *Analyzer) resolveTypeName(name string, pos ast.Position) Type {
+	// Try primitive types first
+	t := TypeFromName(name)
+	if _, isErr := t.(ErrorType); !isErr {
+		return t
+	}
+
+	// Try struct types
+	if structType, ok := a.structs[name]; ok {
+		return structType
+	}
+
+	// Unknown type
+	a.addError(fmt.Sprintf("unknown type '%s'", name), pos, pos)
+	return TypeError
+}
+
+// resolveTypeNameNoError converts a type name string to a Type without adding errors
+// (used when caller wants to handle errors itself)
+func (a *Analyzer) resolveTypeNameNoError(name string) Type {
+	// Try primitive types first
+	t := TypeFromName(name)
+	if _, isErr := t.(ErrorType); !isErr {
+		return t
+	}
+
+	// Try struct types
+	if structType, ok := a.structs[name]; ok {
+		return structType
+	}
+
+	return TypeError
+}
+
 // analyzeDeclaration performs semantic analysis on a declaration
 func (a *Analyzer) analyzeDeclaration(decl ast.Declaration) TypedDeclaration {
 	switch d := decl.(type) {
 	case *ast.FunctionDecl:
 		return a.analyzeFunctionDecl(d)
+	case *ast.StructDecl:
+		return a.analyzeStructDecl(d)
 	default:
 		a.addError("unknown declaration type", decl.Pos(), decl.End())
 		return &TypedFunctionDecl{
@@ -199,6 +265,21 @@ func (a *Analyzer) analyzeDeclaration(decl ast.Declaration) TypedDeclaration {
 				RightBrace: decl.End(),
 			},
 		}
+	}
+}
+
+// analyzeStructDecl analyzes a struct declaration
+func (a *Analyzer) analyzeStructDecl(s *ast.StructDecl) TypedDeclaration {
+	// The struct type was already registered in the first pass
+	structType := a.structs[s.Name]
+
+	return &TypedStructDecl{
+		StructKeyword: s.StructKeyword,
+		Name:          s.Name,
+		NamePos:       s.NamePos,
+		LeftParen:     s.LeftParen,
+		StructType:    structType,
+		RightParen:    s.RightParen,
 	}
 }
 
@@ -318,6 +399,8 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 		return a.analyzeVarDeclStatement(s)
 	case *ast.AssignStmt:
 		return a.analyzeAssignStatement(s)
+	case *ast.FieldAssignStmt:
+		return a.analyzeFieldAssignStatement(s)
 	case *ast.ReturnStmt:
 		return a.analyzeReturnStatement(s)
 	case *ast.IfStmt:
@@ -345,8 +428,8 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 	// Determine the declared type
 	var declaredType Type
 	if stmt.TypeName != "" {
-		// Explicit type annotation
-		declaredType = TypeFromName(stmt.TypeName)
+		// Explicit type annotation - use resolveTypeName to support struct types
+		declaredType = a.resolveTypeNameNoError(stmt.TypeName)
 		if _, isErr := declaredType.(ErrorType); isErr {
 			a.addError(
 				fmt.Sprintf("unknown type '%s'", stmt.TypeName),
@@ -482,6 +565,82 @@ func (a *Analyzer) analyzeAssignStatement(stmt *ast.AssignStmt) TypedStatement {
 		Equals:  stmt.Equals,
 		Value:   typedValue,
 		VarType: info.Type,
+	}
+}
+
+// analyzeFieldAssignStatement analyzes a field assignment statement (e.g., p.y = 25)
+func (a *Analyzer) analyzeFieldAssignStatement(stmt *ast.FieldAssignStmt) TypedStatement {
+	// Analyze the object expression (the struct being accessed)
+	typedObject := a.analyzeExpression(stmt.Object)
+	objectType := typedObject.GetType()
+
+	// Check that the object is a struct type
+	structType, isStruct := objectType.(StructType)
+	if !isStruct {
+		if _, isErr := objectType.(ErrorType); !isErr {
+			a.addError(
+				fmt.Sprintf("cannot access field '%s' on non-struct type '%s'", stmt.Field, objectType.String()),
+				stmt.Dot, stmt.FieldPos,
+			)
+		}
+		// Still analyze the value to find any errors in it
+		typedValue := a.analyzeExpression(stmt.Value)
+		return &TypedFieldAssignStmt{
+			Object:   typedObject,
+			Dot:      stmt.Dot,
+			Field:    stmt.Field,
+			FieldPos: stmt.FieldPos,
+			Equals:   stmt.Equals,
+			Value:    typedValue,
+		}
+	}
+
+	// Look up the field
+	fieldInfo, found := structType.GetField(stmt.Field)
+	if !found {
+		a.addError(
+			fmt.Sprintf("struct '%s' has no field '%s'", structType.Name, stmt.Field),
+			stmt.FieldPos, stmt.FieldPos,
+		)
+		typedValue := a.analyzeExpression(stmt.Value)
+		return &TypedFieldAssignStmt{
+			Object:   typedObject,
+			Dot:      stmt.Dot,
+			Field:    stmt.Field,
+			FieldPos: stmt.FieldPos,
+			Equals:   stmt.Equals,
+			Value:    typedValue,
+		}
+	}
+
+	// Check field mutability
+	if !fieldInfo.Mutable {
+		a.addError(
+			fmt.Sprintf("cannot assign to immutable field '%s'", stmt.Field),
+			stmt.FieldPos, stmt.Equals,
+		).WithHint("consider using 'var' instead of 'val' in the struct definition")
+	}
+
+	// Analyze the value expression
+	typedValue := a.analyzeExpression(stmt.Value)
+	valueType := typedValue.GetType()
+
+	// Type check: value must match field type
+	if _, isErr := valueType.(ErrorType); !isErr && !fieldInfo.Type.Equals(valueType) {
+		a.addError(
+			fmt.Sprintf("cannot assign %s to field '%s' of type %s",
+				valueType.String(), stmt.Field, fieldInfo.Type.String()),
+			stmt.Value.Pos(), stmt.Value.End(),
+		)
+	}
+
+	return &TypedFieldAssignStmt{
+		Object:   typedObject,
+		Dot:      stmt.Dot,
+		Field:    stmt.Field,
+		FieldPos: stmt.FieldPos,
+		Equals:   stmt.Equals,
+		Value:    typedValue,
 	}
 }
 
@@ -703,6 +862,8 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 		return a.analyzeIdentifier(e)
 	case *ast.CallExpr:
 		return a.analyzeCallExpr(e)
+	case *ast.FieldAccessExpr:
+		return a.analyzeFieldAccessExpr(e)
 	case *ast.GroupingExpr:
 		// Grouping is purely syntactic for precedence; just analyze the inner expression
 		return a.analyzeExpression(e.Expr)
@@ -726,6 +887,11 @@ func (a *Analyzer) analyzeCallExpr(call *ast.CallExpr) TypedExpression {
 	// Check for built-in functions first
 	if builtin, ok := Builtins[call.Name]; ok {
 		return a.analyzeBuiltinCall(call, builtin)
+	}
+
+	// Check if this is a struct construction
+	if structType, ok := a.structs[call.Name]; ok {
+		return a.analyzeStructLiteral(call, structType)
 	}
 
 	// Look up the function
@@ -852,6 +1018,186 @@ func (a *Analyzer) analyzeBuiltinCall(call *ast.CallExpr, builtin BuiltinFunc) T
 		LeftParen:  call.LeftParen,
 		Arguments:  typedArgs,
 		RightParen: call.RightParen,
+	}
+}
+
+// analyzeStructLiteral analyzes a struct construction expression (e.g., Point(10, 20) or Point(x: 10, y: 20))
+func (a *Analyzer) analyzeStructLiteral(call *ast.CallExpr, structType StructType) TypedExpression {
+	// Handle named arguments
+	if call.HasNamedArguments() {
+		return a.analyzeStructLiteralNamed(call, structType)
+	}
+
+	// Handle positional arguments
+	// Check argument count matches field count
+	if len(call.Arguments) != len(structType.Fields) {
+		a.addError(
+			fmt.Sprintf("struct '%s' has %d field(s), but %d argument(s) were provided",
+				structType.Name, len(structType.Fields), len(call.Arguments)),
+			call.LeftParen, call.RightParen,
+		)
+	}
+
+	// Analyze arguments and check types
+	typedArgs := make([]TypedExpression, len(call.Arguments))
+	for i, arg := range call.Arguments {
+		typedArgs[i] = a.analyzeExpression(arg)
+
+		// Type check if we have a corresponding field
+		if i < len(structType.Fields) {
+			argType := typedArgs[i].GetType()
+			fieldType := structType.Fields[i].Type
+			fieldName := structType.Fields[i].Name
+			if _, isErr := argType.(ErrorType); !isErr && !fieldType.Equals(argType) {
+				a.addError(
+					fmt.Sprintf("field '%s': expected %s, got %s",
+						fieldName, fieldType.String(), argType.String()),
+					arg.Pos(), arg.End(),
+				)
+			}
+		}
+	}
+
+	return &TypedStructLiteralExpr{
+		Type:       structType,
+		TypePos:    call.NamePos,
+		LeftParen:  call.LeftParen,
+		Args:       typedArgs,
+		RightParen: call.RightParen,
+	}
+}
+
+// analyzeStructLiteralNamed analyzes a struct construction with named arguments (e.g., Point(x: 10, y: 20))
+func (a *Analyzer) analyzeStructLiteralNamed(call *ast.CallExpr, structType StructType) TypedExpression {
+	// Build a map of field name -> index for quick lookup
+	fieldIndex := make(map[string]int)
+	for i, field := range structType.Fields {
+		fieldIndex[field.Name] = i
+	}
+
+	// Check argument count matches field count
+	if len(call.NamedArguments) != len(structType.Fields) {
+		a.addError(
+			fmt.Sprintf("struct '%s' has %d field(s), but %d argument(s) were provided",
+				structType.Name, len(structType.Fields), len(call.NamedArguments)),
+			call.LeftParen, call.RightParen,
+		)
+	}
+
+	// Track which fields have been provided (for duplicate detection)
+	providedFields := make(map[string]ast.Position)
+
+	// Create typed arguments array in field order
+	typedArgs := make([]TypedExpression, len(structType.Fields))
+
+	for _, namedArg := range call.NamedArguments {
+		// Check if field exists
+		idx, exists := fieldIndex[namedArg.Name]
+		if !exists {
+			a.addError(
+				fmt.Sprintf("struct '%s' has no field '%s'", structType.Name, namedArg.Name),
+				namedArg.NamePos, namedArg.NamePos,
+			)
+			continue
+		}
+
+		// Check for duplicate field
+		if prevPos, duplicate := providedFields[namedArg.Name]; duplicate {
+			a.addError(
+				fmt.Sprintf("field '%s' specified multiple times", namedArg.Name),
+				namedArg.NamePos, namedArg.NamePos,
+			).WithHint(fmt.Sprintf("first specified at line %d", prevPos.Line))
+			continue
+		}
+		providedFields[namedArg.Name] = namedArg.NamePos
+
+		// Analyze the argument value
+		typedArg := a.analyzeExpression(namedArg.Value)
+		typedArgs[idx] = typedArg
+
+		// Type check
+		argType := typedArg.GetType()
+		fieldType := structType.Fields[idx].Type
+		if _, isErr := argType.(ErrorType); !isErr && !fieldType.Equals(argType) {
+			a.addError(
+				fmt.Sprintf("field '%s': expected %s, got %s",
+					namedArg.Name, fieldType.String(), argType.String()),
+				namedArg.Value.Pos(), namedArg.Value.End(),
+			)
+		}
+	}
+
+	// Check for missing fields
+	for _, field := range structType.Fields {
+		if _, provided := providedFields[field.Name]; !provided {
+			// Only report if we haven't already reported a count mismatch
+			if len(call.NamedArguments) == len(structType.Fields) {
+				a.addError(
+					fmt.Sprintf("missing field '%s' in struct '%s'", field.Name, structType.Name),
+					call.LeftParen, call.RightParen,
+				)
+			}
+		}
+	}
+
+	return &TypedStructLiteralExpr{
+		Type:       structType,
+		TypePos:    call.NamePos,
+		LeftParen:  call.LeftParen,
+		Args:       typedArgs,
+		RightParen: call.RightParen,
+	}
+}
+
+// analyzeFieldAccessExpr analyzes a field access expression (e.g., p.x, rect.topLeft.x)
+func (a *Analyzer) analyzeFieldAccessExpr(expr *ast.FieldAccessExpr) TypedExpression {
+	// Analyze the object expression
+	typedObject := a.analyzeExpression(expr.Object)
+	objectType := typedObject.GetType()
+
+	// Check that the object is a struct type
+	structType, isStruct := objectType.(StructType)
+	if !isStruct {
+		if _, isErr := objectType.(ErrorType); !isErr {
+			a.addError(
+				fmt.Sprintf("cannot access field '%s' on non-struct type '%s'", expr.Field, objectType.String()),
+				expr.Dot, expr.FieldPos,
+			)
+		}
+		return &TypedFieldAccessExpr{
+			Type:     TypeError,
+			Object:   typedObject,
+			Dot:      expr.Dot,
+			Field:    expr.Field,
+			FieldPos: expr.FieldPos,
+			Mutable:  false,
+		}
+	}
+
+	// Look up the field
+	fieldInfo, found := structType.GetField(expr.Field)
+	if !found {
+		a.addError(
+			fmt.Sprintf("struct '%s' has no field '%s'", structType.Name, expr.Field),
+			expr.FieldPos, expr.FieldPos,
+		)
+		return &TypedFieldAccessExpr{
+			Type:     TypeError,
+			Object:   typedObject,
+			Dot:      expr.Dot,
+			Field:    expr.Field,
+			FieldPos: expr.FieldPos,
+			Mutable:  false,
+		}
+	}
+
+	return &TypedFieldAccessExpr{
+		Type:     fieldInfo.Type,
+		Object:   typedObject,
+		Dot:      expr.Dot,
+		Field:    expr.Field,
+		FieldPos: expr.FieldPos,
+		Mutable:  fieldInfo.Mutable,
 	}
 }
 

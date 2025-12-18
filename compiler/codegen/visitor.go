@@ -50,6 +50,9 @@ func (info *ProgramInfo) collectFromTypedStatement(stmt semantic.TypedStatement,
 		info.collectFromTypedExpr(s.Initializer, floatIdx, stringIdx)
 	case *semantic.TypedAssignStmt:
 		info.collectFromTypedExpr(s.Value, floatIdx, stringIdx)
+	case *semantic.TypedFieldAssignStmt:
+		info.collectFromTypedExpr(s.Object, floatIdx, stringIdx)
+		info.collectFromTypedExpr(s.Value, floatIdx, stringIdx)
 	case *semantic.TypedReturnStmt:
 		if s.Value != nil {
 			info.collectFromTypedExpr(s.Value, floatIdx, stringIdx)
@@ -134,6 +137,16 @@ func (info *ProgramInfo) collectFromTypedExpr(expr semantic.TypedExpression, flo
 			info.collectFromTypedStatement(e.ElseBranch, floatIdx, stringIdx)
 		}
 
+	case *semantic.TypedStructLiteralExpr:
+		// Collect literals from struct arguments
+		for _, arg := range e.Args {
+			info.collectFromTypedExpr(arg, floatIdx, stringIdx)
+		}
+
+	case *semantic.TypedFieldAccessExpr:
+		// Collect from the object expression (though usually just identifiers)
+		info.collectFromTypedExpr(e.Object, floatIdx, stringIdx)
+
 	default:
 		// Unknown expression type - panic to catch missing cases during development
 		panic(fmt.Sprintf("collectFromTypedExpr: unhandled expression type %T", expr))
@@ -149,10 +162,29 @@ func CountTypedVariables(stmts []semantic.TypedStatement) int {
 	return count
 }
 
+// countStructSlots counts the total number of stack slots needed for a struct type
+// (recursively counting nested struct fields)
+func countStructSlots(structType semantic.StructType) int {
+	count := 0
+	for _, field := range structType.Fields {
+		if nestedStruct, ok := field.Type.(semantic.StructType); ok {
+			count += countStructSlots(nestedStruct)
+		} else {
+			count++
+		}
+	}
+	return count
+}
+
 // countTypedVarsInStmt counts variables in a single statement (recursive)
+// For struct types, counts the number of fields (each takes a stack slot)
 func countTypedVarsInStmt(stmt semantic.TypedStatement) int {
 	switch s := stmt.(type) {
 	case *semantic.TypedVarDeclStmt:
+		// Struct types take one slot per field (recursively counting nested structs)
+		if structType, ok := s.DeclaredType.(semantic.StructType); ok {
+			return countStructSlots(structType)
+		}
 		return 1
 	case *semantic.TypedIfStmt:
 		count := 0

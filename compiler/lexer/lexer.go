@@ -19,6 +19,7 @@ var keywords = map[string]TokenType{
 	"false":  TokenTypeFalse,
 	"if":     TokenTypeIf,
 	"else":   TokenTypeElse,
+	"struct": TokenTypeStruct,
 }
 
 type TokenType int
@@ -59,6 +60,8 @@ const (
 	TokenTypeNot
 	TokenTypeIf
 	TokenTypeElse
+	TokenTypeStruct
+	TokenTypeDot
 )
 
 // String returns a human-readable name for the token type
@@ -134,6 +137,10 @@ func (t TokenType) String() string {
 		return "IF"
 	case TokenTypeElse:
 		return "ELSE"
+	case TokenTypeStruct:
+		return "STRUCT"
+	case TokenTypeDot:
+		return "DOT"
 	default:
 		return "UNKNOWN"
 	}
@@ -464,6 +471,10 @@ func (p *lexer) Parse() {
 		} else if b == '%' {
 			pos := p.currentPos()
 			p.Tokens = append(p.Tokens, Token{Type: TokenTypeModulo, Value: "%", Pos: pos})
+			p.advance()
+		} else if b == '.' {
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeDot, Value: ".", Pos: pos})
 			p.advance()
 		} else if b == '=' {
 			pos := p.currentPos()

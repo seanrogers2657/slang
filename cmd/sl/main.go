@@ -312,21 +312,14 @@ func compileSource(filename string, verbose bool, timer *timing.Timer) (string, 
 	if timer != nil {
 		timer.Start("Lexer")
 	}
-	lex := lexer.NewLexer(source)
+	lex := lexer.NewLexerWithFilename(source, filename)
 	lex.Parse()
 	if timer != nil {
 		timer.End()
 	}
 
-	// Convert lexer errors to CompilerErrors
-	for _, lexErr := range lex.Errors {
-		pos := errors.Position{Line: 1, Column: 1}
-		if len(lex.Tokens) > 0 {
-			pos = toErrorPos(lex.Tokens[0].Pos.Line, lex.Tokens[0].Pos.Column, lex.Tokens[0].Pos.Offset)
-		}
-		compilerErr := errors.NewError(lexErr.Error(), filename, pos, "lexer").WithTool(errors.ToolSL)
-		allErrors = append(allErrors, compilerErr)
-	}
+	// Add lexer errors (they already have correct positions)
+	allErrors = append(allErrors, lex.Errors...)
 
 	if len(allErrors) > 0 {
 		fmt.Println(errors.FormatErrors(allErrors, sourceLines))
@@ -349,12 +342,8 @@ func compileSource(filename string, verbose bool, timer *timing.Timer) (string, 
 		timer.End()
 	}
 
-	// Convert parser errors to CompilerErrors
-	for _, parseErr := range pars.Errors {
-		pos := toErrorPos(parsedAST.StartPos.Line, parsedAST.StartPos.Column, parsedAST.StartPos.Offset)
-		compilerErr := errors.NewError(parseErr.Error(), filename, pos, "parser").WithTool(errors.ToolSL)
-		allErrors = append(allErrors, compilerErr)
-	}
+	// Add parser errors (they already have correct positions)
+	allErrors = append(allErrors, pars.Errors...)
 
 	if len(allErrors) > 0 {
 		fmt.Println(errors.FormatErrors(allErrors, sourceLines))

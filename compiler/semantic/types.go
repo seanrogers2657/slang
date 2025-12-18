@@ -219,6 +219,61 @@ func (t FunctionType) Equals(other Type) bool {
 	return t.ReturnType.Equals(o.ReturnType)
 }
 
+// StructFieldInfo holds information about a struct field
+type StructFieldInfo struct {
+	Name    string // field name
+	Type    Type   // field type
+	Mutable bool   // true for var, false for val
+	Index   int    // field index (position in struct)
+}
+
+// StructType represents a struct type with named fields
+type StructType struct {
+	Name   string            // struct name
+	Fields []StructFieldInfo // list of fields
+}
+
+func (t StructType) String() string {
+	return t.Name
+}
+
+func (t StructType) Equals(other Type) bool {
+	o, ok := other.(StructType)
+	if !ok {
+		return false
+	}
+	// Nominal type equality - structs are equal if they have the same name
+	return t.Name == o.Name
+}
+
+// GetField returns field info by name
+func (t StructType) GetField(name string) (StructFieldInfo, bool) {
+	for _, f := range t.Fields {
+		if f.Name == name {
+			return f, true
+		}
+	}
+	return StructFieldInfo{}, false
+}
+
+// FieldOffset returns the byte offset of a field from the struct start
+// Each field is 8 bytes (aligned)
+func (t StructType) FieldOffset(name string) int {
+	offset := 0
+	for _, f := range t.Fields {
+		if f.Name == name {
+			return offset
+		}
+		offset += 8 // all fields are 8-byte aligned
+	}
+	return -1 // field not found
+}
+
+// Size returns the total size of the struct in bytes
+func (t StructType) Size() int {
+	return len(t.Fields) * 8 // each field is 8 bytes
+}
+
 // Common type instances
 var (
 	// Default types

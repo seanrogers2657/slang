@@ -183,6 +183,8 @@ func (g *TypedCodeGenerator) generateStmt(stmt semantic.TypedStatement, ctx *Bas
 		return g.generateVarDecl(s, ctx)
 	case *semantic.TypedAssignStmt:
 		return g.generateAssignStmt(s, ctx)
+	case *semantic.TypedFieldAssignStmt:
+		return g.generateFieldAssignStmt(s, ctx)
 	case *semantic.TypedReturnStmt:
 		return g.generateReturnStmt(s, ctx)
 	case *semantic.TypedIfStmt:
@@ -194,6 +196,11 @@ func (g *TypedCodeGenerator) generateStmt(stmt semantic.TypedStatement, ctx *Bas
 
 func (g *TypedCodeGenerator) generateVarDecl(stmt *semantic.TypedVarDeclStmt, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
+
+	// Check if this is a struct type
+	if structType, ok := stmt.DeclaredType.(semantic.StructType); ok {
+		return g.generateStructVarDecl(stmt, structType, ctx)
+	}
 
 	code, err := g.generateExpr(stmt.Initializer, ctx)
 	if err != nil {
@@ -207,6 +214,95 @@ func (g *TypedCodeGenerator) generateVarDecl(stmt *semantic.TypedVarDeclStmt, ct
 		builder.WriteString(fmt.Sprintf("    str d0, [x29, #-%d]\n", offset))
 	} else {
 		EmitStoreToStack(&builder, "x2", offset)
+	}
+
+	return builder.String(), nil
+}
+
+// generateStructVarDecl generates code for declaring a struct variable.
+// The struct literal values are generated and stored at consecutive stack locations.
+func (g *TypedCodeGenerator) generateStructVarDecl(stmt *semantic.TypedVarDeclStmt, structType semantic.StructType, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Get the struct literal expression
+	structLit, ok := stmt.Initializer.(*semantic.TypedStructLiteralExpr)
+	if !ok {
+		return "", fmt.Errorf("struct variable must be initialized with struct literal")
+	}
+
+	// Calculate total size needed (including nested structs)
+	totalSlots := g.countStructSlots(structType)
+
+	// Allocate space for all fields (we allocate first slot, then additional slots)
+	baseOffset := ctx.DeclareVariable(stmt.Name, stmt.DeclaredType)
+
+	// Allocate additional slots
+	for i := 1; i < totalSlots; i++ {
+		ctx.stackOffset += StackAlignment
+	}
+
+	// Generate and store all fields (handles nested structs recursively)
+	code, err := g.generateStructFieldsInline(structLit, baseOffset, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(code)
+
+	return builder.String(), nil
+}
+
+// countStructSlots counts the total number of stack slots needed for a struct type
+// (recursively counting nested struct fields)
+func (g *TypedCodeGenerator) countStructSlots(structType semantic.StructType) int {
+	count := 0
+	for _, field := range structType.Fields {
+		if nestedStruct, ok := field.Type.(semantic.StructType); ok {
+			count += g.countStructSlots(nestedStruct)
+		} else {
+			count++
+		}
+	}
+	return count
+}
+
+// generateStructFieldsInline generates code to store all struct fields at the given base offset.
+// Handles nested struct literals by recursively generating their fields.
+func (g *TypedCodeGenerator) generateStructFieldsInline(structLit *semantic.TypedStructLiteralExpr, baseOffset int, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+	currentOffset := baseOffset
+
+	for i, arg := range structLit.Args {
+		fieldType := structLit.Type.Fields[i].Type
+
+		// Check if this argument is a nested struct literal
+		if nestedLit, ok := arg.(*semantic.TypedStructLiteralExpr); ok {
+			// Recursively generate nested struct fields
+			code, err := g.generateStructFieldsInline(nestedLit, currentOffset, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(code)
+
+			// Advance offset by the nested struct size
+			nestedStruct := fieldType.(semantic.StructType)
+			currentOffset += g.countStructSlots(nestedStruct) * StackAlignment
+		} else {
+			// Generate the field value
+			code, err := g.generateExpr(arg, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(code)
+
+			// Store the value
+			if semantic.IsFloatType(fieldType) {
+				builder.WriteString(fmt.Sprintf("    str d0, [x29, #-%d]\n", currentOffset))
+			} else {
+				EmitStoreToStack(&builder, "x2", currentOffset)
+			}
+
+			currentOffset += StackAlignment
+		}
 	}
 
 	return builder.String(), nil
@@ -233,6 +329,110 @@ func (g *TypedCodeGenerator) generateAssignStmt(stmt *semantic.TypedAssignStmt, 
 	}
 
 	return builder.String(), nil
+}
+
+// generateFieldAssignStmt generates code for a field assignment (e.g., p.y = 25)
+func (g *TypedCodeGenerator) generateFieldAssignStmt(stmt *semantic.TypedFieldAssignStmt, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Generate the value expression (result in x2 or d0)
+	valueCode, err := g.generateExpr(stmt.Value, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(valueCode)
+
+	// Get the field offset
+	fieldOffset, err := g.getFieldOffset(stmt.Object, stmt.Field, ctx)
+	if err != nil {
+		return "", err
+	}
+
+	// Store the value at the computed offset
+	// Determine field type from the object's struct type
+	fieldType := g.getFieldType(stmt.Object, stmt.Field)
+	if semantic.IsFloatType(fieldType) {
+		builder.WriteString(fmt.Sprintf("    str d0, [x29, #-%d]\n", fieldOffset))
+	} else {
+		EmitStoreToStack(&builder, "x2", fieldOffset)
+	}
+
+	return builder.String(), nil
+}
+
+// getFieldOffset computes the stack offset for accessing a field on an object.
+// It handles nested field access (e.g., rect.topLeft.x).
+func (g *TypedCodeGenerator) getFieldOffset(object semantic.TypedExpression, fieldName string, ctx *BaseContext) (int, error) {
+	switch obj := object.(type) {
+	case *semantic.TypedIdentifierExpr:
+		// Direct struct variable access: p.x
+		slot, ok := ctx.GetVariable(obj.Name)
+		if !ok {
+			return 0, fmt.Errorf("undefined variable: %s", obj.Name)
+		}
+		structType, ok := slot.Type.(semantic.StructType)
+		if !ok {
+			return 0, fmt.Errorf("variable '%s' is not a struct type", obj.Name)
+		}
+		fieldByteOffset := g.getFieldByteOffset(structType, fieldName)
+		if fieldByteOffset < 0 {
+			return 0, fmt.Errorf("struct '%s' has no field '%s'", structType.Name, fieldName)
+		}
+		return slot.Offset + fieldByteOffset, nil
+
+	case *semantic.TypedFieldAccessExpr:
+		// Nested field access: rect.topLeft.x
+		// First get the offset of the outer field
+		outerOffset, err := g.getFieldOffset(obj.Object, obj.Field, ctx)
+		if err != nil {
+			return 0, err
+		}
+		// Then add the offset of the inner field
+		structType, ok := obj.Type.(semantic.StructType)
+		if !ok {
+			return 0, fmt.Errorf("field '%s' is not a struct type", obj.Field)
+		}
+		fieldByteOffset := g.getFieldByteOffset(structType, fieldName)
+		if fieldByteOffset < 0 {
+			return 0, fmt.Errorf("struct '%s' has no field '%s'", structType.Name, fieldName)
+		}
+		return outerOffset + fieldByteOffset, nil
+
+	default:
+		return 0, fmt.Errorf("unsupported object type for field access: %T", object)
+	}
+}
+
+// getFieldByteOffset returns the byte offset of a field within a struct,
+// accounting for nested struct sizes. Returns -1 if field not found.
+func (g *TypedCodeGenerator) getFieldByteOffset(structType semantic.StructType, fieldName string) int {
+	offset := 0
+	for _, field := range structType.Fields {
+		if field.Name == fieldName {
+			return offset
+		}
+		// Add the size of this field
+		if nestedStruct, ok := field.Type.(semantic.StructType); ok {
+			offset += g.countStructSlots(nestedStruct) * StackAlignment
+		} else {
+			offset += StackAlignment
+		}
+	}
+	return -1 // field not found
+}
+
+// getFieldType returns the type of a field on an object
+func (g *TypedCodeGenerator) getFieldType(object semantic.TypedExpression, fieldName string) semantic.Type {
+	objectType := object.GetType()
+	structType, ok := objectType.(semantic.StructType)
+	if !ok {
+		return semantic.TypeError
+	}
+	fieldInfo, found := structType.GetField(fieldName)
+	if !found {
+		return semantic.TypeError
+	}
+	return fieldInfo.Type
 }
 
 func (g *TypedCodeGenerator) generateReturnStmt(stmt *semantic.TypedReturnStmt, ctx *BaseContext) (string, error) {
@@ -343,6 +543,12 @@ func (g *TypedCodeGenerator) generateExpr(expr semantic.TypedExpression, ctx *Ba
 
 	case *semantic.TypedCallExpr:
 		return g.generateCallExpr(e, ctx)
+
+	case *semantic.TypedStructLiteralExpr:
+		return g.generateStructLiteral(e, ctx)
+
+	case *semantic.TypedFieldAccessExpr:
+		return g.generateFieldAccess(e, ctx)
 
 	case *semantic.TypedBinaryExpr:
 		return g.generateBinaryExpr(e, ctx)
@@ -664,8 +870,49 @@ func (g *TypedCodeGenerator) generateOperandToReg(expr semantic.TypedExpression,
 			EmitMoveReg(&builder, reg, "x2")
 		}
 
+	case *semantic.TypedFieldAccessExpr:
+		code, err := g.generateFieldAccess(e, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+		if reg != "x2" {
+			EmitMoveReg(&builder, reg, "x2")
+		}
+
 	default:
 		return "", fmt.Errorf("unsupported operand type: %T", expr)
+	}
+
+	return builder.String(), nil
+}
+
+// generateStructLiteral generates code for a struct literal expression.
+// This is called when a struct is used as an expression (e.g., passed as argument).
+// Note: When used in variable declaration, generateStructVarDecl handles it directly.
+func (g *TypedCodeGenerator) generateStructLiteral(expr *semantic.TypedStructLiteralExpr, ctx *BaseContext) (string, error) {
+	// For struct literals used as expressions (not in variable declarations),
+	// we need to allocate temporary stack space and return a pointer or copy.
+	// For now, we return an error as structs as expressions (not var decl) aren't fully supported.
+	// The main use case (val p = Point(10, 20)) is handled by generateStructVarDecl.
+	return "", fmt.Errorf("struct literals as expressions are not yet supported; use in variable declaration")
+}
+
+// generateFieldAccess generates code for accessing a struct field (e.g., p.x)
+func (g *TypedCodeGenerator) generateFieldAccess(expr *semantic.TypedFieldAccessExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Get the field offset
+	fieldOffset, err := g.getFieldOffset(expr.Object, expr.Field, ctx)
+	if err != nil {
+		return "", err
+	}
+
+	// Load the value from the computed offset
+	if semantic.IsFloatType(expr.Type) {
+		builder.WriteString(fmt.Sprintf("    ldr d0, [x29, #-%d]\n", fieldOffset))
+	} else {
+		EmitLoadFromStack(&builder, "x2", fieldOffset)
 	}
 
 	return builder.String(), nil

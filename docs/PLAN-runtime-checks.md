@@ -4,7 +4,7 @@
 
 ### ✅ Completed
 1. **`runtime/errors.go`** - Error codes and messages
-2. **`runtime/panic_arm64.s`** - Panic handler assembly with stack walking
+2. **`runtime/panic_arm64.asm`** - Panic handler assembly with stack walking
 3. **`backend/codegen/checks.go`** - Check generation helpers for all arithmetic operations
 4. **`backend/codegen/symtab.go`** - Symbol table generation for stack traces
 5. **`backend/codegen/runtime.go`** - Embedded runtime panic code (fixed stack walking bug)

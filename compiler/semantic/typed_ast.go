@@ -244,6 +244,44 @@ func (s *TypedIfStmt) GetType() Type {
 func (s *TypedIfStmt) typedStmtNode() {}
 func (s *TypedIfStmt) typedExprNode() {} // TypedIfStmt can also be used as an expression
 
+// TypedForStmt represents a typed for-loop statement
+type TypedForStmt struct {
+	ForKeyword ast.Position
+	Init       TypedStatement  // nil if no init
+	Condition  TypedExpression // nil if no condition (infinite loop)
+	Update     TypedStatement  // nil if no update
+	Body       *TypedBlockStmt
+}
+
+func (s *TypedForStmt) Pos() ast.Position { return s.ForKeyword }
+func (s *TypedForStmt) End() ast.Position { return s.Body.End() }
+func (s *TypedForStmt) GetType() Type     { return TypeVoid }
+func (s *TypedForStmt) typedStmtNode()    {}
+
+// TypedBreakStmt represents a typed break statement
+type TypedBreakStmt struct {
+	Keyword ast.Position
+}
+
+func (s *TypedBreakStmt) Pos() ast.Position { return s.Keyword }
+func (s *TypedBreakStmt) End() ast.Position {
+	return ast.Position{Line: s.Keyword.Line, Column: s.Keyword.Column + 5, Offset: s.Keyword.Offset + 5}
+}
+func (s *TypedBreakStmt) GetType() Type  { return TypeVoid }
+func (s *TypedBreakStmt) typedStmtNode() {}
+
+// TypedContinueStmt represents a typed continue statement
+type TypedContinueStmt struct {
+	Keyword ast.Position
+}
+
+func (s *TypedContinueStmt) Pos() ast.Position { return s.Keyword }
+func (s *TypedContinueStmt) End() ast.Position {
+	return ast.Position{Line: s.Keyword.Line, Column: s.Keyword.Column + 8, Offset: s.Keyword.Offset + 8}
+}
+func (s *TypedContinueStmt) GetType() Type  { return TypeVoid }
+func (s *TypedContinueStmt) typedStmtNode() {}
+
 // ============================================================================
 // Typed Declarations
 // ============================================================================

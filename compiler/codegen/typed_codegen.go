@@ -189,6 +189,12 @@ func (g *TypedCodeGenerator) generateStmt(stmt semantic.TypedStatement, ctx *Bas
 		return g.generateReturnStmt(s, ctx)
 	case *semantic.TypedIfStmt:
 		return g.generateIfStmt(s, ctx)
+	case *semantic.TypedForStmt:
+		return g.generateForStmt(s, ctx)
+	case *semantic.TypedBreakStmt:
+		return g.generateBreakStmt(s, ctx)
+	case *semantic.TypedContinueStmt:
+		return g.generateContinueStmt(s, ctx)
 	default:
 		return "", fmt.Errorf("unknown statement type: %T", s)
 	}
@@ -520,6 +526,89 @@ func (g *TypedCodeGenerator) generateIfStmt(stmt *semantic.TypedIfStmt, ctx *Bas
 	}
 
 	return builder.String(), nil
+}
+
+func (g *TypedCodeGenerator) generateForStmt(stmt *semantic.TypedForStmt, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Generate labels
+	loopStartLabel := ctx.NextLabel("for_start")
+	loopContinueLabel := ctx.NextLabel("for_continue")
+	loopEndLabel := ctx.NextLabel("for_end")
+
+	// Push loop labels onto stack for break/continue
+	ctx.PushLoop(loopContinueLabel, loopEndLabel)
+	defer ctx.PopLoop()
+
+	// Generate initialization (if present)
+	if stmt.Init != nil {
+		initCode, err := g.generateStmt(stmt.Init, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(initCode)
+	}
+
+	// Loop start label
+	builder.WriteString(fmt.Sprintf("%s:\n", loopStartLabel))
+
+	// Generate condition check (if present)
+	if stmt.Condition != nil {
+		condCode, err := g.generateExpr(stmt.Condition, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(condCode)
+
+		// If condition is false (x2 == 0), jump to loop end
+		builder.WriteString(fmt.Sprintf("    cbz x2, %s\n", loopEndLabel))
+	}
+	// If no condition, it's an infinite loop (no conditional jump)
+
+	// Generate body
+	for _, bodyStmt := range stmt.Body.Statements {
+		stmtCode, err := g.generateStmt(bodyStmt, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(stmtCode)
+	}
+
+	// Continue label (where continue jumps to, before update)
+	builder.WriteString(fmt.Sprintf("%s:\n", loopContinueLabel))
+
+	// Generate update (if present)
+	if stmt.Update != nil {
+		updateCode, err := g.generateStmt(stmt.Update, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(updateCode)
+	}
+
+	// Jump back to start
+	builder.WriteString(fmt.Sprintf("    b %s\n", loopStartLabel))
+
+	// Loop end label (where break jumps to)
+	builder.WriteString(fmt.Sprintf("%s:\n", loopEndLabel))
+
+	return builder.String(), nil
+}
+
+func (g *TypedCodeGenerator) generateBreakStmt(stmt *semantic.TypedBreakStmt, ctx *BaseContext) (string, error) {
+	_, breakLabel, ok := ctx.CurrentLoop()
+	if !ok {
+		return "", fmt.Errorf("break outside loop at line %d", stmt.Keyword.Line)
+	}
+	return fmt.Sprintf("    b %s\n", breakLabel), nil
+}
+
+func (g *TypedCodeGenerator) generateContinueStmt(stmt *semantic.TypedContinueStmt, ctx *BaseContext) (string, error) {
+	continueLabel, _, ok := ctx.CurrentLoop()
+	if !ok {
+		return "", fmt.Errorf("continue outside loop at line %d", stmt.Keyword.Line)
+	}
+	return fmt.Sprintf("    b %s\n", continueLabel), nil
 }
 
 func (g *TypedCodeGenerator) generateExpr(expr semantic.TypedExpression, ctx *BaseContext) (string, error) {

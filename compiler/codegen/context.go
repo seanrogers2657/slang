@@ -14,13 +14,20 @@ type VariableInfo struct {
 	Type   semantic.Type
 }
 
+// loopLabels holds the labels for break and continue statements within a loop.
+type loopLabels struct {
+	continueLabel string // label to jump to for continue (before update)
+	breakLabel    string // label to jump to for break (after loop)
+}
+
 // BaseContext provides shared context functionality for code generation.
 // It tracks variable allocations, stack offsets, and source line information.
 type BaseContext struct {
 	variables    map[string]VariableInfo
 	stackOffset  int
 	sourceLines  []string
-	labelCounter int // counter for generating unique labels
+	labelCounter int          // counter for generating unique labels
+	loopStack    []loopLabels // stack of active loop labels for break/continue
 }
 
 // NewBaseContext creates a new code generation context.
@@ -64,4 +71,25 @@ func (ctx *BaseContext) GetSourceLineComment(pos ast.Position) string {
 func (ctx *BaseContext) NextLabel(prefix string) string {
 	ctx.labelCounter++
 	return fmt.Sprintf("_%s_%d", prefix, ctx.labelCounter)
+}
+
+// PushLoop pushes new loop labels onto the stack for break/continue support.
+func (ctx *BaseContext) PushLoop(continueLabel, breakLabel string) {
+	ctx.loopStack = append(ctx.loopStack, loopLabels{continueLabel, breakLabel})
+}
+
+// PopLoop removes the innermost loop from the stack.
+func (ctx *BaseContext) PopLoop() {
+	if len(ctx.loopStack) > 0 {
+		ctx.loopStack = ctx.loopStack[:len(ctx.loopStack)-1]
+	}
+}
+
+// CurrentLoop returns the labels for the innermost loop.
+func (ctx *BaseContext) CurrentLoop() (continueLabel, breakLabel string, ok bool) {
+	if len(ctx.loopStack) == 0 {
+		return "", "", false
+	}
+	loop := ctx.loopStack[len(ctx.loopStack)-1]
+	return loop.continueLabel, loop.breakLabel, true
 }

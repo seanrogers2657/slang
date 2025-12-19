@@ -75,6 +75,7 @@ type Analyzer struct {
 	functions         map[string]FunctionInfo // function registry
 	structs           map[string]StructType   // struct registry
 	currentReturnType Type                    // return type of current function being analyzed
+	loopDepth         int                     // tracks nested loop depth for break/continue validation
 }
 
 // NewAnalyzer creates a new semantic analyzer
@@ -405,6 +406,12 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 		return a.analyzeReturnStatement(s)
 	case *ast.IfStmt:
 		return a.analyzeIfStatement(s)
+	case *ast.ForStmt:
+		return a.analyzeForStatement(s)
+	case *ast.BreakStmt:
+		return a.analyzeBreakStatement(s)
+	case *ast.ContinueStmt:
+		return a.analyzeContinueStatement(s)
 	default:
 		a.addError("unknown statement type", stmt.Pos(), stmt.End())
 		return &TypedExprStmt{
@@ -740,6 +747,79 @@ func (a *Analyzer) analyzeIfStatement(stmt *ast.IfStmt) TypedStatement {
 		ElseKeyword: stmt.ElseKeyword,
 		ElseBranch:  typedElseBranch,
 	}
+}
+
+// analyzeForStatement analyzes a for-loop statement
+func (a *Analyzer) analyzeForStatement(stmt *ast.ForStmt) TypedStatement {
+	// Enter a new scope for the loop (loop variable should be scoped to the loop)
+	a.enterScope()
+
+	// Analyze initialization if present
+	var typedInit TypedStatement
+	if stmt.Init != nil {
+		typedInit = a.analyzeStatement(stmt.Init)
+	}
+
+	// Analyze condition if present
+	var typedCond TypedExpression
+	if stmt.Condition != nil {
+		typedCond = a.analyzeExpression(stmt.Condition)
+		condType := typedCond.GetType()
+
+		// Condition must be boolean
+		if _, isBool := condType.(BooleanType); !isBool {
+			if _, isErr := condType.(ErrorType); !isErr {
+				a.addError(
+					fmt.Sprintf("for-loop condition must be boolean, got '%s'", condType.String()),
+					stmt.Condition.Pos(), stmt.Condition.End(),
+				).WithHint("use a comparison like i < 10 or a boolean expression")
+			}
+		}
+	}
+
+	// Analyze update if present
+	var typedUpdate TypedStatement
+	if stmt.Update != nil {
+		typedUpdate = a.analyzeStatement(stmt.Update)
+	}
+
+	// Enter loop context for break/continue validation
+	a.loopDepth++
+
+	// Analyze body
+	typedBody := a.analyzeBlockStmt(stmt.Body)
+
+	// Exit loop context
+	a.loopDepth--
+
+	// Exit loop scope
+	a.exitScope()
+
+	return &TypedForStmt{
+		ForKeyword: stmt.ForKeyword,
+		Init:       typedInit,
+		Condition:  typedCond,
+		Update:     typedUpdate,
+		Body:       typedBody,
+	}
+}
+
+// analyzeBreakStatement analyzes a break statement
+func (a *Analyzer) analyzeBreakStatement(stmt *ast.BreakStmt) TypedStatement {
+	if a.loopDepth == 0 {
+		a.addError("'break' statement not inside a loop", stmt.Keyword, stmt.Keyword).
+			WithHint("break can only be used inside for loops")
+	}
+	return &TypedBreakStmt{Keyword: stmt.Keyword}
+}
+
+// analyzeContinueStatement analyzes a continue statement
+func (a *Analyzer) analyzeContinueStatement(stmt *ast.ContinueStmt) TypedStatement {
+	if a.loopDepth == 0 {
+		a.addError("'continue' statement not inside a loop", stmt.Keyword, stmt.Keyword).
+			WithHint("continue can only be used inside for loops")
+	}
+	return &TypedContinueStmt{Keyword: stmt.Keyword}
 }
 
 // analyzeIfExpression analyzes an if expression (if used in expression context)

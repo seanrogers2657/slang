@@ -11,15 +11,18 @@ import (
 
 // keywords maps keyword strings to their token types
 var keywords = map[string]TokenType{
-	"fn":     TokenTypeFn,
-	"val":    TokenTypeVal,
-	"var":    TokenTypeVar,
-	"return": TokenTypeReturn,
-	"true":   TokenTypeTrue,
-	"false":  TokenTypeFalse,
-	"if":     TokenTypeIf,
-	"else":   TokenTypeElse,
-	"struct": TokenTypeStruct,
+	"fn":       TokenTypeFn,
+	"val":      TokenTypeVal,
+	"var":      TokenTypeVar,
+	"return":   TokenTypeReturn,
+	"true":     TokenTypeTrue,
+	"false":    TokenTypeFalse,
+	"if":       TokenTypeIf,
+	"else":     TokenTypeElse,
+	"struct":   TokenTypeStruct,
+	"for":      TokenTypeFor,
+	"break":    TokenTypeBreak,
+	"continue": TokenTypeContinue,
 }
 
 type TokenType int
@@ -62,6 +65,10 @@ const (
 	TokenTypeElse
 	TokenTypeStruct
 	TokenTypeDot
+	TokenTypeFor
+	TokenTypeBreak
+	TokenTypeContinue
+	TokenTypeSemicolon
 )
 
 // String returns a human-readable name for the token type
@@ -141,6 +148,14 @@ func (t TokenType) String() string {
 		return "STRUCT"
 	case TokenTypeDot:
 		return "DOT"
+	case TokenTypeFor:
+		return "FOR"
+	case TokenTypeBreak:
+		return "BREAK"
+	case TokenTypeContinue:
+		return "CONTINUE"
+	case TokenTypeSemicolon:
+		return "SEMICOLON"
 	default:
 		return "UNKNOWN"
 	}
@@ -446,6 +461,10 @@ func (p *lexer) Parse() {
 		} else if b == ':' {
 			pos := p.currentPos()
 			p.Tokens = append(p.Tokens, Token{Type: TokenTypeColon, Value: ":", Pos: pos})
+			p.advance()
+		} else if b == ';' {
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeSemicolon, Value: ";", Pos: pos})
 			p.advance()
 		} else if b == '+' {
 			pos := p.currentPos()

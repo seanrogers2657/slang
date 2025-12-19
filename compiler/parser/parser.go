@@ -140,6 +140,7 @@ func (p *parser) skipToNextStatement() {
 		// Stop at tokens that could start a new statement
 		switch tok {
 		case lexer.TokenTypeVal, lexer.TokenTypeVar, lexer.TokenTypeIf,
+			lexer.TokenTypeFor, lexer.TokenTypeBreak, lexer.TokenTypeContinue,
 			lexer.TokenTypeReturn, lexer.TokenTypeRBrace:
 			return
 		case lexer.TokenTypeNewline:
@@ -353,6 +354,21 @@ func (p *parser) ParseStatement() ast.Statement {
 	// Check if it's an if statement
 	if p.CurrentToken().Type == lexer.TokenTypeIf {
 		return p.ParseIfStatement()
+	}
+
+	// Check if it's a for statement
+	if p.CurrentToken().Type == lexer.TokenTypeFor {
+		return p.ParseForStatement()
+	}
+
+	// Check if it's a break statement
+	if p.CurrentToken().Type == lexer.TokenTypeBreak {
+		return p.ParseBreakStatement()
+	}
+
+	// Check if it's a continue statement
+	if p.CurrentToken().Type == lexer.TokenTypeContinue {
+		return p.ParseContinueStatement()
 	}
 
 	// Check if it's an immutable variable declaration (val)
@@ -575,6 +591,107 @@ func (p *parser) ParseIfStatement() ast.Statement {
 		ElseKeyword: elseKeyword,
 		ElseBranch:  elseBranch,
 	}
+}
+
+// ParseForStatement parses a for loop: for [( ]init; cond; update[)] { body }
+// Supports both C-style (with parens) and Go-style (without parens)
+func (p *parser) ParseForStatement() ast.Statement {
+	forKeyword := p.CurrentToken().Pos
+	p.advance() // consume 'for'
+
+	// Check for optional opening parenthesis
+	hasParens := p.CurrentToken().Type == lexer.TokenTypeLParen
+	var leftParen ast.Position
+	if hasParens {
+		leftParen = p.CurrentToken().Pos
+		p.advance() // consume '('
+	}
+
+	// Parse initialization (optional)
+	var init ast.Statement
+	if p.CurrentToken().Type != lexer.TokenTypeSemicolon {
+		if p.CurrentToken().Type == lexer.TokenTypeVal {
+			init = p.ParseVarDecl(false)
+		} else if p.CurrentToken().Type == lexer.TokenTypeVar {
+			init = p.ParseVarDecl(true)
+		} else if p.CurrentToken().Type == lexer.TokenTypeIdentifier && p.peek().Type == lexer.TokenTypeAssign {
+			init = p.ParseAssignment()
+		}
+	}
+
+	// Expect semicolon after init
+	if p.CurrentToken().Type != lexer.TokenTypeSemicolon {
+		p.addError(fmt.Sprintf("expected ';' after for-loop initializer, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+	p.advance() // consume ';'
+
+	// Parse condition (optional - if missing, it's an infinite loop)
+	var condition ast.Expression
+	if p.CurrentToken().Type != lexer.TokenTypeSemicolon {
+		condition = p.parseExpression(precedenceLowest)
+	}
+
+	// Expect semicolon after condition
+	if p.CurrentToken().Type != lexer.TokenTypeSemicolon {
+		p.addError(fmt.Sprintf("expected ';' after for-loop condition, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+	p.advance() // consume ';'
+
+	// Parse update (optional)
+	var update ast.Statement
+	// Check what comes next - if it's ) or {, there's no update
+	nextIsEnd := (hasParens && p.CurrentToken().Type == lexer.TokenTypeRParen) ||
+		(!hasParens && p.CurrentToken().Type == lexer.TokenTypeLBrace)
+	if !nextIsEnd && p.CurrentToken().Type == lexer.TokenTypeIdentifier && p.peek().Type == lexer.TokenTypeAssign {
+		update = p.ParseAssignment()
+	}
+
+	// If has parens, expect closing paren
+	var rightParen ast.Position
+	if hasParens {
+		if p.CurrentToken().Type != lexer.TokenTypeRParen {
+			p.addError(fmt.Sprintf("expected ')' after for-loop update, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+			return nil
+		}
+		rightParen = p.CurrentToken().Pos
+		p.advance() // consume ')'
+	}
+
+	// Skip newlines before body
+	p.skipNewlines()
+
+	// Parse body
+	body := p.ParseBlockStmt()
+	if body == nil {
+		return nil
+	}
+
+	return &ast.ForStmt{
+		ForKeyword: forKeyword,
+		HasParens:  hasParens,
+		LeftParen:  leftParen,
+		Init:       init,
+		Condition:  condition,
+		Update:     update,
+		RightParen: rightParen,
+		Body:       body,
+	}
+}
+
+// ParseBreakStatement parses a break statement
+func (p *parser) ParseBreakStatement() ast.Statement {
+	keyword := p.CurrentToken().Pos
+	p.advance() // consume 'break'
+	return &ast.BreakStmt{Keyword: keyword}
+}
+
+// ParseContinueStatement parses a continue statement
+func (p *parser) ParseContinueStatement() ast.Statement {
+	keyword := p.CurrentToken().Pos
+	p.advance() // consume 'continue'
+	return &ast.ContinueStmt{Keyword: keyword}
 }
 
 // parseIfExpression parses an if expression (same as if statement, but in expression context)

@@ -240,6 +240,47 @@ func (i *IfStmt) End() Position {
 func (i *IfStmt) stmtNode() {}
 func (i *IfStmt) exprNode() {} // IfStmt can also be used as an expression
 
+// ForStmt represents a for-loop statement
+// Supports both with and without parentheses:
+//   for (var i = 0; i < 10; i = i + 1) { ... }
+//   for var i = 0; i < 10; i = i + 1 { ... }
+type ForStmt struct {
+	ForKeyword Position   // position of 'for'
+	HasParens  bool       // true if loop uses parentheses syntax
+	LeftParen  Position   // position of '(' if HasParens
+	Init       Statement  // initialization (VarDeclStmt or AssignStmt), may be nil
+	Condition  Expression // loop condition, may be nil (infinite loop)
+	Update     Statement  // update statement (AssignStmt), may be nil
+	RightParen Position   // position of ')' if HasParens
+	Body       *BlockStmt // loop body
+}
+
+func (f *ForStmt) Pos() Position { return f.ForKeyword }
+func (f *ForStmt) End() Position { return f.Body.End() }
+func (f *ForStmt) stmtNode()     {}
+
+// BreakStmt represents a break statement
+type BreakStmt struct {
+	Keyword Position // position of 'break'
+}
+
+func (b *BreakStmt) Pos() Position { return b.Keyword }
+func (b *BreakStmt) End() Position {
+	return Position{Line: b.Keyword.Line, Column: b.Keyword.Column + 5, Offset: b.Keyword.Offset + 5}
+}
+func (b *BreakStmt) stmtNode() {}
+
+// ContinueStmt represents a continue statement
+type ContinueStmt struct {
+	Keyword Position // position of 'continue'
+}
+
+func (c *ContinueStmt) Pos() Position { return c.Keyword }
+func (c *ContinueStmt) End() Position {
+	return Position{Line: c.Keyword.Line, Column: c.Keyword.Column + 8, Offset: c.Keyword.Offset + 8}
+}
+func (c *ContinueStmt) stmtNode() {}
+
 // ============================================================================
 // Declarations
 // ============================================================================

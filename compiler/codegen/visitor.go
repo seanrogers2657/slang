@@ -72,6 +72,27 @@ func (info *ProgramInfo) collectFromTypedStatement(stmt semantic.TypedStatement,
 		for _, bodyStmt := range s.Statements {
 			info.collectFromTypedStatement(bodyStmt, floatIdx, stringIdx)
 		}
+	case *semantic.TypedForStmt:
+		// Collect from init
+		if s.Init != nil {
+			info.collectFromTypedStatement(s.Init, floatIdx, stringIdx)
+		}
+		// Collect from condition
+		if s.Condition != nil {
+			info.collectFromTypedExpr(s.Condition, floatIdx, stringIdx)
+		}
+		// Collect from update
+		if s.Update != nil {
+			info.collectFromTypedStatement(s.Update, floatIdx, stringIdx)
+		}
+		// Collect from body
+		for _, bodyStmt := range s.Body.Statements {
+			info.collectFromTypedStatement(bodyStmt, floatIdx, stringIdx)
+		}
+	case *semantic.TypedBreakStmt:
+		// Nothing to collect from break
+	case *semantic.TypedContinueStmt:
+		// Nothing to collect from continue
 	default:
 		// Unknown statement type - panic to catch missing cases during development
 		panic(fmt.Sprintf("collectFromTypedStatement: unhandled statement type %T", stmt))
@@ -200,6 +221,17 @@ func countTypedVarsInStmt(stmt semantic.TypedStatement) int {
 	case *semantic.TypedBlockStmt:
 		count := 0
 		for _, bodyStmt := range s.Statements {
+			count += countTypedVarsInStmt(bodyStmt)
+		}
+		return count
+	case *semantic.TypedForStmt:
+		count := 0
+		// Count in init
+		if s.Init != nil {
+			count += countTypedVarsInStmt(s.Init)
+		}
+		// Count in body
+		for _, bodyStmt := range s.Body.Statements {
 			count += countTypedVarsInStmt(bodyStmt)
 		}
 		return count

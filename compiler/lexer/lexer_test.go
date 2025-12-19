@@ -1165,3 +1165,112 @@ func TestLexerBooleanTokens(t *testing.T) {
 		})
 	}
 }
+
+func TestLexerWhenTokens(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []Token
+	}{
+		{
+			name:  "when keyword",
+			input: "when",
+			expected: []Token{
+				{Type: TokenTypeWhen, Value: "when"},
+			},
+		},
+		{
+			name:  "arrow token",
+			input: "->",
+			expected: []Token{
+				{Type: TokenTypeArrow, Value: "->"},
+			},
+		},
+		{
+			name:  "minus vs arrow",
+			input: "- ->",
+			expected: []Token{
+				{Type: TokenTypeMinus, Value: "-"},
+				{Type: TokenTypeArrow, Value: "->"},
+			},
+		},
+		{
+			name:  "arrow followed by number",
+			input: "->42",
+			expected: []Token{
+				{Type: TokenTypeArrow, Value: "->"},
+				{Type: TokenTypeInteger, Value: "42"},
+			},
+		},
+		{
+			name:  "simple when expression",
+			input: "when { true -> 1 }",
+			expected: []Token{
+				{Type: TokenTypeWhen, Value: "when"},
+				{Type: TokenTypeLBrace, Value: "{"},
+				{Type: TokenTypeTrue, Value: "true"},
+				{Type: TokenTypeArrow, Value: "->"},
+				{Type: TokenTypeInteger, Value: "1"},
+				{Type: TokenTypeRBrace, Value: "}"},
+			},
+		},
+		{
+			name:  "when with else",
+			input: "when { x > 0 -> 1, else -> 0 }",
+			expected: []Token{
+				{Type: TokenTypeWhen, Value: "when"},
+				{Type: TokenTypeLBrace, Value: "{"},
+				{Type: TokenTypeIdentifier, Value: "x"},
+				{Type: TokenTypeGreaterThan, Value: ">"},
+				{Type: TokenTypeInteger, Value: "0"},
+				{Type: TokenTypeArrow, Value: "->"},
+				{Type: TokenTypeInteger, Value: "1"},
+				{Type: TokenTypeComma, Value: ","},
+				{Type: TokenTypeElse, Value: "else"},
+				{Type: TokenTypeArrow, Value: "->"},
+				{Type: TokenTypeInteger, Value: "0"},
+				{Type: TokenTypeRBrace, Value: "}"},
+			},
+		},
+		{
+			name:  "identifier starting with when",
+			input: "whenever",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "whenever"},
+			},
+		},
+		{
+			name:  "subtraction not confused with arrow",
+			input: "x - y",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "x"},
+				{Type: TokenTypeMinus, Value: "-"},
+				{Type: TokenTypeIdentifier, Value: "y"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("unexpected errors: %v", l.Errors)
+			}
+
+			if len(l.Tokens) != len(tt.expected) {
+				t.Fatalf("expected %d tokens, got %d: %v", len(tt.expected), len(l.Tokens), l.Tokens)
+			}
+
+			for i, token := range l.Tokens {
+				if token.Type != tt.expected[i].Type {
+					t.Errorf("token %d: expected type %v, got %v", i, tt.expected[i].Type, token.Type)
+				}
+				if token.Value != tt.expected[i].Value {
+					t.Errorf("token %d: expected value %q, got %q", i, tt.expected[i].Value, token.Value)
+				}
+			}
+		})
+	}
+}

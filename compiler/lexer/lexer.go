@@ -23,6 +23,7 @@ var keywords = map[string]TokenType{
 	"for":      TokenTypeFor,
 	"break":    TokenTypeBreak,
 	"continue": TokenTypeContinue,
+	"when":     TokenTypeWhen,
 }
 
 type TokenType int
@@ -69,6 +70,8 @@ const (
 	TokenTypeBreak
 	TokenTypeContinue
 	TokenTypeSemicolon
+	TokenTypeWhen
+	TokenTypeArrow
 )
 
 // String returns a human-readable name for the token type
@@ -156,6 +159,10 @@ func (t TokenType) String() string {
 		return "CONTINUE"
 	case TokenTypeSemicolon:
 		return "SEMICOLON"
+	case TokenTypeWhen:
+		return "WHEN"
+	case TokenTypeArrow:
+		return "ARROW"
 	default:
 		return "UNKNOWN"
 	}
@@ -472,8 +479,15 @@ func (p *lexer) Parse() {
 			p.advance()
 		} else if b == '-' {
 			pos := p.currentPos()
-			p.Tokens = append(p.Tokens, Token{Type: TokenTypeMinus, Value: "-", Pos: pos})
-			p.advance()
+			// Check for -> (arrow)
+			if p.Index+1 < len(p.Source) && p.Source[p.Index+1] == '>' {
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeArrow, Value: "->", Pos: pos})
+				p.advance()
+				p.advance()
+			} else {
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeMinus, Value: "-", Pos: pos})
+				p.advance()
+			}
 		} else if b == '*' {
 			pos := p.currentPos()
 			p.Tokens = append(p.Tokens, Token{Type: TokenTypeMultiply, Value: "*", Pos: pos})

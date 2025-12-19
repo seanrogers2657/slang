@@ -93,6 +93,14 @@ func (info *ProgramInfo) collectFromTypedStatement(stmt semantic.TypedStatement,
 		// Nothing to collect from break
 	case *semantic.TypedContinueStmt:
 		// Nothing to collect from continue
+	case *semantic.TypedWhenExpr:
+		// Collect from each case
+		for _, wcase := range s.Cases {
+			if wcase.Condition != nil {
+				info.collectFromTypedExpr(wcase.Condition, floatIdx, stringIdx)
+			}
+			info.collectFromTypedStatement(wcase.Body, floatIdx, stringIdx)
+		}
 	default:
 		// Unknown statement type - panic to catch missing cases during development
 		panic(fmt.Sprintf("collectFromTypedStatement: unhandled statement type %T", stmt))
@@ -168,6 +176,15 @@ func (info *ProgramInfo) collectFromTypedExpr(expr semantic.TypedExpression, flo
 		// Collect from the object expression (though usually just identifiers)
 		info.collectFromTypedExpr(e.Object, floatIdx, stringIdx)
 
+	case *semantic.TypedWhenExpr:
+		// When expression: collect from all cases
+		for _, wcase := range e.Cases {
+			if wcase.Condition != nil {
+				info.collectFromTypedExpr(wcase.Condition, floatIdx, stringIdx)
+			}
+			info.collectFromTypedStatement(wcase.Body, floatIdx, stringIdx)
+		}
+
 	default:
 		// Unknown expression type - panic to catch missing cases during development
 		panic(fmt.Sprintf("collectFromTypedExpr: unhandled expression type %T", expr))
@@ -233,6 +250,13 @@ func countTypedVarsInStmt(stmt semantic.TypedStatement) int {
 		// Count in body
 		for _, bodyStmt := range s.Body.Statements {
 			count += countTypedVarsInStmt(bodyStmt)
+		}
+		return count
+	case *semantic.TypedWhenExpr:
+		count := 0
+		// Count in each case body
+		for _, wcase := range s.Cases {
+			count += countTypedVarsInStmt(wcase.Body)
 		}
 		return count
 	default:

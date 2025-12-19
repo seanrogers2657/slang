@@ -300,3 +300,22 @@ func ifStmtNoElse(cond ast.Expression, thenStmts []ast.Statement) ast.Statement 
 		},
 	}
 }
+
+func whenCase(cond ast.Expression, body ast.Statement, isElse bool) ast.WhenCase {
+	return ast.WhenCase{
+		Condition:    cond,
+		ConditionPos: pos(1, 1),
+		Arrow:        pos(1, 5),
+		Body:         body,
+		IsElse:       isElse,
+	}
+}
+
+func whenExpr(cases ...ast.WhenCase) *ast.WhenExpr {
+	return &ast.WhenExpr{
+		WhenKeyword: pos(1, 1),
+		LeftBrace:   pos(1, 6),
+		Cases:       cases,
+		RightBrace:  pos(1, 20),
+	}
+}

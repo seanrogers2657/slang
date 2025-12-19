@@ -282,6 +282,34 @@ func (s *TypedContinueStmt) End() ast.Position {
 func (s *TypedContinueStmt) GetType() Type  { return TypeVoid }
 func (s *TypedContinueStmt) typedStmtNode() {}
 
+// TypedWhenCase represents a type-checked when case
+type TypedWhenCase struct {
+	Condition    TypedExpression // typed condition (nil for else)
+	ConditionPos ast.Position
+	Arrow        ast.Position
+	Body         TypedStatement // *TypedBlockStmt or *TypedExprStmt
+	IsElse       bool
+}
+
+// TypedWhenExpr represents a type-checked when expression/statement
+type TypedWhenExpr struct {
+	WhenKeyword ast.Position
+	Cases       []TypedWhenCase
+	RightBrace  ast.Position
+	ResultType  Type // non-nil when used as expression
+}
+
+func (s *TypedWhenExpr) Pos() ast.Position { return s.WhenKeyword }
+func (s *TypedWhenExpr) End() ast.Position { return s.RightBrace }
+func (s *TypedWhenExpr) GetType() Type {
+	if s.ResultType != nil {
+		return s.ResultType
+	}
+	return TypeVoid
+}
+func (s *TypedWhenExpr) typedStmtNode() {}
+func (s *TypedWhenExpr) typedExprNode() {} // TypedWhenExpr can also be used as an expression
+
 // ============================================================================
 // Typed Declarations
 // ============================================================================

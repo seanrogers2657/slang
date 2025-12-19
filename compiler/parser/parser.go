@@ -139,7 +139,7 @@ func (p *parser) skipToNextStatement() {
 		tok := p.CurrentToken().Type
 		// Stop at tokens that could start a new statement
 		switch tok {
-		case lexer.TokenTypeVal, lexer.TokenTypeVar, lexer.TokenTypeIf,
+		case lexer.TokenTypeVal, lexer.TokenTypeVar, lexer.TokenTypeIf, lexer.TokenTypeWhen,
 			lexer.TokenTypeFor, lexer.TokenTypeBreak, lexer.TokenTypeContinue,
 			lexer.TokenTypeReturn, lexer.TokenTypeRBrace:
 			return
@@ -369,6 +369,11 @@ func (p *parser) ParseStatement() ast.Statement {
 	// Check if it's a continue statement
 	if p.CurrentToken().Type == lexer.TokenTypeContinue {
 		return p.ParseContinueStatement()
+	}
+
+	// Check if it's a when statement
+	if p.CurrentToken().Type == lexer.TokenTypeWhen {
+		return p.ParseWhenStatement()
 	}
 
 	// Check if it's an immutable variable declaration (val)
@@ -886,6 +891,11 @@ func (p *parser) parsePrimary() ast.Expression {
 	// Check for if expression
 	if p.CurrentToken().Type == lexer.TokenTypeIf {
 		return p.parseIfExpression()
+	}
+
+	// Check for when expression
+	if p.CurrentToken().Type == lexer.TokenTypeWhen {
+		return p.parseWhenExpression()
 	}
 
 	// Check for unary NOT operator
@@ -1426,5 +1436,146 @@ func (p *parser) parseStructField() *ast.StructField {
 		Colon:    colonPos,
 		TypeName: typeName,
 		TypePos:  typePos,
+	}
+}
+
+// ParseWhenStatement parses a when statement (can also be used as expression)
+func (p *parser) ParseWhenStatement() ast.Statement {
+	expr := p.parseWhenExpression()
+	if expr == nil {
+		return nil
+	}
+	return expr.(*ast.WhenExpr)
+}
+
+// parseWhenExpression parses a when expression
+// Form: when { condition -> body, ... }
+func (p *parser) parseWhenExpression() ast.Expression {
+	whenKeyword := p.CurrentToken().Pos
+	p.advance() // consume 'when'
+
+	// Skip newlines before brace
+	p.skipNewlines()
+
+	// Check for unsupported when (subject) { } syntax
+	if p.CurrentToken().Type == lexer.TokenTypeLParen {
+		p.addError(
+			"when (subject) { } syntax is not supported",
+			p.CurrentToken().Pos,
+		).WithHint("use 'when { condition -> body }' with boolean conditions instead")
+		return nil
+	}
+
+	// Expect '{'
+	if p.CurrentToken().Type != lexer.TokenTypeLBrace {
+		p.addError("expected '{' after when", p.CurrentToken().Pos)
+		return nil
+	}
+	leftBrace := p.CurrentToken().Pos
+	p.advance() // consume '{'
+
+	// Parse cases
+	cases := p.parseWhenCases()
+
+	// Skip newlines before closing brace
+	p.skipNewlines()
+
+	// Expect '}'
+	if p.CurrentToken().Type != lexer.TokenTypeRBrace {
+		p.addError("expected '}' to close when expression", p.CurrentToken().Pos)
+		return nil
+	}
+	rightBrace := p.CurrentToken().Pos
+	p.advance() // consume '}'
+
+	return &ast.WhenExpr{
+		WhenKeyword: whenKeyword,
+		LeftBrace:   leftBrace,
+		Cases:       cases,
+		RightBrace:  rightBrace,
+	}
+}
+
+// parseWhenCases parses the list of cases inside a when expression
+func (p *parser) parseWhenCases() []ast.WhenCase {
+	cases := []ast.WhenCase{}
+
+	for !p.isAtEnd() && p.CurrentToken().Type != lexer.TokenTypeRBrace {
+		// Skip newlines between cases
+		p.skipNewlines()
+
+		if p.CurrentToken().Type == lexer.TokenTypeRBrace {
+			break
+		}
+
+		wcase := p.parseWhenCase()
+		if wcase != nil {
+			cases = append(cases, *wcase)
+		}
+
+		// Skip newlines after case
+		p.skipNewlines()
+	}
+
+	return cases
+}
+
+// parseWhenCase parses a single when case: condition -> body
+func (p *parser) parseWhenCase() *ast.WhenCase {
+	conditionPos := p.CurrentToken().Pos
+	var condition ast.Expression
+	isElse := false
+
+	// Check for 'else' keyword
+	if p.CurrentToken().Type == lexer.TokenTypeElse {
+		isElse = true
+		p.advance() // consume 'else'
+	} else {
+		// Parse condition (boolean expression)
+		condition = p.parseExpression(precedenceLowest)
+		if condition == nil {
+			p.addError("expected condition in when case", conditionPos)
+			return nil
+		}
+	}
+
+	// Expect '->'
+	if p.CurrentToken().Type != lexer.TokenTypeArrow {
+		p.addError(fmt.Sprintf("expected '->' after when case condition, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+	arrow := p.CurrentToken().Pos
+	p.advance() // consume '->'
+
+	// Skip newlines after arrow
+	p.skipNewlines()
+
+	// Parse body (either a block, assignment statement, or single expression)
+	var body ast.Statement
+	if p.CurrentToken().Type == lexer.TokenTypeLBrace {
+		body = p.ParseBlockStmt()
+	} else if p.CurrentToken().Type == lexer.TokenTypeIdentifier && p.peek().Type == lexer.TokenTypeAssign {
+		// Assignment statement: name = expr
+		body = p.ParseAssignment()
+	} else {
+		// Single expression - parse it as an expression statement
+		expr := p.parseExpression(precedenceLowest)
+		if expr == nil {
+			p.addError("expected expression after '->'", arrow)
+			return nil
+		}
+		body = &ast.ExprStmt{Expr: expr}
+	}
+
+	if body == nil {
+		return nil
+	}
+
+	return &ast.WhenCase{
+		Condition:    condition,
+		ConditionPos: conditionPos,
+		Arrow:        arrow,
+		Body:         body,
+		IsElse:       isElse,
 	}
 }

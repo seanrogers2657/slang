@@ -412,6 +412,8 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 		return a.analyzeBreakStatement(s)
 	case *ast.ContinueStmt:
 		return a.analyzeContinueStatement(s)
+	case *ast.WhenExpr:
+		return a.analyzeWhenStatement(s)
 	default:
 		a.addError("unknown statement type", stmt.Pos(), stmt.End())
 		return &TypedExprStmt{
@@ -918,6 +920,10 @@ func (a *Analyzer) getBlockResultType(block *TypedBlockStmt) Type {
 	if ifStmt, ok := lastStmt.(*TypedIfStmt); ok {
 		return ifStmt.GetType()
 	}
+	// If last statement is a when-expression, get its type
+	if whenExpr, ok := lastStmt.(*TypedWhenExpr); ok {
+		return whenExpr.GetType()
+	}
 	return TypeVoid
 }
 
@@ -950,6 +956,9 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 	case *ast.IfStmt:
 		// If can be used as an expression
 		return a.analyzeIfExpression(e)
+	case *ast.WhenExpr:
+		// When can be used as an expression
+		return a.analyzeWhenExpression(e)
 	default:
 		a.addError("unknown expression type", expr.Pos(), expr.End())
 		return &TypedLiteralExpr{
@@ -1708,6 +1717,17 @@ func statementReturns(stmt TypedStatement) bool {
 		thenReturns := blockReturns(s.ThenBranch)
 		elseReturns := branchReturns(s.ElseBranch)
 		return thenReturns && elseReturns
+	case *TypedWhenExpr:
+		// When guarantees return if exhaustive and all branches return
+		if !whenIsExhaustive(s) {
+			return false
+		}
+		for _, wcase := range s.Cases {
+			if !branchReturns(wcase.Body) {
+				return false
+			}
+		}
+		return true
 	case *TypedBlockStmt:
 		return allPathsReturn(s.Statements)
 	default:
@@ -1720,7 +1740,7 @@ func blockReturns(block *TypedBlockStmt) bool {
 	return allPathsReturn(block.Statements)
 }
 
-// branchReturns checks if an else branch (which can be a block or another if) returns.
+// branchReturns checks if an else branch (which can be a block or another if/when) returns.
 func branchReturns(branch TypedStatement) bool {
 	switch b := branch.(type) {
 	case *TypedBlockStmt:
@@ -1728,7 +1748,213 @@ func branchReturns(branch TypedStatement) bool {
 	case *TypedIfStmt:
 		// else if: recursively check
 		return statementReturns(b)
+	case *TypedWhenExpr:
+		// when expression: recursively check
+		return statementReturns(b)
 	default:
 		return false
+	}
+}
+
+// whenIsExhaustive checks if a when expression covers all cases
+// A when is exhaustive if it has an else branch or a literal `true` condition
+func whenIsExhaustive(when *TypedWhenExpr) bool {
+	for _, wcase := range when.Cases {
+		if wcase.IsElse {
+			return true
+		}
+		// Check for literal `true` condition (always executes)
+		if wcase.Condition != nil {
+			if lit, ok := wcase.Condition.(*TypedLiteralExpr); ok {
+				if lit.LitType == ast.LiteralTypeBoolean && lit.Value == "true" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// analyzeWhenStatement analyzes a when statement (statement context, no result type)
+func (a *Analyzer) analyzeWhenStatement(when *ast.WhenExpr) TypedStatement {
+	return a.analyzeWhen(when, false)
+}
+
+// analyzeWhenExpression analyzes a when expression (expression context, needs result type)
+func (a *Analyzer) analyzeWhenExpression(when *ast.WhenExpr) TypedExpression {
+	return a.analyzeWhen(when, true)
+}
+
+// analyzeWhen is the core when analysis, handling both statement and expression contexts
+func (a *Analyzer) analyzeWhen(when *ast.WhenExpr, isExpression bool) *TypedWhenExpr {
+	// Analyze cases
+	typedCases := make([]TypedWhenCase, len(when.Cases))
+	var hasElse bool
+	var hasTrueCondition bool
+	var branchTypes []Type // For expression type checking
+
+	for i, wcase := range when.Cases {
+		typedCase := a.analyzeWhenCase(wcase, isExpression)
+		typedCases[i] = typedCase
+
+		if wcase.IsElse {
+			hasElse = true
+		}
+
+		// Check for literal `true` condition
+		if typedCase.Condition != nil {
+			if lit, ok := typedCase.Condition.(*TypedLiteralExpr); ok {
+				if lit.LitType == ast.LiteralTypeBoolean && lit.Value == "true" {
+					hasTrueCondition = true
+				}
+			}
+		}
+
+		if isExpression {
+			branchTypes = append(branchTypes, a.getWhenCaseResultType(typedCase.Body))
+		}
+	}
+
+	// Exhaustiveness checking
+	a.checkWhenExhaustiveness(when, hasElse, hasTrueCondition)
+
+	// Type checking for expressions
+	var resultType Type = TypeVoid
+	if isExpression {
+		resultType = a.checkWhenBranchTypeConsistency(branchTypes, when.WhenKeyword, when.RightBrace)
+	}
+
+	return &TypedWhenExpr{
+		WhenKeyword: when.WhenKeyword,
+		Cases:       typedCases,
+		RightBrace:  when.RightBrace,
+		ResultType:  resultType,
+	}
+}
+
+// analyzeWhenCase analyzes a single when case
+func (a *Analyzer) analyzeWhenCase(wcase ast.WhenCase, isExpression bool) TypedWhenCase {
+	var typedCondition TypedExpression
+
+	if !wcase.IsElse {
+		typedCondition = a.analyzeExpression(wcase.Condition)
+		conditionType := typedCondition.GetType()
+
+		// Condition must be boolean
+		if _, isBool := conditionType.(BooleanType); !isBool {
+			if _, isErr := conditionType.(ErrorType); !isErr {
+				a.addError(
+					fmt.Sprintf("when case condition must be boolean, got '%s'", conditionType.String()),
+					wcase.ConditionPos, wcase.Condition.End(),
+				).WithHint("use a comparison or boolean expression")
+			}
+		}
+	}
+
+	// Analyze body
+	var typedBody TypedStatement
+	switch body := wcase.Body.(type) {
+	case *ast.BlockStmt:
+		a.enterScope()
+		if isExpression {
+			typedBlock := a.analyzeBlockStmtForExpression(body)
+			typedBody = typedBlock
+			// Check that block ends with an expression
+			if len(body.Statements) > 0 {
+				resultType := a.getBlockResultType(typedBlock)
+				if _, isVoid := resultType.(VoidType); isVoid {
+					lastStmt := body.Statements[len(body.Statements)-1]
+					a.addError(
+						"when expression block must end with an expression",
+						lastStmt.Pos(), lastStmt.End(),
+					).WithHint("the last statement in a when expression block must produce a value")
+				}
+			} else {
+				a.addError(
+					"when expression block cannot be empty",
+					body.LeftBrace, body.RightBrace,
+				).WithHint("add an expression that produces a value")
+			}
+		} else {
+			typedBody = a.analyzeBlockStmt(body)
+		}
+		a.exitScope()
+	case *ast.ExprStmt:
+		typedBody = a.analyzeExprStatement(body)
+	case *ast.AssignStmt:
+		if isExpression {
+			a.addError(
+				"when expression branches must contain expressions, not statements",
+				body.NamePos, body.Value.End(),
+			).WithHint("assignment statements don't produce a value; use a block or expression instead")
+		}
+		typedBody = a.analyzeStatement(wcase.Body)
+	default:
+		if isExpression {
+			a.addError(
+				"when expression branches must contain expressions, not statements",
+				wcase.Body.Pos(), wcase.Body.End(),
+			).WithHint("use an expression that produces a value")
+		}
+		typedBody = a.analyzeStatement(wcase.Body)
+	}
+
+	return TypedWhenCase{
+		Condition:    typedCondition,
+		ConditionPos: wcase.ConditionPos,
+		Arrow:        wcase.Arrow,
+		Body:         typedBody,
+		IsElse:       wcase.IsElse,
+	}
+}
+
+// checkWhenExhaustiveness verifies that at least one branch is guaranteed to execute
+func (a *Analyzer) checkWhenExhaustiveness(when *ast.WhenExpr, hasElse bool, hasTrueCondition bool) {
+	if hasElse || hasTrueCondition {
+		return // exhaustive: else covers everything, or a `true` condition always executes
+	}
+
+	a.addError(
+		"when is not exhaustive: no branch is guaranteed to execute",
+		when.WhenKeyword, when.RightBrace,
+	).WithHint("add 'else -> ...' or use 'true -> ...' to ensure a branch always executes")
+}
+
+// checkWhenBranchTypeConsistency ensures all branches have the same type
+func (a *Analyzer) checkWhenBranchTypeConsistency(types []Type, startPos, endPos ast.Position) Type {
+	if len(types) == 0 {
+		return TypeVoid
+	}
+
+	firstType := types[0]
+	for i := 1; i < len(types); i++ {
+		if _, isErr := types[i].(ErrorType); isErr {
+			continue
+		}
+		if _, isErr := firstType.(ErrorType); isErr {
+			firstType = types[i]
+			continue
+		}
+		if !firstType.Equals(types[i]) {
+			a.addError(
+				fmt.Sprintf("when branches have different types: '%s' and '%s'",
+					firstType.String(), types[i].String()),
+				startPos, endPos,
+			).WithHint("all branches must evaluate to the same type")
+			return TypeError
+		}
+	}
+	return firstType
+}
+
+// getWhenCaseResultType extracts the result type from a when case body
+func (a *Analyzer) getWhenCaseResultType(body TypedStatement) Type {
+	switch b := body.(type) {
+	case *TypedBlockStmt:
+		return a.getBlockResultType(b)
+	case *TypedExprStmt:
+		return b.Expr.GetType()
+	default:
+		return TypeVoid
 	}
 }

@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/seanrogers2657/slang/compiler/ast"
@@ -2128,6 +2129,209 @@ func TestParserGroupingErrors(t *testing.T) {
 
 			if expr != nil && len(p.Errors) == 0 {
 				t.Fatal("expected error, got successful parse")
+			}
+		})
+	}
+}
+
+func TestParserWhenStatement(t *testing.T) {
+	tests := []struct {
+		name      string
+		source    string
+		caseCount int
+	}{
+		{
+			name: "simple when with else",
+			source: `fn main(): void {
+    when {
+        true -> exit(0)
+        else -> exit(1)
+    }
+}`,
+			caseCount: 2,
+		},
+		{
+			name: "when with multiple conditions",
+			source: `fn main(): void {
+    val x = 5
+    when {
+        x > 10 -> exit(100)
+        x > 5 -> exit(50)
+        else -> exit(0)
+    }
+}`,
+			caseCount: 3,
+		},
+		{
+			name: "when with literal true (exhaustive without else)",
+			source: `fn main(): void {
+    val x = 5
+    when {
+        x > 10 -> exit(100)
+        true -> exit(0)
+    }
+}`,
+			caseCount: 2,
+		},
+		{
+			name: "when with block body",
+			source: `fn main(): void {
+    when {
+        true -> {
+            val x = 1
+            exit(x)
+        }
+        else -> exit(0)
+    }
+}`,
+			caseCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			if program == nil {
+				t.Fatal("expected program, got nil")
+			}
+
+			fnDecl, ok := program.Declarations[0].(*ast.FunctionDecl)
+			if !ok {
+				t.Fatal("expected FunctionDecl")
+			}
+
+			// Find the when statement (may not be the first statement)
+			var whenExpr *ast.WhenExpr
+			for _, stmt := range fnDecl.Body.Statements {
+				if we, ok := stmt.(*ast.WhenExpr); ok {
+					whenExpr = we
+					break
+				}
+			}
+
+			if whenExpr == nil {
+				t.Fatal("expected WhenExpr in function body")
+			}
+
+			if len(whenExpr.Cases) != tt.caseCount {
+				t.Errorf("expected %d cases, got %d", tt.caseCount, len(whenExpr.Cases))
+			}
+		})
+	}
+}
+
+func TestParserWhenExpression(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "when as expression in variable",
+			source: `fn main(): void {
+    val x = when {
+        true -> 42
+        else -> 0
+    }
+}`,
+		},
+		{
+			name: "when as expression in return",
+			source: `fn foo(): i64 {
+    return when {
+        true -> 42
+        else -> 0
+    }
+}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			if program == nil {
+				t.Fatal("expected program, got nil")
+			}
+		})
+	}
+}
+
+func TestParserWhenErrors(t *testing.T) {
+	tests := []struct {
+		name          string
+		source        string
+		expectedError string
+	}{
+		{
+			name: "when with subject syntax",
+			source: `fn main(): void {
+    when (x) {
+        true -> exit(0)
+    }
+}`,
+			expectedError: "when (subject) { } syntax is not supported",
+		},
+		{
+			name: "when missing brace",
+			source: `fn main(): void {
+    when
+        true -> exit(0)
+    }
+}`,
+			expectedError: "expected '{' after when",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			_ = p.Parse()
+
+			if len(p.Errors) == 0 {
+				t.Fatal("expected parser error, got none")
+			}
+
+			found := false
+			for _, err := range p.Errors {
+				if strings.Contains(err.Error(), tt.expectedError) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected error containing %q, got errors: %v", tt.expectedError, p.Errors)
 			}
 		})
 	}

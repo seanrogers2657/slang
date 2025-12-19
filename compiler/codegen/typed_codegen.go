@@ -195,6 +195,8 @@ func (g *TypedCodeGenerator) generateStmt(stmt semantic.TypedStatement, ctx *Bas
 		return g.generateBreakStmt(s, ctx)
 	case *semantic.TypedContinueStmt:
 		return g.generateContinueStmt(s, ctx)
+	case *semantic.TypedWhenExpr:
+		return g.generateWhenStmt(s, ctx)
 	default:
 		return "", fmt.Errorf("unknown statement type: %T", s)
 	}
@@ -648,6 +650,10 @@ func (g *TypedCodeGenerator) generateExpr(expr semantic.TypedExpression, ctx *Ba
 	case *semantic.TypedIfStmt:
 		// If expression: generate like a statement, result will be in x2
 		return g.generateIfStmt(e, ctx)
+
+	case *semantic.TypedWhenExpr:
+		// When expression: generate like a statement, result will be in x2
+		return g.generateWhenStmt(e, ctx)
 
 	default:
 		return "", fmt.Errorf("unsupported expression type: %T", expr)
@@ -1132,4 +1138,71 @@ func (g *TypedCodeGenerator) generatePrintBuiltin(call *semantic.TypedCallExpr, 
 
 	EmitPrintInt(&builder)
 	return builder.String(), nil
+}
+
+// generateWhenStmt generates ARM64 code for a when expression/statement
+// Form: when { cond -> body, ... }
+func (g *TypedCodeGenerator) generateWhenStmt(when *semantic.TypedWhenExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+	endLabel := ctx.NextLabel("when_end")
+
+	for i, wcase := range when.Cases {
+		if wcase.IsElse {
+			// Else case: just generate the body
+			bodyCode, err := g.generateWhenCaseBody(wcase.Body, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(bodyCode)
+		} else {
+			// Generate condition
+			condCode, err := g.generateExpr(wcase.Condition, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(condCode)
+
+			// Branch to next case if condition is false
+			nextLabel := ctx.NextLabel(fmt.Sprintf("when_case_%d", i+1))
+			builder.WriteString(fmt.Sprintf("    cbz x2, %s\n", nextLabel))
+
+			// Generate body
+			bodyCode, err := g.generateWhenCaseBody(wcase.Body, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(bodyCode)
+
+			// Jump to end
+			builder.WriteString(fmt.Sprintf("    b %s\n", endLabel))
+
+			// Next case label
+			builder.WriteString(fmt.Sprintf("%s:\n", nextLabel))
+		}
+	}
+
+	// End label
+	builder.WriteString(fmt.Sprintf("%s:\n", endLabel))
+
+	return builder.String(), nil
+}
+
+// generateWhenCaseBody generates code for a when case body
+func (g *TypedCodeGenerator) generateWhenCaseBody(body semantic.TypedStatement, ctx *BaseContext) (string, error) {
+	switch b := body.(type) {
+	case *semantic.TypedBlockStmt:
+		builder := strings.Builder{}
+		for _, stmt := range b.Statements {
+			stmtCode, err := g.generateStmt(stmt, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(stmtCode)
+		}
+		return builder.String(), nil
+	case *semantic.TypedExprStmt:
+		return g.generateExpr(b.Expr, ctx)
+	default:
+		return g.generateStmt(body, ctx)
+	}
 }

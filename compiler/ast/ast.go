@@ -281,6 +281,33 @@ func (c *ContinueStmt) End() Position {
 }
 func (c *ContinueStmt) stmtNode() {}
 
+// WhenCase represents a single case in a when expression
+// Condition is nil for else case, otherwise it's a boolean expression
+type WhenCase struct {
+	Condition    Expression // nil for else case; boolean condition otherwise
+	ConditionPos Position   // position of condition start (or 'else' keyword)
+	Arrow        Position   // position of '->'
+	Body         Statement  // can be BlockStmt or ExprStmt
+	IsElse       bool       // true if this is the else case
+}
+
+func (w *WhenCase) Pos() Position { return w.ConditionPos }
+func (w *WhenCase) End() Position { return w.Body.End() }
+
+// WhenExpr represents a when expression/statement
+// Form: when { cond1 -> body1, cond2 -> body2, else -> body3 }
+type WhenExpr struct {
+	WhenKeyword Position   // position of 'when'
+	LeftBrace   Position   // position of '{'
+	Cases       []WhenCase // list of cases
+	RightBrace  Position   // position of '}'
+}
+
+func (w *WhenExpr) Pos() Position { return w.WhenKeyword }
+func (w *WhenExpr) End() Position { return w.RightBrace }
+func (w *WhenExpr) exprNode()     {} // WhenExpr can be used as an expression
+func (w *WhenExpr) stmtNode()     {} // WhenExpr can also be used as a statement
+
 // ============================================================================
 // Declarations
 // ============================================================================

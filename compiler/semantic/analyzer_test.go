@@ -926,3 +926,153 @@ func TestAnalyzeGroupingExpression(t *testing.T) {
 		test.expectErrorContaining("requires numeric operands")
 	})
 }
+
+func TestAnalyzeWhenStatement(t *testing.T) {
+	t.Run("when with else is exhaustive", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil,
+				whenExpr(
+					whenCase(boolLit("true"), exprStmt(callExpr("exit", intLit("0"))), false),
+					whenCase(nil, exprStmt(callExpr("exit", intLit("1"))), true),
+				),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		for _, err := range errs {
+			if strings.Contains(err.Message, "not exhaustive") {
+				t.Errorf("unexpected exhaustiveness error: %s", err.Message)
+			}
+		}
+	})
+
+	t.Run("when with literal true is exhaustive", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil,
+				whenExpr(
+					whenCase(binExpr(intLit("5"), ">", intLit("10")), exprStmt(callExpr("exit", intLit("100"))), false),
+					whenCase(boolLit("true"), exprStmt(callExpr("exit", intLit("0"))), false),
+				),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		for _, err := range errs {
+			if strings.Contains(err.Message, "not exhaustive") {
+				t.Errorf("unexpected exhaustiveness error: %s", err.Message)
+			}
+		}
+	})
+
+	t.Run("when without else or true is not exhaustive", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil,
+				whenExpr(
+					whenCase(binExpr(intLit("5"), ">", intLit("10")), exprStmt(callExpr("exit", intLit("100"))), false),
+					whenCase(binExpr(intLit("5"), ">", intLit("5")), exprStmt(callExpr("exit", intLit("50"))), false),
+				),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		found := false
+		for _, err := range errs {
+			if strings.Contains(err.Message, "not exhaustive") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected exhaustiveness error")
+		}
+	})
+
+	t.Run("when conditions must be boolean", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil,
+				whenExpr(
+					whenCase(intLit("42"), exprStmt(callExpr("exit", intLit("0"))), false),
+					whenCase(nil, exprStmt(callExpr("exit", intLit("1"))), true),
+				),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		found := false
+		for _, err := range errs {
+			if strings.Contains(err.Message, "when case condition must be boolean") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected boolean condition error")
+		}
+	})
+}
+
+func TestAnalyzeWhenExpression(t *testing.T) {
+	t.Run("when expression without exhaustive branch is error", func(t *testing.T) {
+		test := newTest(t)
+		test.withScope().declare("x", TypeInteger, false)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil,
+				varDecl("y", false, whenExpr(
+					whenCase(binExpr(ident("x"), ">", intLit("10")), exprStmt(intLit("42")), false),
+				)),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		found := false
+		for _, err := range errs {
+			if strings.Contains(err.Message, "not exhaustive") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected exhaustiveness error for when expression")
+		}
+	})
+
+	t.Run("when expression branches must have same type", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil,
+				varDecl("x", false, whenExpr(
+					whenCase(boolLit("true"), exprStmt(intLit("42")), false),
+					whenCase(nil, exprStmt(strLit("hello")), true),
+				)),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		found := false
+		for _, err := range errs {
+			if strings.Contains(err.Message, "different types") || strings.Contains(err.Message, "same type") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected type mismatch error")
+		}
+	})
+
+	t.Run("when expression with consistent types is valid", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil,
+				varDecl("x", false, whenExpr(
+					whenCase(boolLit("true"), exprStmt(intLit("42")), false),
+					whenCase(nil, exprStmt(intLit("0")), true),
+				)),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		for _, err := range errs {
+			if strings.Contains(err.Message, "different types") || strings.Contains(err.Message, "same type") {
+				t.Errorf("unexpected type error: %s", err.Message)
+			}
+		}
+	})
+}

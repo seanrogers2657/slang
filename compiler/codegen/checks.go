@@ -229,3 +229,25 @@ func (c *CheckGenerator) IntOperationChecked(op string, signed bool, line int) (
 		return "", fmt.Errorf("unsupported operation: %s", op)
 	}
 }
+
+// ArrayBoundsCheck generates runtime bounds check for array access.
+// Index should be in x2, checks 0 <= x2 < size.
+// Returns code that panics if out of bounds, otherwise continues.
+func (c *CheckGenerator) ArrayBoundsCheck(size int, line int) string {
+	labelID := c.nextLabel()
+	var b strings.Builder
+
+	// Use unsigned comparison: if index < size (as unsigned), it's in bounds
+	// This handles both negative indices (which become large unsigned) and >= size
+	b.WriteString(fmt.Sprintf("    cmp x2, #%d\n", size))
+	b.WriteString(fmt.Sprintf("    b.lo _continue_%d\n", labelID)) // branch if lower (unsigned <), i.e., in bounds
+
+	// Fall through to panic handler (out of bounds case)
+	b.WriteString(fmt.Sprintf("    mov x0, #%d\n", runtime.ErrIndexOutOfBounds))
+	b.WriteString(fmt.Sprintf("    mov x1, #%d\n", line))
+	b.WriteString("    bl _slang_panic\n")
+
+	b.WriteString(fmt.Sprintf("_continue_%d:\n", labelID))
+
+	return b.String()
+}

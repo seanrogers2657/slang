@@ -408,12 +408,13 @@ func (e *Encoder) encodeMovk(inst *Instruction) ([]byte, error) {
 }
 
 func (e *Encoder) encodeAdd(inst *Instruction) ([]byte, error) {
-	// ADD Xd, Xn, #imm12
-	// Encoding: sf 0 0 10001 shift imm12 Rn Rd
-	// sf=1 for X regs, shift=00, imm12=12-bit immediate
+	// ADD has multiple forms:
+	// 1. ADD Xd, Xn, #imm12          - immediate
+	// 2. ADD Xd, Xn, Xm              - register (no shift)
+	// 3. ADD Xd, Xn, Xm, LSL #amount - shifted register
 
-	if err := validateOperandCount(inst, 3); err != nil {
-		return nil, err
+	if len(inst.Operands) < 3 || len(inst.Operands) > 4 {
+		return nil, errAt(inst, "add requires 3 or 4 operand(s), got %d", len(inst.Operands))
 	}
 
 	rd, err := parseRegOperand(inst, 0, "destination")
@@ -464,13 +465,43 @@ func (e *Encoder) encodeAdd(inst *Instruction) ([]byte, error) {
 		return nil, errAt(inst, "add with label requires @PAGEOFF suffix")
 	}
 
-	// ADD Xd, Xn, Xm (register form)
+	// Register form: ADD Xd, Xn, Xm [, shift #amount]
 	rm, err := parseRegOperand(inst, 2, "operand")
 	if err != nil {
 		return nil, err
 	}
+
 	sf := uint32(1)
-	encoding := (sf << 31) | (0b0001011 << 24) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	shiftType := uint32(0) // 00 = LSL, 01 = LSR, 10 = ASR
+	shiftAmount := uint32(0)
+
+	// Check for optional shift operand (4th operand)
+	if len(inst.Operands) == 4 {
+		if inst.Operands[3].Type != OperandShift {
+			return nil, errAt(inst, "add: expected shift operand, got %v", inst.Operands[3].Type)
+		}
+		switch inst.Operands[3].ShiftType {
+		case "lsl":
+			shiftType = 0
+		case "lsr":
+			shiftType = 1
+		case "asr":
+			shiftType = 2
+		default:
+			return nil, errAt(inst, "add: unsupported shift type '%s'", inst.Operands[3].ShiftType)
+		}
+		amount, err := ParseInt(inst.Operands[3].Value)
+		if err != nil {
+			return nil, errAt(inst, "add shift amount: %w", err)
+		}
+		if amount < 0 || amount > 63 {
+			return nil, errAt(inst, "add shift amount must be 0-63, got %d", amount)
+		}
+		shiftAmount = uint32(amount)
+	}
+
+	// ADD (shifted register): sf 0 0 01011 shift 0 Rm imm6 Rn Rd
+	encoding := (sf << 31) | (0b0001011 << 24) | (shiftType << 22) | (uint32(rm) << 16) | (shiftAmount << 10) | (uint32(rn) << 5) | uint32(rd)
 
 	return EncodeLittleEndian(encoding), nil
 }

@@ -133,6 +133,29 @@ func (f *FieldAccessExpr) End() Position {
 }
 func (f *FieldAccessExpr) exprNode() {}
 
+// ArrayLiteralExpr represents an array literal (e.g., [1, 2, 3])
+type ArrayLiteralExpr struct {
+	LeftBracket  Position     // position of '['
+	Elements     []Expression // element expressions
+	RightBracket Position     // position of ']'
+}
+
+func (a *ArrayLiteralExpr) Pos() Position { return a.LeftBracket }
+func (a *ArrayLiteralExpr) End() Position { return a.RightBracket }
+func (a *ArrayLiteralExpr) exprNode()     {}
+
+// IndexExpr represents an array index access (e.g., arr[0])
+type IndexExpr struct {
+	Array        Expression // the array expression
+	LeftBracket  Position   // position of '['
+	Index        Expression // the index expression
+	RightBracket Position   // position of ']'
+}
+
+func (i *IndexExpr) Pos() Position { return i.Array.Pos() }
+func (i *IndexExpr) End() Position { return i.RightBracket }
+func (i *IndexExpr) exprNode()     {}
+
 // ============================================================================
 // Statements
 // ============================================================================
@@ -205,6 +228,20 @@ type FieldAssignStmt struct {
 func (f *FieldAssignStmt) Pos() Position { return f.Object.Pos() }
 func (f *FieldAssignStmt) End() Position { return f.Value.End() }
 func (f *FieldAssignStmt) stmtNode()     {}
+
+// IndexAssignStmt represents an array index assignment (e.g., arr[0] = 5)
+type IndexAssignStmt struct {
+	Array        Expression // the array expression
+	LeftBracket  Position   // position of '['
+	Index        Expression // the index expression
+	RightBracket Position   // position of ']'
+	Equals       Position   // position of '='
+	Value        Expression // the value being assigned
+}
+
+func (i *IndexAssignStmt) Pos() Position { return i.Array.Pos() }
+func (i *IndexAssignStmt) End() Position { return i.Value.End() }
+func (i *IndexAssignStmt) stmtNode()     {}
 
 // ReturnStmt represents a return statement (e.g., return x + 1)
 type ReturnStmt struct {

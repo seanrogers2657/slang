@@ -53,6 +53,10 @@ func (info *ProgramInfo) collectFromTypedStatement(stmt semantic.TypedStatement,
 	case *semantic.TypedFieldAssignStmt:
 		info.collectFromTypedExpr(s.Object, floatIdx, stringIdx)
 		info.collectFromTypedExpr(s.Value, floatIdx, stringIdx)
+	case *semantic.TypedIndexAssignStmt:
+		info.collectFromTypedExpr(s.Array, floatIdx, stringIdx)
+		info.collectFromTypedExpr(s.Index, floatIdx, stringIdx)
+		info.collectFromTypedExpr(s.Value, floatIdx, stringIdx)
 	case *semantic.TypedReturnStmt:
 		if s.Value != nil {
 			info.collectFromTypedExpr(s.Value, floatIdx, stringIdx)
@@ -176,6 +180,23 @@ func (info *ProgramInfo) collectFromTypedExpr(expr semantic.TypedExpression, flo
 		// Collect from the object expression (though usually just identifiers)
 		info.collectFromTypedExpr(e.Object, floatIdx, stringIdx)
 
+	case *semantic.TypedArrayLiteralExpr:
+		// Collect literals from array elements
+		for _, elem := range e.Elements {
+			info.collectFromTypedExpr(elem, floatIdx, stringIdx)
+		}
+
+	case *semantic.TypedIndexExpr:
+		// Collect from array and index expressions
+		info.collectFromTypedExpr(e.Array, floatIdx, stringIdx)
+		info.collectFromTypedExpr(e.Index, floatIdx, stringIdx)
+
+	case *semantic.TypedLenExpr:
+		// Collect from array expression
+		if e.Array != nil {
+			info.collectFromTypedExpr(e.Array, floatIdx, stringIdx)
+		}
+
 	case *semantic.TypedWhenExpr:
 		// When expression: collect from all cases
 		for _, wcase := range e.Cases {
@@ -222,6 +243,15 @@ func countTypedVarsInStmt(stmt semantic.TypedStatement) int {
 		// Struct types take one slot per field (recursively counting nested structs)
 		if structType, ok := s.DeclaredType.(semantic.StructType); ok {
 			return countStructSlots(structType)
+		}
+		// Array types take slots based on element type
+		if arrayType, ok := s.DeclaredType.(semantic.ArrayType); ok {
+			// For struct arrays, each element takes multiple slots
+			if structType, ok := arrayType.ElementType.(semantic.StructType); ok {
+				return arrayType.Size * countStructSlots(structType)
+			}
+			// Primitive arrays: one slot per element
+			return arrayType.Size
 		}
 		return 1
 	case *semantic.TypedIfStmt:

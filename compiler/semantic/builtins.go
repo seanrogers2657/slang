@@ -8,6 +8,8 @@ type BuiltinFunc struct {
 	// AcceptedTypes allows a parameter to accept multiple types (e.g., print accepts i64 or string)
 	// Key is parameter index, value is slice of accepted types
 	AcceptedTypes map[int][]Type
+	// IsArrayLen indicates this is the special len() function for arrays
+	IsArrayLen bool
 }
 
 // Builtins is the registry of all built-in functions
@@ -24,5 +26,11 @@ var Builtins = map[string]BuiltinFunc{
 		AcceptedTypes: map[int][]Type{
 			0: {TypeI64, TypeString, TypeBoolean}, // print accepts i64, string, or bool
 		},
+	},
+	"len": {
+		ParamTypes: []Type{TypeError}, // special: accepts any array type
+		ReturnType: TypeI64,
+		NoReturn:   false,
+		IsArrayLen: true,
 	},
 }

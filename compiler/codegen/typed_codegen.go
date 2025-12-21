@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/seanrogers2657/slang/compiler/ast"
@@ -185,6 +186,8 @@ func (g *TypedCodeGenerator) generateStmt(stmt semantic.TypedStatement, ctx *Bas
 		return g.generateAssignStmt(s, ctx)
 	case *semantic.TypedFieldAssignStmt:
 		return g.generateFieldAssignStmt(s, ctx)
+	case *semantic.TypedIndexAssignStmt:
+		return g.generateIndexAssignStmt(s, ctx)
 	case *semantic.TypedReturnStmt:
 		return g.generateReturnStmt(s, ctx)
 	case *semantic.TypedIfStmt:
@@ -208,6 +211,11 @@ func (g *TypedCodeGenerator) generateVarDecl(stmt *semantic.TypedVarDeclStmt, ct
 	// Check if this is a struct type
 	if structType, ok := stmt.DeclaredType.(semantic.StructType); ok {
 		return g.generateStructVarDecl(stmt, structType, ctx)
+	}
+
+	// Check if this is an array type
+	if arrayType, ok := stmt.DeclaredType.(semantic.ArrayType); ok {
+		return g.generateArrayVarDecl(stmt, arrayType, ctx)
 	}
 
 	code, err := g.generateExpr(stmt.Initializer, ctx)
@@ -314,6 +322,202 @@ func (g *TypedCodeGenerator) generateStructFieldsInline(structLit *semantic.Type
 	}
 
 	return builder.String(), nil
+}
+
+// getElementSlotCount returns the number of 16-byte stack slots needed for one array element.
+func (g *TypedCodeGenerator) getElementSlotCount(elementType semantic.Type) int {
+	if structType, ok := elementType.(semantic.StructType); ok {
+		return g.countStructSlots(structType)
+	}
+	return 1 // primitives take 1 slot
+}
+
+// generateArrayVarDecl generates code for declaring an array variable.
+// Each array element is stored in consecutive 16-byte aligned stack slots.
+// For struct elements, each element takes multiple slots based on struct size.
+func (g *TypedCodeGenerator) generateArrayVarDecl(stmt *semantic.TypedVarDeclStmt, arrayType semantic.ArrayType, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Get the array literal expression
+	arrayLit, ok := stmt.Initializer.(*semantic.TypedArrayLiteralExpr)
+	if !ok {
+		return "", fmt.Errorf("array variable must be initialized with array literal")
+	}
+
+	// Calculate element size in slots
+	elementSlots := g.getElementSlotCount(arrayType.ElementType)
+	totalSlots := arrayType.Size * elementSlots
+
+	// Allocate space for all elements (first slot is allocated by DeclareVariable)
+	baseOffset := ctx.DeclareVariable(stmt.Name, stmt.DeclaredType)
+
+	// Allocate additional slots for remaining elements
+	for i := 1; i < totalSlots; i++ {
+		ctx.stackOffset += StackAlignment
+	}
+
+	// Generate and store each element
+	currentOffset := baseOffset
+	for _, elem := range arrayLit.Elements {
+		// Check if element is a struct literal
+		if structLit, ok := elem.(*semantic.TypedStructLiteralExpr); ok {
+			code, err := g.generateStructFieldsInline(structLit, currentOffset, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(code)
+		} else {
+			// Primitive element
+			code, err := g.generateExpr(elem, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(code)
+
+			if semantic.IsFloatType(arrayType.ElementType) {
+				builder.WriteString(fmt.Sprintf("    str d0, [x29, #-%d]\n", currentOffset))
+			} else {
+				EmitStoreToStack(&builder, "x2", currentOffset)
+			}
+		}
+
+		currentOffset += elementSlots * StackAlignment
+	}
+
+	return builder.String(), nil
+}
+
+// generateIndexAssignStmt generates code for array index assignment (e.g., arr[0] = 5)
+func (g *TypedCodeGenerator) generateIndexAssignStmt(stmt *semantic.TypedIndexAssignStmt, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Get base offset from array variable
+	baseOffset, err := g.getArrayBaseOffset(stmt.Array, ctx)
+	if err != nil {
+		return "", err
+	}
+
+	// Get element size from array type
+	arrayType := stmt.Array.GetType().(semantic.ArrayType)
+	elementSizeBytes := g.getElementSlotCount(arrayType.ElementType) * StackAlignment
+
+	// Optimization: for literal indices, compute offset at compile time
+	// and skip runtime bounds check (already validated in semantic analysis)
+	if litIndex, ok := tryGetLiteralIndex(stmt.Index); ok {
+		// Generate the value expression (result in x2 or d0)
+		valueCode, err := g.generateExpr(stmt.Value, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(valueCode)
+
+		// Compile-time offset: baseOffset + index * elementSizeBytes
+		offset := baseOffset + litIndex*elementSizeBytes
+
+		// Store directly at the computed offset
+		EmitStoreToStack(&builder, "x2", offset)
+		return builder.String(), nil
+	}
+
+	// Dynamic index case
+	// Generate the value expression (result in x2 or d0)
+	valueCode, err := g.generateExpr(stmt.Value, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(valueCode)
+
+	// Save value to stack temporarily
+	builder.WriteString("    str x2, [sp, #-16]!\n")
+
+	// Generate the index expression (result in x2)
+	indexCode, err := g.generateExpr(stmt.Index, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(indexCode)
+
+	// Runtime bounds check
+	builder.WriteString(g.checkGen.ArrayBoundsCheck(stmt.ArraySize, stmt.LeftBracket.Line))
+
+	// Restore value from stack
+	builder.WriteString("    ldr x5, [sp], #16\n")
+
+	// Calculate element address (result in x4)
+	// Uses optimized shifted-add for power-of-2 element sizes
+	emitArrayElementAddress(&builder, baseOffset, elementSizeBytes)
+
+	// Store element at computed address
+	builder.WriteString("    str x5, [x4]\n")
+
+	return builder.String(), nil
+}
+
+// getArrayBaseOffset returns the stack offset for an array variable
+func (g *TypedCodeGenerator) getArrayBaseOffset(expr semantic.TypedExpression, ctx *BaseContext) (int, error) {
+	switch e := expr.(type) {
+	case *semantic.TypedIdentifierExpr:
+		slot, ok := ctx.GetVariable(e.Name)
+		if !ok {
+			return 0, fmt.Errorf("undefined variable: %s", e.Name)
+		}
+		return slot.Offset, nil
+	default:
+		return 0, fmt.Errorf("unsupported array expression type for indexing: %T", expr)
+	}
+}
+
+// log2IfPowerOf2 returns the log2 of n if n is a power of 2, otherwise -1.
+func log2IfPowerOf2(n int) int {
+	if n <= 0 || (n&(n-1)) != 0 {
+		return -1
+	}
+	log := 0
+	for n > 1 {
+		n >>= 1
+		log++
+	}
+	return log
+}
+
+// emitArrayElementAddress generates code to compute the address of an array element.
+// Expects the index to be in x2. After this code runs:
+// - x4 contains the computed address (x29 - baseOffset - index*elementSize)
+// The index in x2 is preserved.
+// elementSizeBytes is the size of each element in bytes (16 for primitives, N*16 for structs).
+func emitArrayElementAddress(builder *strings.Builder, baseOffset int, elementSizeBytes int) {
+	shift := log2IfPowerOf2(elementSizeBytes)
+	if shift >= 0 {
+		// Power-of-2 size: use shifted register addressing
+		// x4 = x29 - baseOffset (element 0 address)
+		builder.WriteString(fmt.Sprintf("    sub x4, x29, #%d\n", baseOffset))
+		// x3 = -index
+		builder.WriteString("    neg x3, x2\n")
+		// x4 = x4 + (x3 << shift) = element address
+		builder.WriteString(fmt.Sprintf("    add x4, x4, x3, lsl #%d\n", shift))
+	} else {
+		// Non-power-of-2: use multiply (fallback, shouldn't happen with 16-byte aligned elements)
+		builder.WriteString(fmt.Sprintf("    mov x3, #%d\n", elementSizeBytes))
+		builder.WriteString("    mul x3, x2, x3\n")
+		builder.WriteString(fmt.Sprintf("    mov x4, #%d\n", baseOffset))
+		builder.WriteString("    add x3, x4, x3\n")
+		builder.WriteString("    sub x4, x29, x3\n")
+	}
+}
+
+// tryGetLiteralIndex checks if the expression is a literal integer and returns
+// the value along with a success flag. Used to optimize array access with
+// compile-time known indices.
+func tryGetLiteralIndex(expr semantic.TypedExpression) (int, bool) {
+	lit, ok := expr.(*semantic.TypedLiteralExpr)
+	if !ok || lit.LitType != ast.LiteralTypeInteger {
+		return 0, false
+	}
+	val, err := strconv.ParseInt(lit.Value, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return int(val), true
 }
 
 func (g *TypedCodeGenerator) generateAssignStmt(stmt *semantic.TypedAssignStmt, ctx *BaseContext) (string, error) {
@@ -640,6 +844,15 @@ func (g *TypedCodeGenerator) generateExpr(expr semantic.TypedExpression, ctx *Ba
 
 	case *semantic.TypedFieldAccessExpr:
 		return g.generateFieldAccess(e, ctx)
+
+	case *semantic.TypedArrayLiteralExpr:
+		return g.generateArrayLiteral(e, ctx)
+
+	case *semantic.TypedIndexExpr:
+		return g.generateIndexExpr(e, ctx)
+
+	case *semantic.TypedLenExpr:
+		return g.generateLenExpr(e, ctx)
 
 	case *semantic.TypedBinaryExpr:
 		return g.generateBinaryExpr(e, ctx)
@@ -975,6 +1188,26 @@ func (g *TypedCodeGenerator) generateOperandToReg(expr semantic.TypedExpression,
 			EmitMoveReg(&builder, reg, "x2")
 		}
 
+	case *semantic.TypedIndexExpr:
+		code, err := g.generateIndexExpr(e, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+		if reg != "x2" {
+			EmitMoveReg(&builder, reg, "x2")
+		}
+
+	case *semantic.TypedLenExpr:
+		code, err := g.generateLenExpr(e, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+		if reg != "x2" {
+			EmitMoveReg(&builder, reg, "x2")
+		}
+
 	default:
 		return "", fmt.Errorf("unsupported operand type: %T", expr)
 	}
@@ -997,7 +1230,60 @@ func (g *TypedCodeGenerator) generateStructLiteral(expr *semantic.TypedStructLit
 func (g *TypedCodeGenerator) generateFieldAccess(expr *semantic.TypedFieldAccessExpr, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
-	// Get the field offset
+	// Check if the object is an index expression (e.g., arr[0].x)
+	if indexExpr, ok := expr.Object.(*semantic.TypedIndexExpr); ok {
+		// Get the field offset within the struct
+		structType := indexExpr.Type.(semantic.StructType)
+		fieldByteOffset := g.getFieldByteOffset(structType, expr.Field)
+		if fieldByteOffset < 0 {
+			return "", fmt.Errorf("struct '%s' has no field '%s'", structType.Name, expr.Field)
+		}
+
+		// Optimization: for literal indices, compute entire offset at compile time
+		if litIndex, ok := tryGetLiteralIndex(indexExpr.Index); ok {
+			baseOffset, err := g.getArrayBaseOffset(indexExpr.Array, ctx)
+			if err != nil {
+				return "", err
+			}
+			arrayType := indexExpr.Array.GetType().(semantic.ArrayType)
+			elementSizeBytes := g.getElementSlotCount(arrayType.ElementType) * StackAlignment
+
+			// Compile-time offset: baseOffset + index * elementSizeBytes + fieldByteOffset
+			offset := baseOffset + litIndex*elementSizeBytes + fieldByteOffset
+
+			// Load directly from the computed offset
+			if semantic.IsFloatType(expr.Type) {
+				builder.WriteString(fmt.Sprintf("    ldr d0, [x29, #-%d]\n", offset))
+			} else {
+				EmitLoadFromStack(&builder, "x2", offset)
+			}
+			return builder.String(), nil
+		}
+
+		// Dynamic index: generate the index expression (puts element address in x4)
+		indexCode, err := g.generateIndexExpr(indexExpr, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(indexCode)
+
+		// Subtract field offset from the element address in x4
+		// (fields are stored at negative offsets from the base)
+		if fieldByteOffset > 0 {
+			builder.WriteString(fmt.Sprintf("    sub x4, x4, #%d\n", fieldByteOffset))
+		}
+
+		// Load the value from the computed address
+		if semantic.IsFloatType(expr.Type) {
+			builder.WriteString("    ldr d0, [x4]\n")
+		} else {
+			builder.WriteString("    ldr x2, [x4]\n")
+		}
+
+		return builder.String(), nil
+	}
+
+	// Static case: struct at known stack location
 	fieldOffset, err := g.getFieldOffset(expr.Object, expr.Field, ctx)
 	if err != nil {
 		return "", err
@@ -1010,6 +1296,83 @@ func (g *TypedCodeGenerator) generateFieldAccess(expr *semantic.TypedFieldAccess
 		EmitLoadFromStack(&builder, "x2", fieldOffset)
 	}
 
+	return builder.String(), nil
+}
+
+// generateArrayLiteral generates code for an array literal expression.
+// Note: When used in variable declaration, generateArrayVarDecl handles it directly.
+func (g *TypedCodeGenerator) generateArrayLiteral(expr *semantic.TypedArrayLiteralExpr, ctx *BaseContext) (string, error) {
+	// Array literals as standalone expressions are not supported
+	// The main use case (val arr = [1, 2, 3]) is handled by generateArrayVarDecl
+	return "", fmt.Errorf("array literals as expressions are not yet supported; use in variable declaration")
+}
+
+// generateIndexExpr generates code for array index access (e.g., arr[0])
+func (g *TypedCodeGenerator) generateIndexExpr(expr *semantic.TypedIndexExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Get base offset from array variable
+	baseOffset, err := g.getArrayBaseOffset(expr.Array, ctx)
+	if err != nil {
+		return "", err
+	}
+
+	// Get element size from array type
+	arrayType := expr.Array.GetType().(semantic.ArrayType)
+	elementSizeBytes := g.getElementSlotCount(arrayType.ElementType) * StackAlignment
+
+	// Optimization: for literal indices, compute offset at compile time
+	// and skip runtime bounds check (already validated in semantic analysis)
+	if litIndex, ok := tryGetLiteralIndex(expr.Index); ok {
+		// Compile-time offset: baseOffset + index * elementSizeBytes
+		offset := baseOffset + litIndex*elementSizeBytes
+
+		// For struct elements, compute address into x4 for field access
+		// For primitive elements, load directly
+		if _, isStruct := expr.Type.(semantic.StructType); isStruct {
+			// Struct access: put element address in x4 for subsequent field access
+			builder.WriteString(fmt.Sprintf("    sub x4, x29, #%d\n", offset))
+		} else if semantic.IsFloatType(expr.Type) {
+			builder.WriteString(fmt.Sprintf("    ldr d0, [x29, #-%d]\n", offset))
+		} else {
+			EmitLoadFromStack(&builder, "x2", offset)
+		}
+		return builder.String(), nil
+	}
+
+	// Dynamic index: generate index expression and runtime bounds check
+	indexCode, err := g.generateExpr(expr.Index, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(indexCode)
+
+	// Runtime bounds check
+	builder.WriteString(g.checkGen.ArrayBoundsCheck(expr.ArraySize, expr.LeftBracket.Line))
+
+	// Calculate element address (result in x4)
+	// Uses optimized shifted-add for power-of-2 element sizes
+	emitArrayElementAddress(&builder, baseOffset, elementSizeBytes)
+
+	// For struct elements, we don't load - the address in x4 is used by field access
+	// For primitive elements, load the value
+	if _, isStruct := expr.Type.(semantic.StructType); isStruct {
+		// Struct access: leave address in x4 for subsequent field access
+		// This case is handled specially when accessed via TypedFieldAccessExpr
+	} else if semantic.IsFloatType(expr.Type) {
+		builder.WriteString("    ldr d0, [x4]\n")
+	} else {
+		builder.WriteString("    ldr x2, [x4]\n")
+	}
+
+	return builder.String(), nil
+}
+
+// generateLenExpr generates code for len() builtin on arrays
+func (g *TypedCodeGenerator) generateLenExpr(expr *semantic.TypedLenExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+	// len() is a compile-time constant for fixed-size arrays
+	EmitMoveImm(&builder, "x2", fmt.Sprintf("%d", expr.ArraySize))
 	return builder.String(), nil
 }
 

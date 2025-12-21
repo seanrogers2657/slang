@@ -406,6 +406,13 @@ func (p *parser) ParseStatement() ast.Statement {
 		}
 	}
 
+	// Check if this is an index assignment (index expression followed by '=')
+	if indexExpr, ok := expr.(*ast.IndexExpr); ok {
+		if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeAssign {
+			return p.parseIndexAssignment(indexExpr)
+		}
+	}
+
 	// Otherwise it's an expression statement
 	return &ast.ExprStmt{Expr: expr}
 }
@@ -436,15 +443,11 @@ func (p *parser) ParseVarDecl(mutable bool) ast.Statement {
 		colonPos = p.CurrentToken().Pos
 		p.advance() // consume ':'
 
-		// Expect type identifier
-		if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-			p.addError(fmt.Sprintf("expected type after ':', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		// Parse type name (may include generic like Array<i64>)
+		typeName, typePos = p.parseTypeName()
+		if typeName == "" {
 			return nil
 		}
-
-		typeName = p.CurrentToken().Value
-		typePos = p.CurrentToken().Pos
-		p.advance() // consume type
 	}
 
 	// Expect '='
@@ -517,6 +520,79 @@ func (p *parser) parseFieldAssignment(fieldAccess *ast.FieldAccessExpr) ast.Stat
 		FieldPos: fieldAccess.FieldPos,
 		Equals:   equalsPos,
 		Value:    value,
+	}
+}
+
+// parseIndexAssignment parses an index assignment: arr[idx] = value
+func (p *parser) parseIndexAssignment(indexExpr *ast.IndexExpr) ast.Statement {
+	equalsPos := p.CurrentToken().Pos
+	p.advance() // consume '='
+
+	value := p.parseExpression(precedenceLowest)
+	if value == nil {
+		p.addError("expected expression after '='", equalsPos)
+		return nil
+	}
+
+	return &ast.IndexAssignStmt{
+		Array:        indexExpr.Array,
+		LeftBracket:  indexExpr.LeftBracket,
+		Index:        indexExpr.Index,
+		RightBracket: indexExpr.RightBracket,
+		Equals:       equalsPos,
+		Value:        value,
+	}
+}
+
+// parseArrayLiteral parses an array literal: [elem, elem, ...]
+func (p *parser) parseArrayLiteral() ast.Expression {
+	leftBracket := p.CurrentToken().Pos
+	p.advance() // consume '['
+
+	// Skip newlines after '['
+	p.skipNewlines()
+
+	elements := []ast.Expression{}
+
+	// Parse elements
+	if p.CurrentToken().Type != lexer.TokenTypeRBracket {
+		elem := p.parseExpression(precedenceLowest)
+		if elem != nil {
+			elements = append(elements, elem)
+		}
+
+		// Parse remaining elements
+		for p.CurrentToken().Type == lexer.TokenTypeComma {
+			p.advance() // consume ','
+			p.skipNewlines()
+
+			// Handle trailing comma
+			if p.CurrentToken().Type == lexer.TokenTypeRBracket {
+				break
+			}
+
+			elem := p.parseExpression(precedenceLowest)
+			if elem != nil {
+				elements = append(elements, elem)
+			}
+		}
+	}
+
+	p.skipNewlines()
+
+	// Expect ']'
+	if p.CurrentToken().Type != lexer.TokenTypeRBracket {
+		p.addError(fmt.Sprintf("expected ']' to close array literal, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	rightBracket := p.CurrentToken().Pos
+	p.advance() // consume ']'
+
+	return &ast.ArrayLiteralExpr{
+		LeftBracket:  leftBracket,
+		Elements:     elements,
+		RightBracket: rightBracket,
 	}
 }
 
@@ -821,6 +897,34 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 			continue
 		}
 
+		// Handle index access (arr[idx]) - postfix operator with high precedence
+		if p.CurrentToken().Type == lexer.TokenTypeLBracket {
+			leftBracket := p.CurrentToken().Pos
+			p.advance() // consume '['
+
+			index := p.parseExpression(precedenceLowest)
+			if index == nil {
+				p.addError("expected index expression", leftBracket)
+				return nil
+			}
+
+			if p.CurrentToken().Type != lexer.TokenTypeRBracket {
+				p.addError(fmt.Sprintf("expected ']' after index, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+				return nil
+			}
+
+			rightBracket := p.CurrentToken().Pos
+			p.advance() // consume ']'
+
+			left = &ast.IndexExpr{
+				Array:        left,
+				LeftBracket:  leftBracket,
+				Index:        index,
+				RightBracket: rightBracket,
+			}
+			continue
+		}
+
 		// Handle binary operators
 		if p.currentPrecedence() <= minPrec {
 			break
@@ -860,6 +964,11 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 
 // parsePrimary parses primary expressions (literals, identifiers, grouping, etc.)
 func (p *parser) parsePrimary() ast.Expression {
+	// Check for array literal
+	if p.CurrentToken().Type == lexer.TokenTypeLBracket {
+		return p.parseArrayLiteral()
+	}
+
 	// Check for grouping expression (parenthesized expression)
 	if p.CurrentToken().Type == lexer.TokenTypeLParen {
 		leftParen := p.CurrentToken().Pos
@@ -1274,15 +1383,11 @@ func (p *parser) parseParameter() *ast.Parameter {
 	colonPos := p.CurrentToken().Pos
 	p.advance() // consume ':'
 
-	// Expect type identifier
-	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-		p.addError(fmt.Sprintf("expected parameter type, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+	// Parse type name (may include generic like Array<i64>)
+	typeName, typePos := p.parseTypeName()
+	if typeName == "" {
 		return nil
 	}
-
-	typeName := p.CurrentToken().Value
-	typePos := p.CurrentToken().Pos
-	p.advance() // consume type
 
 	return &ast.Parameter{
 		Name:     name,
@@ -1291,6 +1396,42 @@ func (p *parser) parseParameter() *ast.Parameter {
 		TypeName: typeName,
 		TypePos:  typePos,
 	}
+}
+
+// parseTypeName parses a type name, including generic types like Array<i64>
+func (p *parser) parseTypeName() (string, ast.Position) {
+	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+		p.addError(fmt.Sprintf("expected type name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return "", ast.Position{}
+	}
+
+	typeName := p.CurrentToken().Value
+	typePos := p.CurrentToken().Pos
+	p.advance() // consume type identifier
+
+	// Check for generic type: Array<T>
+	if typeName == "Array" && p.CurrentToken().Type == lexer.TokenTypeLessThan {
+		p.advance() // consume '<'
+
+		if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+			p.addError(fmt.Sprintf("expected element type in Array<T>, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+			return "", typePos
+		}
+
+		elementType := p.CurrentToken().Value
+		p.advance() // consume element type
+
+		if p.CurrentToken().Type != lexer.TokenTypeGreaterThan {
+			p.addError(fmt.Sprintf("expected '>' after element type, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+			return "", typePos
+		}
+		p.advance() // consume '>'
+
+		// Encode as "Array<elementType>" for the semantic analyzer
+		typeName = fmt.Sprintf("Array<%s>", elementType)
+	}
+
+	return typeName, typePos
 }
 
 // ParseStructDecl parses a struct declaration: struct <name>(fields)

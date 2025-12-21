@@ -20,8 +20,10 @@ const (
 	ErrDivByZero RuntimeError = 7 // division by zero
 	ErrModByZero RuntimeError = 8 // modulo by zero
 
+	// Array errors
+	ErrIndexOutOfBounds RuntimeError = 9 // array index out of bounds
+
 	// Reserved for future use
-	// ErrIndexOutOfBounds RuntimeError = 9
 	// ErrNilPointer       RuntimeError = 10
 	// ErrStackOverflow    RuntimeError = 11
 )
@@ -36,6 +38,7 @@ var ErrorMessages = map[RuntimeError]string{
 	ErrOverflowMulUnsigned:  "unsigned overflow: multiplication",
 	ErrDivByZero:            "division by zero",
 	ErrModByZero:            "modulo by zero",
+	ErrIndexOutOfBounds:     "array index out of bounds",
 }
 
 // String returns the human-readable message for an error code

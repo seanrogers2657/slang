@@ -72,6 +72,8 @@ const (
 	TokenTypeSemicolon
 	TokenTypeWhen
 	TokenTypeArrow
+	TokenTypeLBracket
+	TokenTypeRBracket
 )
 
 // String returns a human-readable name for the token type
@@ -163,6 +165,10 @@ func (t TokenType) String() string {
 		return "WHEN"
 	case TokenTypeArrow:
 		return "ARROW"
+	case TokenTypeLBracket:
+		return "LBRACKET"
+	case TokenTypeRBracket:
+		return "RBRACKET"
 	default:
 		return "UNKNOWN"
 	}
@@ -460,6 +466,14 @@ func (p *lexer) Parse() {
 		} else if b == '}' {
 			pos := p.currentPos()
 			p.Tokens = append(p.Tokens, Token{Type: TokenTypeRBrace, Value: "}", Pos: pos})
+			p.advance()
+		} else if b == '[' {
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeLBracket, Value: "[", Pos: pos})
+			p.advance()
+		} else if b == ']' {
+			pos := p.currentPos()
+			p.Tokens = append(p.Tokens, Token{Type: TokenTypeRBracket, Value: "]", Pos: pos})
 			p.advance()
 		} else if b == ',' {
 			pos := p.currentPos()

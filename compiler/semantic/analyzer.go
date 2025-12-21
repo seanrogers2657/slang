@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/big"
 	"strconv"
+	"strings"
 
 	"github.com/seanrogers2657/slang/compiler/ast"
 	"github.com/seanrogers2657/slang/errors"
@@ -212,6 +213,17 @@ func (a *Analyzer) registerStruct(s *ast.StructDecl) {
 
 // resolveTypeName converts a type name string to a Type, checking both primitive types and structs
 func (a *Analyzer) resolveTypeName(name string, pos ast.Position) Type {
+	// Check for Array<T> syntax
+	if strings.HasPrefix(name, "Array<") && strings.HasSuffix(name, ">") {
+		elementTypeName := name[6 : len(name)-1] // extract T from Array<T>
+		elementType := a.resolveTypeName(elementTypeName, pos)
+		if _, isErr := elementType.(ErrorType); isErr {
+			return TypeError
+		}
+		// Return ArrayType with unknown size (will be inferred from literal)
+		return ArrayType{ElementType: elementType, Size: ArraySizeUnknown}
+	}
+
 	// Try primitive types first
 	t := TypeFromName(name)
 	if _, isErr := t.(ErrorType); !isErr {
@@ -231,6 +243,17 @@ func (a *Analyzer) resolveTypeName(name string, pos ast.Position) Type {
 // resolveTypeNameNoError converts a type name string to a Type without adding errors
 // (used when caller wants to handle errors itself)
 func (a *Analyzer) resolveTypeNameNoError(name string) Type {
+	// Check for Array<T> syntax
+	if strings.HasPrefix(name, "Array<") && strings.HasSuffix(name, ">") {
+		elementTypeName := name[6 : len(name)-1] // extract T from Array<T>
+		elementType := a.resolveTypeNameNoError(elementTypeName)
+		if _, isErr := elementType.(ErrorType); isErr {
+			return TypeError
+		}
+		// Return ArrayType with unknown size (will be inferred from literal)
+		return ArrayType{ElementType: elementType, Size: ArraySizeUnknown}
+	}
+
 	// Try primitive types first
 	t := TypeFromName(name)
 	if _, isErr := t.(ErrorType); !isErr {
@@ -402,6 +425,8 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 		return a.analyzeAssignStatement(s)
 	case *ast.FieldAssignStmt:
 		return a.analyzeFieldAssignStatement(s)
+	case *ast.IndexAssignStmt:
+		return a.analyzeIndexAssignStatement(s)
 	case *ast.ReturnStmt:
 		return a.analyzeReturnStatement(s)
 	case *ast.IfStmt:
@@ -491,17 +516,17 @@ func (a *Analyzer) checkTypeCompatibility(declaredType, initType Type, typedInit
 	// Check for literal bounds when assigning to a specific type
 	if litExpr, ok := typedInit.(*TypedLiteralExpr); ok {
 		// Integer literal -> any integer type (with bounds check)
-		if litExpr.LitType == ast.LiteralTypeInteger && isIntegerType(declaredType) {
+		if litExpr.LitType == ast.LiteralTypeInteger && IsIntegerType(declaredType) {
 			return a.checkIntegerBounds(litExpr.Value, declaredType, pos)
 		}
 
 		// Float literal -> any float type (with bounds check)
-		if litExpr.LitType == ast.LiteralTypeFloat && isFloatType(declaredType) {
+		if litExpr.LitType == ast.LiteralTypeFloat && IsFloatType(declaredType) {
 			return a.checkFloatBounds(litExpr.Value, declaredType, pos)
 		}
 
 		// Integer literal cannot be assigned to float type
-		if litExpr.LitType == ast.LiteralTypeInteger && isFloatType(declaredType) {
+		if litExpr.LitType == ast.LiteralTypeInteger && IsFloatType(declaredType) {
 			a.addError(
 				fmt.Sprintf("cannot assign integer literal to %s", declaredType.String()),
 				pos, pos,
@@ -510,7 +535,7 @@ func (a *Analyzer) checkTypeCompatibility(declaredType, initType Type, typedInit
 		}
 
 		// Float literal cannot be assigned to integer type
-		if litExpr.LitType == ast.LiteralTypeFloat && isIntegerType(declaredType) {
+		if litExpr.LitType == ast.LiteralTypeFloat && IsIntegerType(declaredType) {
 			a.addError(
 				fmt.Sprintf("cannot assign float literal to %s", declaredType.String()),
 				pos, pos,
@@ -525,6 +550,35 @@ func (a *Analyzer) checkTypeCompatibility(declaredType, initType Type, typedInit
 		pos, pos,
 	)
 	return false
+}
+
+// checkLiteralIndexBounds checks if a literal index is within array bounds at compile time.
+// If the index is not a literal, no check is performed (runtime check will handle it).
+func (a *Analyzer) checkLiteralIndexBounds(index TypedExpression, arraySize int, startPos, endPos ast.Position) {
+	// Only check literal integer indices
+	lit, ok := index.(*TypedLiteralExpr)
+	if !ok || lit.LitType != ast.LiteralTypeInteger {
+		return
+	}
+
+	// Parse the index value
+	indexVal, err := strconv.ParseInt(lit.Value, 10, 64)
+	if err != nil {
+		return // Invalid literal, other errors will catch this
+	}
+
+	// Check bounds
+	if indexVal < 0 {
+		a.addError(
+			fmt.Sprintf("array index %d is negative", indexVal),
+			startPos, endPos,
+		).WithHint("array indices must be non-negative")
+	} else if indexVal >= int64(arraySize) {
+		a.addError(
+			fmt.Sprintf("array index %d is out of bounds for array of size %d", indexVal, arraySize),
+			startPos, endPos,
+		).WithHint(fmt.Sprintf("valid indices are 0 to %d", arraySize-1))
+	}
 }
 
 // analyzeAssignStatement analyzes a variable assignment statement
@@ -650,6 +704,208 @@ func (a *Analyzer) analyzeFieldAssignStatement(stmt *ast.FieldAssignStmt) TypedS
 		FieldPos: stmt.FieldPos,
 		Equals:   stmt.Equals,
 		Value:    typedValue,
+	}
+}
+
+// analyzeIndexAssignStatement analyzes an array index assignment (e.g., arr[0] = 5)
+func (a *Analyzer) analyzeIndexAssignStatement(stmt *ast.IndexAssignStmt) TypedStatement {
+	// Analyze the array expression
+	typedArray := a.analyzeExpression(stmt.Array)
+	arrayType := typedArray.GetType()
+
+	// Analyze the index expression
+	typedIndex := a.analyzeExpression(stmt.Index)
+	indexType := typedIndex.GetType()
+
+	// Analyze the value expression
+	typedValue := a.analyzeExpression(stmt.Value)
+	valueType := typedValue.GetType()
+
+	// Check that the array is actually an array type
+	arrType, isArray := arrayType.(ArrayType)
+	if !isArray {
+		if _, isErr := arrayType.(ErrorType); !isErr {
+			a.addError(
+				fmt.Sprintf("cannot index non-array type '%s'", arrayType.String()),
+				stmt.LeftBracket, stmt.RightBracket,
+			)
+		}
+		return &TypedIndexAssignStmt{
+			Array:        typedArray,
+			LeftBracket:  stmt.LeftBracket,
+			Index:        typedIndex,
+			RightBracket: stmt.RightBracket,
+			Equals:       stmt.Equals,
+			Value:        typedValue,
+			ArraySize:    ArraySizeUnknown,
+		}
+	}
+
+	// Check that the array variable is mutable
+	if ident, ok := stmt.Array.(*ast.IdentifierExpr); ok {
+		info, found := a.currentScope.lookup(ident.Name)
+		if found && !info.Mutable {
+			a.addError(
+				fmt.Sprintf("cannot assign to element of immutable array '%s'", ident.Name),
+				stmt.LeftBracket, stmt.Equals,
+			).WithHint("consider using 'var' instead of 'val' if you need to modify elements")
+		}
+	}
+
+	// Check index type is integer
+	if !IsIntegerType(indexType) {
+		if _, isErr := indexType.(ErrorType); !isErr {
+			a.addError(
+				fmt.Sprintf("array index must be integer, got '%s'", indexType.String()),
+				stmt.Index.Pos(), stmt.Index.End(),
+			)
+		}
+	}
+
+	// Compile-time bounds check for literal indices
+	a.checkLiteralIndexBounds(typedIndex, arrType.Size, stmt.Index.Pos(), stmt.Index.End())
+
+	// Check value type matches element type
+	if _, isErr := valueType.(ErrorType); !isErr && !arrType.ElementType.Equals(valueType) {
+		a.addError(
+			fmt.Sprintf("cannot assign %s to array element of type %s",
+				valueType.String(), arrType.ElementType.String()),
+			stmt.Value.Pos(), stmt.Value.End(),
+		)
+	}
+
+	return &TypedIndexAssignStmt{
+		Array:        typedArray,
+		LeftBracket:  stmt.LeftBracket,
+		Index:        typedIndex,
+		RightBracket: stmt.RightBracket,
+		Equals:       stmt.Equals,
+		Value:        typedValue,
+		ArraySize:    arrType.Size,
+	}
+}
+
+// analyzeArrayLiteral analyzes an array literal expression (e.g., [1, 2, 3])
+func (a *Analyzer) analyzeArrayLiteral(expr *ast.ArrayLiteralExpr) TypedExpression {
+	// Empty arrays are not allowed (we need at least one element to infer the type)
+	if len(expr.Elements) == 0 {
+		a.addError(
+			"empty array literals are not allowed",
+			expr.LeftBracket, expr.RightBracket,
+		).WithHint("array type cannot be inferred from an empty literal")
+		return &TypedArrayLiteralExpr{
+			Type:         ArrayType{ElementType: TypeError, Size: ArraySizeUnknown},
+			LeftBracket:  expr.LeftBracket,
+			Elements:     []TypedExpression{},
+			RightBracket: expr.RightBracket,
+		}
+	}
+
+	typedElements := make([]TypedExpression, len(expr.Elements))
+
+	// Analyze first element to get type
+	typedElements[0] = a.analyzeExpression(expr.Elements[0])
+	elementType := typedElements[0].GetType()
+
+	// Check for nested arrays (not supported)
+	if _, isArray := elementType.(ArrayType); isArray {
+		a.addError(
+			"nested arrays are not supported",
+			expr.LeftBracket, expr.RightBracket,
+		).WithHint("arrays can only contain primitive types (i64, bool, string, etc.)")
+		return &TypedArrayLiteralExpr{
+			Type:         ArrayType{ElementType: TypeError, Size: ArraySizeUnknown},
+			LeftBracket:  expr.LeftBracket,
+			Elements:     typedElements,
+			RightBracket: expr.RightBracket,
+		}
+	}
+
+	// Analyze remaining elements and check type consistency
+	for i := 1; i < len(expr.Elements); i++ {
+		typedElements[i] = a.analyzeExpression(expr.Elements[i])
+		elemType := typedElements[i].GetType()
+
+		if _, isErr := elemType.(ErrorType); isErr {
+			continue
+		}
+
+		if _, isErr := elementType.(ErrorType); isErr {
+			elementType = elemType
+			continue
+		}
+
+		if !elementType.Equals(elemType) {
+			a.addError(
+				fmt.Sprintf("array element type mismatch: expected %s, got %s",
+					elementType.String(), elemType.String()),
+				expr.Elements[i].Pos(), expr.Elements[i].End(),
+			)
+		}
+	}
+
+	arrayType := ArrayType{
+		ElementType: elementType,
+		Size:        len(expr.Elements),
+	}
+
+	return &TypedArrayLiteralExpr{
+		Type:         arrayType,
+		LeftBracket:  expr.LeftBracket,
+		Elements:     typedElements,
+		RightBracket: expr.RightBracket,
+	}
+}
+
+// analyzeIndexExpr analyzes an array index expression (e.g., arr[0])
+func (a *Analyzer) analyzeIndexExpr(expr *ast.IndexExpr) TypedExpression {
+	// Analyze the array expression
+	typedArray := a.analyzeExpression(expr.Array)
+	arrayType := typedArray.GetType()
+
+	// Analyze the index expression
+	typedIndex := a.analyzeExpression(expr.Index)
+	indexType := typedIndex.GetType()
+
+	// Check that the expression is an array type
+	arrType, isArray := arrayType.(ArrayType)
+	if !isArray {
+		if _, isErr := arrayType.(ErrorType); !isErr {
+			a.addError(
+				fmt.Sprintf("cannot index non-array type '%s'", arrayType.String()),
+				expr.LeftBracket, expr.RightBracket,
+			)
+		}
+		return &TypedIndexExpr{
+			Type:         TypeError,
+			Array:        typedArray,
+			LeftBracket:  expr.LeftBracket,
+			Index:        typedIndex,
+			RightBracket: expr.RightBracket,
+			ArraySize:    ArraySizeUnknown,
+		}
+	}
+
+	// Check index type is integer
+	if !IsIntegerType(indexType) {
+		if _, isErr := indexType.(ErrorType); !isErr {
+			a.addError(
+				fmt.Sprintf("array index must be integer, got '%s'", indexType.String()),
+				expr.Index.Pos(), expr.Index.End(),
+			)
+		}
+	}
+
+	// Compile-time bounds check for literal indices
+	a.checkLiteralIndexBounds(typedIndex, arrType.Size, expr.Index.Pos(), expr.Index.End())
+
+	return &TypedIndexExpr{
+		Type:         arrType.ElementType,
+		Array:        typedArray,
+		LeftBracket:  expr.LeftBracket,
+		Index:        typedIndex,
+		RightBracket: expr.RightBracket,
+		ArraySize:    arrType.Size,
 	}
 }
 
@@ -950,6 +1206,10 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 		return a.analyzeCallExpr(e)
 	case *ast.FieldAccessExpr:
 		return a.analyzeFieldAccessExpr(e)
+	case *ast.ArrayLiteralExpr:
+		return a.analyzeArrayLiteral(e)
+	case *ast.IndexExpr:
+		return a.analyzeIndexExpr(e)
 	case *ast.GroupingExpr:
 		// Grouping is purely syntactic for precedence; just analyze the inner expression
 		return a.analyzeExpression(e.Expr)
@@ -1054,6 +1314,11 @@ func (a *Analyzer) analyzeCallExpr(call *ast.CallExpr) TypedExpression {
 
 // analyzeBuiltinCall analyzes a call to a built-in function
 func (a *Analyzer) analyzeBuiltinCall(call *ast.CallExpr, builtin BuiltinFunc) TypedExpression {
+	// Special handling for len() - it returns a TypedLenExpr
+	if builtin.IsArrayLen {
+		return a.analyzeLenBuiltin(call)
+	}
+
 	// Check argument count
 	if len(call.Arguments) != len(builtin.ParamTypes) {
 		a.addError(
@@ -1106,6 +1371,58 @@ func (a *Analyzer) analyzeBuiltinCall(call *ast.CallExpr, builtin BuiltinFunc) T
 		NamePos:    call.NamePos,
 		LeftParen:  call.LeftParen,
 		Arguments:  typedArgs,
+		RightParen: call.RightParen,
+	}
+}
+
+// analyzeLenBuiltin analyzes a len() call on an array
+func (a *Analyzer) analyzeLenBuiltin(call *ast.CallExpr) TypedExpression {
+	// Check argument count
+	if len(call.Arguments) != 1 {
+		a.addError(
+			fmt.Sprintf("len() takes exactly 1 argument, got %d", len(call.Arguments)),
+			call.LeftParen, call.RightParen,
+		)
+		// Return error typed expression
+		return &TypedLenExpr{
+			Type:       TypeI64,
+			Array:      nil,
+			ArraySize:  ArraySizeUnknown,
+			NamePos:    call.NamePos,
+			LeftParen:  call.LeftParen,
+			RightParen: call.RightParen,
+		}
+	}
+
+	// Analyze the argument
+	typedArg := a.analyzeExpression(call.Arguments[0])
+	argType := typedArg.GetType()
+
+	// Check that argument is an array type
+	arrayType, isArray := argType.(ArrayType)
+	if !isArray {
+		if _, isErr := argType.(ErrorType); !isErr {
+			a.addError(
+				fmt.Sprintf("len() argument must be an array, got '%s'", argType.String()),
+				call.Arguments[0].Pos(), call.Arguments[0].End(),
+			)
+		}
+		return &TypedLenExpr{
+			Type:       TypeI64,
+			Array:      typedArg,
+			ArraySize:  ArraySizeUnknown,
+			NamePos:    call.NamePos,
+			LeftParen:  call.LeftParen,
+			RightParen: call.RightParen,
+		}
+	}
+
+	return &TypedLenExpr{
+		Type:       TypeI64,
+		Array:      typedArg,
+		ArraySize:  arrayType.Size,
+		NamePos:    call.NamePos,
+		LeftParen:  call.LeftParen,
 		RightParen: call.RightParen,
 	}
 }
@@ -1297,7 +1614,7 @@ func isAcceptedType(argType Type, acceptedTypes []Type) bool {
 			return true
 		}
 		// Also allow compatible integer types when i64 is accepted
-		if _, isI64 := accepted.(I64Type); isI64 && isIntegerType(argType) {
+		if _, isI64 := accepted.(I64Type); isI64 && IsIntegerType(argType) {
 			return true
 		}
 	}
@@ -1331,7 +1648,7 @@ func formatAcceptedTypes(types []Type) string {
 func isCompatibleIntegerType(paramType, argType Type) bool {
 	// If param expects i64, allow any integer type
 	if _, isI64 := paramType.(I64Type); isI64 {
-		return isIntegerType(argType)
+		return IsIntegerType(argType)
 	}
 	return false
 }
@@ -1489,7 +1806,7 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 	// These require matching numeric types (strict type matching)
 	if op == "+" || op == "-" || op == "*" || op == "/" || op == "%" {
 		// Check left operand is numeric
-		if !isIntegerType(leftType) && !isFloatType(leftType) {
+		if !IsIntegerType(leftType) && !IsFloatType(leftType) {
 			a.addError(
 				fmt.Sprintf("operator '%s' requires numeric operands, but left operand has type '%s'", op, leftType.String()),
 				leftPos, leftPos,
@@ -1498,7 +1815,7 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 		}
 
 		// Check right operand is numeric
-		if !isIntegerType(rightType) && !isFloatType(rightType) {
+		if !IsIntegerType(rightType) && !IsFloatType(rightType) {
 			a.addError(
 				fmt.Sprintf("operator '%s' requires numeric operands, but right operand has type '%s'", op, rightType.String()),
 				rightPos, rightPos,
@@ -1517,7 +1834,7 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 		}
 
 		// Modulo only works with integers
-		if op == "%" && isFloatType(leftType) {
+		if op == "%" && IsFloatType(leftType) {
 			a.addError(
 				fmt.Sprintf("operator '%%' is not supported for floating point types"),
 				leftPos, rightPos,
@@ -1532,7 +1849,7 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 	// These require matching numeric types and return bool
 	if op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" {
 		// Check left operand is numeric
-		if !isIntegerType(leftType) && !isFloatType(leftType) {
+		if !IsIntegerType(leftType) && !IsFloatType(leftType) {
 			a.addError(
 				fmt.Sprintf("operator '%s' requires numeric operands, but left operand has type '%s'", op, leftType.String()),
 				leftPos, leftPos,
@@ -1541,7 +1858,7 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 		}
 
 		// Check right operand is numeric
-		if !isIntegerType(rightType) && !isFloatType(rightType) {
+		if !IsIntegerType(rightType) && !IsFloatType(rightType) {
 			a.addError(
 				fmt.Sprintf("operator '%s' requires numeric operands, but right operand has type '%s'", op, rightType.String()),
 				rightPos, rightPos,
@@ -1672,25 +1989,6 @@ func (a *Analyzer) checkFloatBounds(value string, targetType Type, pos ast.Posit
 	// For now, we don't do strict float bounds checking
 	// f32 and f64 can represent most reasonable literals
 	return true
-}
-
-// isIntegerType checks if a type is any integer type
-func isIntegerType(t Type) bool {
-	switch t.(type) {
-	case IntegerType, I8Type, I16Type, I32Type, I64Type, I128Type,
-		U8Type, U16Type, U32Type, U64Type, U128Type:
-		return true
-	}
-	return false
-}
-
-// isFloatType checks if a type is any float type
-func isFloatType(t Type) bool {
-	switch t.(type) {
-	case F32Type, F64Type:
-		return true
-	}
-	return false
 }
 
 // allPathsReturn checks if a list of statements guarantees a return on all code paths.

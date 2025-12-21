@@ -122,6 +122,49 @@ func (e *TypedStructLiteralExpr) End() ast.Position { return e.RightParen }
 func (e *TypedStructLiteralExpr) GetType() Type     { return e.Type }
 func (e *TypedStructLiteralExpr) typedExprNode()    {}
 
+// TypedArrayLiteralExpr represents a typed array literal (e.g., [1, 2, 3])
+type TypedArrayLiteralExpr struct {
+	Type         ArrayType         // the array type (with size and element type)
+	LeftBracket  ast.Position      // position of '['
+	Elements     []TypedExpression // typed element expressions
+	RightBracket ast.Position      // position of ']'
+}
+
+func (e *TypedArrayLiteralExpr) Pos() ast.Position { return e.LeftBracket }
+func (e *TypedArrayLiteralExpr) End() ast.Position { return e.RightBracket }
+func (e *TypedArrayLiteralExpr) GetType() Type     { return e.Type }
+func (e *TypedArrayLiteralExpr) typedExprNode()    {}
+
+// TypedIndexExpr represents a typed array index access (e.g., arr[0])
+type TypedIndexExpr struct {
+	Type         Type            // the element type
+	Array        TypedExpression // typed array expression
+	LeftBracket  ast.Position    // position of '['
+	Index        TypedExpression // typed index expression (must be integer)
+	RightBracket ast.Position    // position of ']'
+	ArraySize    int             // array size for runtime bounds checking
+}
+
+func (e *TypedIndexExpr) Pos() ast.Position { return e.Array.Pos() }
+func (e *TypedIndexExpr) End() ast.Position { return e.RightBracket }
+func (e *TypedIndexExpr) GetType() Type     { return e.Type }
+func (e *TypedIndexExpr) typedExprNode()    {}
+
+// TypedLenExpr represents a len() call on an array
+type TypedLenExpr struct {
+	Type       Type            // always TypeI64
+	Array      TypedExpression // the array expression
+	ArraySize  int             // known at compile time for fixed-size arrays
+	NamePos    ast.Position    // position of 'len'
+	LeftParen  ast.Position    // position of '('
+	RightParen ast.Position    // position of ')'
+}
+
+func (e *TypedLenExpr) Pos() ast.Position { return e.NamePos }
+func (e *TypedLenExpr) End() ast.Position { return e.RightParen }
+func (e *TypedLenExpr) GetType() Type     { return e.Type }
+func (e *TypedLenExpr) typedExprNode()    {}
+
 // ============================================================================
 // Typed Statements
 // ============================================================================
@@ -201,6 +244,22 @@ func (s *TypedFieldAssignStmt) Pos() ast.Position { return s.Object.Pos() }
 func (s *TypedFieldAssignStmt) End() ast.Position { return s.Value.End() }
 func (s *TypedFieldAssignStmt) GetType() Type     { return TypeVoid }
 func (s *TypedFieldAssignStmt) typedStmtNode()    {}
+
+// TypedIndexAssignStmt represents a typed array index assignment (e.g., arr[0] = 5)
+type TypedIndexAssignStmt struct {
+	Array        TypedExpression // the array expression
+	LeftBracket  ast.Position    // position of '['
+	Index        TypedExpression // typed index expression
+	RightBracket ast.Position    // position of ']'
+	Equals       ast.Position    // position of '='
+	Value        TypedExpression // the value being assigned
+	ArraySize    int             // array size for runtime bounds checking
+}
+
+func (s *TypedIndexAssignStmt) Pos() ast.Position { return s.Array.Pos() }
+func (s *TypedIndexAssignStmt) End() ast.Position { return s.Value.End() }
+func (s *TypedIndexAssignStmt) GetType() Type     { return TypeVoid }
+func (s *TypedIndexAssignStmt) typedStmtNode()    {}
 
 // TypedReturnStmt represents a typed return statement
 type TypedReturnStmt struct {

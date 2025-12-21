@@ -274,6 +274,40 @@ func (t StructType) Size() int {
 	return len(t.Fields) * 8 // each field is 8 bytes
 }
 
+// ArraySizeUnknown indicates that an array's size is not yet known.
+// This is used when parsing type annotations like Array<i64> where the size
+// will be inferred from the literal. A value of -1 distinguishes "unknown"
+// from "zero elements" (which is an error for array literals).
+const ArraySizeUnknown = -1
+
+// ArrayType represents a fixed-size array type
+type ArrayType struct {
+	ElementType Type // element type (e.g., IntegerType)
+	Size        int  // fixed size (known at compile time), or ArraySizeUnknown
+}
+
+func (t ArrayType) String() string {
+	return "Array<" + t.ElementType.String() + ">"
+}
+
+func (t ArrayType) Equals(other Type) bool {
+	o, ok := other.(ArrayType)
+	if !ok {
+		return false
+	}
+	return t.Size == o.Size && t.ElementType.Equals(o.ElementType)
+}
+
+// ElementSize returns the byte size of each element (8 for all current types)
+func (t ArrayType) ElementSize() int {
+	return 8 // all current types are 8 bytes
+}
+
+// TotalSize returns the total byte size of the array
+func (t ArrayType) TotalSize() int {
+	return t.Size * 8
+}
+
 // Common type instances
 var (
 	// Default types
@@ -319,6 +353,12 @@ func IsFloatType(t Type) bool {
 		return true
 	}
 	return false
+}
+
+// IsArrayType checks if a type is an array type
+func IsArrayType(t Type) bool {
+	_, ok := t.(ArrayType)
+	return ok
 }
 
 // TypeFromName converts a type name string to a Type

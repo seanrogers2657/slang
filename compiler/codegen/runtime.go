@@ -38,6 +38,7 @@ _err_msg_5:     .asciz "unsigned underflow: subtraction"
 _err_msg_6:     .asciz "unsigned overflow: multiplication"
 _err_msg_7:     .asciz "division by zero"
 _err_msg_8:     .asciz "modulo by zero"
+_err_msg_9:     .asciz "array index out of bounds"
 
 // Buffer for line number conversion
 .align 3
@@ -85,6 +86,8 @@ _slang_panic:
     beq _panic_msg_7
     cmp x19, #8
     beq _panic_msg_8
+    cmp x19, #9
+    beq _panic_msg_9
     b _panic_msg_done
 
 _panic_msg_1:
@@ -133,6 +136,12 @@ _panic_msg_8:
     adrp x1, _err_msg_8@PAGE
     add x1, x1, _err_msg_8@PAGEOFF
     mov x2, #14
+    b _panic_msg_print
+
+_panic_msg_9:
+    adrp x1, _err_msg_9@PAGE
+    add x1, x1, _err_msg_9@PAGEOFF
+    mov x2, #25
     b _panic_msg_print
 
 _panic_msg_print:

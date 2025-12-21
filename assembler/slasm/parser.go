@@ -357,7 +357,13 @@ func (p *Parser) parseOperand() (*Operand, error) {
 		return operand, nil
 
 	case TokenLBracket:
-		// Memory operand: [base, #offset], [base, #offset]!, or [base]
+		// Memory operand formats:
+		// - [base]                        - simple base
+		// - [base, #offset]               - immediate offset
+		// - [base, #offset]!              - pre-indexed
+		// - [base], #offset               - post-indexed
+		// - [base, index]                 - register offset (no shift)
+		// - [base, index, lsl #shift]     - register offset with shift
 		p.advance() // consume [
 
 		base := p.advance()
@@ -366,14 +372,33 @@ func (p *Parser) parseOperand() (*Operand, error) {
 			Base: base.Value,
 		}
 
-		// Check for offset inside brackets
+		// Check for offset/index inside brackets
 		if p.peek().Type == TokenComma {
 			p.advance() // consume comma
+
 			if p.peek().Type == TokenHash {
+				// Immediate offset: [base, #offset]
 				p.advance() // consume #
+				offset := p.advance()
+				operand.Offset = offset.Value
+			} else {
+				// Register offset: [base, index] or [base, index, lsl #shift]
+				indexReg := p.advance()
+				operand.IndexReg = indexReg.Value
+
+				// Check for shift: , lsl #N
+				if p.peek().Type == TokenComma {
+					p.advance() // consume comma
+					shiftType := p.advance()
+					operand.IndexShift = shiftType.Value
+
+					if p.peek().Type == TokenHash {
+						p.advance() // consume #
+					}
+					shiftAmount := p.advance()
+					operand.IndexShiftAmount = shiftAmount.Value
+				}
 			}
-			offset := p.advance()
-			operand.Offset = offset.Value
 		}
 
 		if p.peek().Type != TokenRBracket {

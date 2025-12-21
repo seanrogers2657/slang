@@ -79,6 +79,11 @@ type Operand struct {
 	Writeback       bool   // true for pre-indexed [base, #offset]!
 	PostIndexOffset string // for post-indexed [base], #offset
 
+	// For register-offset addressing [base, index, lsl #shift]
+	IndexReg         string // index register (e.g., x3)
+	IndexShift       string // shift type: "lsl", "lsr", "asr", "sxtw", "uxtw"
+	IndexShiftAmount string // shift amount (e.g., "4" for lsl #4)
+
 	// For shift operands (lsl #N, lsr #N, asr #N)
 	ShiftType string // "lsl", "lsr", or "asr"
 }

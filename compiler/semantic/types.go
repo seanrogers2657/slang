@@ -14,23 +14,6 @@ type NumericType interface {
 	IsFloat() bool  // Whether the type is a floating point type
 }
 
-// IntegerType represents the default integer type (i64)
-type IntegerType struct{}
-
-func (t IntegerType) String() string { return "i64" }
-func (t IntegerType) BitWidth() int  { return 64 }
-func (t IntegerType) IsSigned() bool { return true }
-func (t IntegerType) IsFloat() bool  { return false }
-func (t IntegerType) Equals(other Type) bool {
-	_, ok := other.(IntegerType)
-	if ok {
-		return true
-	}
-	// Also equal to I64Type
-	_, ok = other.(I64Type)
-	return ok
-}
-
 // Signed integer types
 type I8Type struct{}
 
@@ -64,11 +47,6 @@ func (t I64Type) IsSigned() bool { return true }
 func (t I64Type) IsFloat() bool  { return false }
 func (t I64Type) Equals(other Type) bool {
 	_, ok := other.(I64Type)
-	if ok {
-		return true
-	}
-	// Also equal to IntegerType (default)
-	_, ok = other.(IntegerType)
 	return ok
 }
 
@@ -271,7 +249,11 @@ func (t StructType) FieldOffset(name string) int {
 
 // Size returns the total size of the struct in bytes
 func (t StructType) Size() int {
-	return len(t.Fields) * 8 // each field is 8 bytes
+	total := 0
+	for _, field := range t.Fields {
+		total += TypeByteSize(field.Type)
+	}
+	return total
 }
 
 // ArraySizeUnknown indicates that an array's size is not yet known.
@@ -282,7 +264,7 @@ const ArraySizeUnknown = -1
 
 // ArrayType represents a fixed-size array type
 type ArrayType struct {
-	ElementType Type // element type (e.g., IntegerType)
+	ElementType Type // element type (e.g., I64Type)
 	Size        int  // fixed size (known at compile time), or ArraySizeUnknown
 }
 
@@ -298,20 +280,49 @@ func (t ArrayType) Equals(other Type) bool {
 	return t.Size == o.Size && t.ElementType.Equals(o.ElementType)
 }
 
-// ElementSize returns the byte size of each element (8 for all current types)
+// ElementSize returns the byte size of each element based on the element type
 func (t ArrayType) ElementSize() int {
-	return 8 // all current types are 8 bytes
+	return TypeByteSize(t.ElementType)
 }
 
 // TotalSize returns the total byte size of the array
 func (t ArrayType) TotalSize() int {
-	return t.Size * 8
+	return t.Size * t.ElementSize()
+}
+
+// TypeByteSize returns the byte size of a type for memory allocation purposes.
+// For numeric types, this is derived from the bit width.
+// For pointers (strings), this is 8 bytes on 64-bit systems.
+// For composite types, this is computed from their structure.
+func TypeByteSize(t Type) int {
+	// Check if it implements NumericType for bit-width based sizing
+	if numType, ok := t.(NumericType); ok {
+		return numType.BitWidth() / 8
+	}
+
+	// Handle other types
+	switch t.(type) {
+	case StringType:
+		return 8 // pointer size on 64-bit
+	case BooleanType:
+		return 1 // logically 1 byte, though may be padded in practice
+	case VoidType:
+		return 0
+	case ErrorType:
+		return 0
+	case StructType:
+		return t.(StructType).Size()
+	case ArrayType:
+		return t.(ArrayType).TotalSize()
+	default:
+		return 8 // default to 8 bytes for unknown types
+	}
 }
 
 // Common type instances
 var (
 	// Default types
-	TypeInteger = IntegerType{} // default integer (i64)
+	TypeInteger = I64Type{} // default integer (i64)
 	TypeString  = StringType{}
 	TypeBoolean = BooleanType{}
 	TypeVoid    = VoidType{}
@@ -339,7 +350,7 @@ var (
 // IsIntegerType checks if a type is any integer type
 func IsIntegerType(t Type) bool {
 	switch t.(type) {
-	case IntegerType, I8Type, I16Type, I32Type, I64Type, I128Type,
+	case I8Type, I16Type, I32Type, I64Type, I128Type,
 		U8Type, U16Type, U32Type, U64Type, U128Type:
 		return true
 	}

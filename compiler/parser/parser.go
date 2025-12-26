@@ -784,8 +784,12 @@ func (p *parser) parseIfExpression() ast.Expression {
 	if stmt == nil {
 		return nil
 	}
-	// Type assertion is safe because ParseIfStatement always returns *ast.IfStmt
-	return stmt.(*ast.IfStmt)
+	// Use comma-ok assertion for safety against future changes
+	ifStmt, ok := stmt.(*ast.IfStmt)
+	if !ok {
+		return nil
+	}
+	return ifStmt
 }
 
 func (p *parser) ParseLiteral() ast.Expression {

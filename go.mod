@@ -2,10 +2,7 @@ module github.com/seanrogers2657/slang
 
 go 1.24
 
-require (
-	github.com/davecgh/go-spew v1.1.1
-	github.com/urfave/cli/v2 v2.27.2
-)
+require github.com/urfave/cli/v2 v2.27.2
 
 require (
 	github.com/cpuguy83/go-md2man/v2 v2.0.4 // indirect

@@ -926,7 +926,7 @@ func (g *TypedCodeGenerator) generateLiteral(lit *semantic.TypedLiteralExpr) (st
 	case semantic.U32Type:
 		builder.WriteString("    mov w2, w2\n")
 	default:
-		// i64, u64, IntegerType: no sign extension needed for 64-bit values
+		// i64, u64: no sign extension needed for 64-bit values
 	}
 
 	return builder.String(), nil

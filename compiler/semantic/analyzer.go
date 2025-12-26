@@ -508,6 +508,14 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 
 // checkTypeCompatibility checks if an initializer is compatible with the declared type
 func (a *Analyzer) checkTypeCompatibility(declaredType, initType Type, typedInit TypedExpression, pos ast.Position) bool {
+	// If either type is ErrorType, skip compatibility check to avoid cascading errors
+	if _, isErr := declaredType.(ErrorType); isErr {
+		return true
+	}
+	if _, isErr := initType.(ErrorType); isErr {
+		return true
+	}
+
 	// If types are exactly equal, always ok
 	if declaredType.Equals(initType) {
 		return true
@@ -1939,7 +1947,7 @@ func (a *Analyzer) checkIntegerBounds(value string, targetType Type, pos ast.Pos
 			a.addError(fmt.Sprintf("integer literal %s out of range for i32", value), pos, pos)
 			return false
 		}
-	case I64Type, IntegerType:
+	case I64Type:
 		if val.Cmp(minI64) < 0 || val.Cmp(maxI64) > 0 {
 			a.addError(fmt.Sprintf("integer literal %s out of range for i64", value), pos, pos)
 			return false

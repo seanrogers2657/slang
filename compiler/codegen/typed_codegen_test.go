@@ -1113,3 +1113,162 @@ func TestTypedCodeGenerator_OperandToReg_CallExpr(t *testing.T) {
 		}
 	}
 }
+
+func TestTypedCodeGenerator_WhileLoop(t *testing.T) {
+	// Test: while i < 5 { i = i + 1 }
+	stmts := []semantic.TypedStatement{
+		// var i = 0
+		&semantic.TypedVarDeclStmt{
+			Name:         "i",
+			Mutable:      true,
+			DeclaredType: semantic.TypeI64,
+			Initializer: &semantic.TypedLiteralExpr{
+				Type:    semantic.TypeI64,
+				LitType: ast.LiteralTypeInteger,
+				Value:   "0",
+			},
+		},
+		// while i < 5 { i = i + 1 }
+		&semantic.TypedWhileStmt{
+			WhileKeyword: ast.Position{Line: 3, Column: 1},
+			Condition: &semantic.TypedBinaryExpr{
+				Left: &semantic.TypedIdentifierExpr{
+					Type: semantic.TypeI64,
+					Name: "i",
+				},
+				Op: "<",
+				Right: &semantic.TypedLiteralExpr{
+					Type:    semantic.TypeI64,
+					LitType: ast.LiteralTypeInteger,
+					Value:   "5",
+				},
+				Type: semantic.TypeBoolean,
+			},
+			Body: &semantic.TypedBlockStmt{
+				Statements: []semantic.TypedStatement{
+					&semantic.TypedAssignStmt{
+						Name: "i",
+						Value: &semantic.TypedBinaryExpr{
+							Left: &semantic.TypedIdentifierExpr{
+								Type: semantic.TypeI64,
+								Name: "i",
+							},
+							Op: "+",
+							Right: &semantic.TypedLiteralExpr{
+								Type:    semantic.TypeI64,
+								LitType: ast.LiteralTypeInteger,
+								Value:   "1",
+							},
+							Type: semantic.TypeI64,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	program := makeTypedProgram(stmts)
+	gen := NewTypedCodeGenerator(program, nil)
+	output, err := gen.Generate()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Check for while loop labels and structure
+	expectedPatterns := []string{
+		"_while_",          // while start label
+		"_while_continue_", // continue label
+		"_while_end_",      // end label
+		"b _while_",        // unconditional branch back to start
+	}
+
+	for _, exp := range expectedPatterns {
+		if !strings.Contains(output, exp) {
+			t.Errorf("expected %q in output, got:\n%s", exp, output)
+		}
+	}
+}
+
+func TestTypedCodeGenerator_WhileLoopWithBreak(t *testing.T) {
+	// Test: while true { break }
+	stmts := []semantic.TypedStatement{
+		&semantic.TypedWhileStmt{
+			WhileKeyword: ast.Position{Line: 1, Column: 1},
+			Condition: &semantic.TypedLiteralExpr{
+				Type:    semantic.TypeBoolean,
+				LitType: ast.LiteralTypeBoolean,
+				Value:   "true",
+			},
+			Body: &semantic.TypedBlockStmt{
+				Statements: []semantic.TypedStatement{
+					&semantic.TypedBreakStmt{
+						Keyword: ast.Position{Line: 2, Column: 5},
+					},
+				},
+			},
+		},
+	}
+
+	program := makeTypedProgram(stmts)
+	gen := NewTypedCodeGenerator(program, nil)
+	output, err := gen.Generate()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Check that break branches to the end label
+	if !strings.Contains(output, "b _while_end_") {
+		t.Errorf("expected break to branch to _while_end_, got:\n%s", output)
+	}
+}
+
+func TestTypedCodeGenerator_WhileLoopWithContinue(t *testing.T) {
+	// Test: while i < 5 { continue }
+	stmts := []semantic.TypedStatement{
+		&semantic.TypedVarDeclStmt{
+			Name:         "i",
+			Mutable:      true,
+			DeclaredType: semantic.TypeI64,
+			Initializer: &semantic.TypedLiteralExpr{
+				Type:    semantic.TypeI64,
+				LitType: ast.LiteralTypeInteger,
+				Value:   "0",
+			},
+		},
+		&semantic.TypedWhileStmt{
+			WhileKeyword: ast.Position{Line: 2, Column: 1},
+			Condition: &semantic.TypedBinaryExpr{
+				Left: &semantic.TypedIdentifierExpr{
+					Type: semantic.TypeI64,
+					Name: "i",
+				},
+				Op: "<",
+				Right: &semantic.TypedLiteralExpr{
+					Type:    semantic.TypeI64,
+					LitType: ast.LiteralTypeInteger,
+					Value:   "5",
+				},
+				Type: semantic.TypeBoolean,
+			},
+			Body: &semantic.TypedBlockStmt{
+				Statements: []semantic.TypedStatement{
+					&semantic.TypedContinueStmt{
+						Keyword: ast.Position{Line: 3, Column: 5},
+					},
+				},
+			},
+		},
+	}
+
+	program := makeTypedProgram(stmts)
+	gen := NewTypedCodeGenerator(program, nil)
+	output, err := gen.Generate()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Check that continue branches to the continue label
+	if !strings.Contains(output, "b _while_continue_") {
+		t.Errorf("expected continue to branch to _while_continue_, got:\n%s", output)
+	}
+}

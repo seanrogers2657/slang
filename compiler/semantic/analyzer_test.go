@@ -1076,3 +1076,125 @@ func TestAnalyzeWhenExpression(t *testing.T) {
 		}
 	})
 }
+
+func TestAnalyzeWhileStatement(t *testing.T) {
+	t.Run("while with boolean condition is valid", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil,
+				varDecl("i", true, intLit("0")),
+				whileStmt(
+					binExpr(ident("i"), "<", intLit("5")),
+					assignStmt("i", binExpr(ident("i"), "+", intLit("1"))),
+				),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		for _, err := range errs {
+			if strings.Contains(err.Message, "while-loop condition must be boolean") {
+				t.Errorf("unexpected condition error: %s", err.Message)
+			}
+		}
+	})
+
+	t.Run("while condition must be boolean", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil,
+				whileStmt(
+					intLit("42"),
+					exprStmt(callExpr("exit", intLit("0"))),
+				),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		found := false
+		for _, err := range errs {
+			if strings.Contains(err.Message, "while-loop condition must be boolean") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected boolean condition error")
+		}
+	})
+
+	t.Run("break inside while is valid", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil,
+				whileStmt(
+					boolLit("true"),
+					breakStmt(),
+				),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		for _, err := range errs {
+			if strings.Contains(err.Message, "break") && strings.Contains(err.Message, "outside") {
+				t.Errorf("unexpected break error: %s", err.Message)
+			}
+		}
+	})
+
+	t.Run("continue inside while is valid", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil,
+				varDecl("i", true, intLit("0")),
+				whileStmt(
+					binExpr(ident("i"), "<", intLit("5")),
+					assignStmt("i", binExpr(ident("i"), "+", intLit("1"))),
+					continueStmt(),
+				),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		for _, err := range errs {
+			if strings.Contains(err.Message, "continue") && strings.Contains(err.Message, "outside") {
+				t.Errorf("unexpected continue error: %s", err.Message)
+			}
+		}
+	})
+
+	t.Run("break outside while is error", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil,
+				breakStmt(),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		found := false
+		for _, err := range errs {
+			if strings.Contains(err.Message, "break") && strings.Contains(err.Message, "not inside a loop") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected 'break outside loop' error")
+		}
+	})
+
+	t.Run("continue outside while is error", func(t *testing.T) {
+		test := newTest(t)
+		prog := programWithFuncs(
+			funcDecl("main", "void", nil,
+				continueStmt(),
+			),
+		)
+		errs, _ := test.analyzer.Analyze(prog)
+		found := false
+		for _, err := range errs {
+			if strings.Contains(err.Message, "continue") && strings.Contains(err.Message, "not inside a loop") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected 'continue outside loop' error")
+		}
+	})
+}

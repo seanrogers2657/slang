@@ -93,6 +93,13 @@ func (info *ProgramInfo) collectFromTypedStatement(stmt semantic.TypedStatement,
 		for _, bodyStmt := range s.Body.Statements {
 			info.collectFromTypedStatement(bodyStmt, floatIdx, stringIdx)
 		}
+	case *semantic.TypedWhileStmt:
+		// Collect from condition
+		info.collectFromTypedExpr(s.Condition, floatIdx, stringIdx)
+		// Collect from body
+		for _, bodyStmt := range s.Body.Statements {
+			info.collectFromTypedStatement(bodyStmt, floatIdx, stringIdx)
+		}
 	case *semantic.TypedBreakStmt:
 		// Nothing to collect from break
 	case *semantic.TypedContinueStmt:
@@ -277,6 +284,13 @@ func countTypedVarsInStmt(stmt semantic.TypedStatement) int {
 		if s.Init != nil {
 			count += countTypedVarsInStmt(s.Init)
 		}
+		// Count in body
+		for _, bodyStmt := range s.Body.Statements {
+			count += countTypedVarsInStmt(bodyStmt)
+		}
+		return count
+	case *semantic.TypedWhileStmt:
+		count := 0
 		// Count in body
 		for _, bodyStmt := range s.Body.Statements {
 			count += countTypedVarsInStmt(bodyStmt)

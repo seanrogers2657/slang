@@ -140,7 +140,7 @@ func (p *parser) skipToNextStatement() {
 		// Stop at tokens that could start a new statement
 		switch tok {
 		case lexer.TokenTypeVal, lexer.TokenTypeVar, lexer.TokenTypeIf, lexer.TokenTypeWhen,
-			lexer.TokenTypeFor, lexer.TokenTypeBreak, lexer.TokenTypeContinue,
+			lexer.TokenTypeFor, lexer.TokenTypeWhile, lexer.TokenTypeBreak, lexer.TokenTypeContinue,
 			lexer.TokenTypeReturn, lexer.TokenTypeRBrace:
 			return
 		case lexer.TokenTypeNewline:
@@ -359,6 +359,11 @@ func (p *parser) ParseStatement() ast.Statement {
 	// Check if it's a for statement
 	if p.CurrentToken().Type == lexer.TokenTypeFor {
 		return p.ParseForStatement()
+	}
+
+	// Check if it's a while statement
+	if p.CurrentToken().Type == lexer.TokenTypeWhile {
+		return p.ParseWhileStatement()
 	}
 
 	// Check if it's a break statement
@@ -758,6 +763,57 @@ func (p *parser) ParseForStatement() ast.Statement {
 		Update:     update,
 		RightParen: rightParen,
 		Body:       body,
+	}
+}
+
+// ParseWhileStatement parses a while statement
+// Syntax: while condition { ... } or while (condition) { ... }
+func (p *parser) ParseWhileStatement() ast.Statement {
+	whileKeyword := p.CurrentToken().Pos
+	p.advance() // consume 'while'
+
+	// Check for optional opening parenthesis
+	hasParens := p.CurrentToken().Type == lexer.TokenTypeLParen
+	var leftParen ast.Position
+	if hasParens {
+		leftParen = p.CurrentToken().Pos
+		p.advance() // consume '('
+	}
+
+	// Parse condition (required)
+	condition := p.parseExpression(precedenceLowest)
+	if condition == nil {
+		p.addError("expected condition in while statement", p.CurrentToken().Pos)
+		return nil
+	}
+
+	// If has parens, expect closing paren
+	var rightParen ast.Position
+	if hasParens {
+		if p.CurrentToken().Type != lexer.TokenTypeRParen {
+			p.addError(fmt.Sprintf("expected ')' after while condition, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+			return nil
+		}
+		rightParen = p.CurrentToken().Pos
+		p.advance() // consume ')'
+	}
+
+	// Skip newlines before body
+	p.skipNewlines()
+
+	// Parse body
+	body := p.ParseBlockStmt()
+	if body == nil {
+		return nil
+	}
+
+	return &ast.WhileStmt{
+		WhileKeyword: whileKeyword,
+		HasParens:    hasParens,
+		LeftParen:    leftParen,
+		Condition:    condition,
+		RightParen:   rightParen,
+		Body:         body,
 	}
 }
 

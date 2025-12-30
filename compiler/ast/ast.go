@@ -296,6 +296,24 @@ func (f *ForStmt) Pos() Position { return f.ForKeyword }
 func (f *ForStmt) End() Position { return f.Body.End() }
 func (f *ForStmt) stmtNode()     {}
 
+// WhileStmt represents a while-loop statement
+// Supports both with and without parentheses:
+//
+//	while (i < 10) { ... }
+//	while i < 10 { ... }
+type WhileStmt struct {
+	WhileKeyword Position   // position of 'while'
+	HasParens    bool       // true if loop uses parentheses syntax
+	LeftParen    Position   // position of '(' if HasParens
+	Condition    Expression // loop condition (required)
+	RightParen   Position   // position of ')' if HasParens
+	Body         *BlockStmt // loop body
+}
+
+func (w *WhileStmt) Pos() Position { return w.WhileKeyword }
+func (w *WhileStmt) End() Position { return w.Body.End() }
+func (w *WhileStmt) stmtNode()     {}
+
 // BreakStmt represents a break statement
 type BreakStmt struct {
 	Keyword Position // position of 'break'

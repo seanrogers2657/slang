@@ -433,6 +433,8 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 		return a.analyzeIfStatement(s)
 	case *ast.ForStmt:
 		return a.analyzeForStatement(s)
+	case *ast.WhileStmt:
+		return a.analyzeWhileStatement(s)
 	case *ast.BreakStmt:
 		return a.analyzeBreakStatement(s)
 	case *ast.ContinueStmt:
@@ -1070,11 +1072,43 @@ func (a *Analyzer) analyzeForStatement(stmt *ast.ForStmt) TypedStatement {
 	}
 }
 
+// analyzeWhileStatement analyzes a while statement
+func (a *Analyzer) analyzeWhileStatement(stmt *ast.WhileStmt) TypedStatement {
+	// Analyze condition (required for while loops)
+	typedCond := a.analyzeExpression(stmt.Condition)
+	condType := typedCond.GetType()
+
+	// Condition must be boolean
+	if _, isBool := condType.(BooleanType); !isBool {
+		if _, isErr := condType.(ErrorType); !isErr {
+			a.addError(
+				fmt.Sprintf("while-loop condition must be boolean, got '%s'", condType.String()),
+				stmt.Condition.Pos(), stmt.Condition.End(),
+			).WithHint("use a comparison like i < 10 or a boolean expression")
+		}
+	}
+
+	// Enter loop context for break/continue validation
+	a.loopDepth++
+
+	// Analyze body
+	typedBody := a.analyzeBlockStmt(stmt.Body)
+
+	// Exit loop context
+	a.loopDepth--
+
+	return &TypedWhileStmt{
+		WhileKeyword: stmt.WhileKeyword,
+		Condition:    typedCond,
+		Body:         typedBody,
+	}
+}
+
 // analyzeBreakStatement analyzes a break statement
 func (a *Analyzer) analyzeBreakStatement(stmt *ast.BreakStmt) TypedStatement {
 	if a.loopDepth == 0 {
 		a.addError("'break' statement not inside a loop", stmt.Keyword, stmt.Keyword).
-			WithHint("break can only be used inside for loops")
+			WithHint("break can only be used inside for or while loops")
 	}
 	return &TypedBreakStmt{Keyword: stmt.Keyword}
 }
@@ -1083,7 +1117,7 @@ func (a *Analyzer) analyzeBreakStatement(stmt *ast.BreakStmt) TypedStatement {
 func (a *Analyzer) analyzeContinueStatement(stmt *ast.ContinueStmt) TypedStatement {
 	if a.loopDepth == 0 {
 		a.addError("'continue' statement not inside a loop", stmt.Keyword, stmt.Keyword).
-			WithHint("continue can only be used inside for loops")
+			WithHint("continue can only be used inside for or while loops")
 	}
 	return &TypedContinueStmt{Keyword: stmt.Keyword}
 }

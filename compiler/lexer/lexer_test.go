@@ -1274,3 +1274,76 @@ func TestLexerWhenTokens(t *testing.T) {
 		})
 	}
 }
+
+func TestLexerWhileTokens(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []Token
+	}{
+		{
+			name:  "while keyword",
+			input: "while",
+			expected: []Token{
+				{Type: TokenTypeWhile, Value: "while"},
+			},
+		},
+		{
+			name:  "while loop without parens",
+			input: "while x < 5 { }",
+			expected: []Token{
+				{Type: TokenTypeWhile, Value: "while"},
+				{Type: TokenTypeIdentifier, Value: "x"},
+				{Type: TokenTypeLessThan, Value: "<"},
+				{Type: TokenTypeInteger, Value: "5"},
+				{Type: TokenTypeLBrace, Value: "{"},
+				{Type: TokenTypeRBrace, Value: "}"},
+			},
+		},
+		{
+			name:  "while loop with parens",
+			input: "while (x < 5) { }",
+			expected: []Token{
+				{Type: TokenTypeWhile, Value: "while"},
+				{Type: TokenTypeLParen, Value: "("},
+				{Type: TokenTypeIdentifier, Value: "x"},
+				{Type: TokenTypeLessThan, Value: "<"},
+				{Type: TokenTypeInteger, Value: "5"},
+				{Type: TokenTypeRParen, Value: ")"},
+				{Type: TokenTypeLBrace, Value: "{"},
+				{Type: TokenTypeRBrace, Value: "}"},
+			},
+		},
+		{
+			name:  "identifier starting with while",
+			input: "whileloop",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "whileloop"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("unexpected errors: %v", l.Errors)
+			}
+
+			if len(l.Tokens) != len(tt.expected) {
+				t.Fatalf("expected %d tokens, got %d: %v", len(tt.expected), len(l.Tokens), l.Tokens)
+			}
+
+			for i, token := range l.Tokens {
+				if token.Type != tt.expected[i].Type {
+					t.Errorf("token %d: expected type %v, got %v", i, tt.expected[i].Type, token.Type)
+				}
+				if token.Value != tt.expected[i].Value {
+					t.Errorf("token %d: expected value %q, got %q", i, tt.expected[i].Value, token.Value)
+				}
+			}
+		})
+	}
+}

@@ -319,3 +319,24 @@ func whenExpr(cases ...ast.WhenCase) *ast.WhenExpr {
 		RightBrace:  pos(1, 20),
 	}
 }
+
+func whileStmt(cond ast.Expression, stmts ...ast.Statement) *ast.WhileStmt {
+	return &ast.WhileStmt{
+		WhileKeyword: pos(1, 1),
+		HasParens:    false,
+		Condition:    cond,
+		Body: &ast.BlockStmt{
+			LeftBrace:  pos(1, 10),
+			Statements: stmts,
+			RightBrace: pos(1, 20),
+		},
+	}
+}
+
+func breakStmt() *ast.BreakStmt {
+	return &ast.BreakStmt{Keyword: pos(1, 1)}
+}
+
+func continueStmt() *ast.ContinueStmt {
+	return &ast.ContinueStmt{Keyword: pos(1, 1)}
+}

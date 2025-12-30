@@ -2336,3 +2336,174 @@ func TestParserWhenErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestParserWhileStatement(t *testing.T) {
+	tests := []struct {
+		name      string
+		source    string
+		hasParens bool
+	}{
+		{
+			name: "simple while without parens",
+			source: `fn main(): void {
+    var i = 0
+    while i < 5 {
+        i = i + 1
+    }
+}`,
+			hasParens: false,
+		},
+		{
+			name: "simple while with parens",
+			source: `fn main(): void {
+    var i = 0
+    while (i < 5) {
+        i = i + 1
+    }
+}`,
+			hasParens: true,
+		},
+		{
+			name: "while with break",
+			source: `fn main(): void {
+    var i = 0
+    while i < 10 {
+        if i == 5 {
+            break
+        }
+        i = i + 1
+    }
+}`,
+			hasParens: false,
+		},
+		{
+			name: "while with continue",
+			source: `fn main(): void {
+    var i = 0
+    while i < 10 {
+        i = i + 1
+        if i == 5 {
+            continue
+        }
+    }
+}`,
+			hasParens: false,
+		},
+		{
+			name: "nested while loops",
+			source: `fn main(): void {
+    var i = 0
+    while i < 3 {
+        var j = 0
+        while j < 2 {
+            j = j + 1
+        }
+        i = i + 1
+    }
+}`,
+			hasParens: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			if program == nil {
+				t.Fatal("expected program, got nil")
+			}
+
+			fnDecl, ok := program.Declarations[0].(*ast.FunctionDecl)
+			if !ok {
+				t.Fatal("expected FunctionDecl")
+			}
+
+			// Find the while statement (may not be the first statement)
+			var whileStmt *ast.WhileStmt
+			for _, stmt := range fnDecl.Body.Statements {
+				if ws, ok := stmt.(*ast.WhileStmt); ok {
+					whileStmt = ws
+					break
+				}
+			}
+
+			if whileStmt == nil {
+				t.Fatal("expected WhileStmt in function body")
+			}
+
+			if whileStmt.HasParens != tt.hasParens {
+				t.Errorf("expected HasParens=%v, got %v", tt.hasParens, whileStmt.HasParens)
+			}
+
+			if whileStmt.Condition == nil {
+				t.Error("expected non-nil Condition")
+			}
+
+			if whileStmt.Body == nil {
+				t.Error("expected non-nil Body")
+			}
+		})
+	}
+}
+
+func TestParserWhileErrors(t *testing.T) {
+	tests := []struct {
+		name          string
+		source        string
+		expectedError string
+	}{
+		{
+			name: "while missing closing paren",
+			source: `fn main(): void {
+    while (i < 5 {
+        i = i + 1
+    }
+}`,
+			expectedError: "expected ')'",
+		},
+		{
+			name: "while missing body",
+			source: `fn main(): void {
+    while i < 5
+}`,
+			expectedError: "expected '{'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			p := NewParser(l.Tokens)
+			p.Parse()
+
+			if len(p.Errors) == 0 {
+				t.Fatal("expected parser errors")
+			}
+
+			found := false
+			for _, err := range p.Errors {
+				if strings.Contains(err.Message, tt.expectedError) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected error containing %q, got errors: %v", tt.expectedError, p.Errors)
+			}
+		})
+	}
+}

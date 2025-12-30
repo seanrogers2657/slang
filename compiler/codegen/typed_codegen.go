@@ -194,6 +194,8 @@ func (g *TypedCodeGenerator) generateStmt(stmt semantic.TypedStatement, ctx *Bas
 		return g.generateIfStmt(s, ctx)
 	case *semantic.TypedForStmt:
 		return g.generateForStmt(s, ctx)
+	case *semantic.TypedWhileStmt:
+		return g.generateWhileStmt(s, ctx)
 	case *semantic.TypedBreakStmt:
 		return g.generateBreakStmt(s, ctx)
 	case *semantic.TypedContinueStmt:
@@ -790,6 +792,50 @@ func (g *TypedCodeGenerator) generateForStmt(stmt *semantic.TypedForStmt, ctx *B
 		}
 		builder.WriteString(updateCode)
 	}
+
+	// Jump back to start
+	builder.WriteString(fmt.Sprintf("    b %s\n", loopStartLabel))
+
+	// Loop end label (where break jumps to)
+	builder.WriteString(fmt.Sprintf("%s:\n", loopEndLabel))
+
+	return builder.String(), nil
+}
+
+func (g *TypedCodeGenerator) generateWhileStmt(stmt *semantic.TypedWhileStmt, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Generate labels with shared ID for the same loop
+	loopID := ctx.NextLabelID()
+	loopStartLabel := fmt.Sprintf("_while_%d", loopID)
+	loopContinueLabel := fmt.Sprintf("_while_continue_%d", loopID)
+	loopEndLabel := fmt.Sprintf("_while_end_%d", loopID)
+
+	// Push loop labels onto stack for break/continue
+	ctx.PushLoop(loopContinueLabel, loopEndLabel)
+	defer ctx.PopLoop()
+
+	// Loop start label
+	builder.WriteString(fmt.Sprintf("%s:\n", loopStartLabel))
+
+	// Generate condition check (use optimized direct conditional branch)
+	condCode, _, err := g.generateConditionBranchIfFalse(stmt.Condition, loopEndLabel, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(condCode)
+
+	// Generate body
+	for _, bodyStmt := range stmt.Body.Statements {
+		stmtCode, err := g.generateStmt(bodyStmt, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(stmtCode)
+	}
+
+	// Continue label (where continue jumps to)
+	builder.WriteString(fmt.Sprintf("%s:\n", loopContinueLabel))
 
 	// Jump back to start
 	builder.WriteString(fmt.Sprintf("    b %s\n", loopStartLabel))

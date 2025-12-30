@@ -24,6 +24,7 @@ var keywords = map[string]TokenType{
 	"break":    TokenTypeBreak,
 	"continue": TokenTypeContinue,
 	"when":     TokenTypeWhen,
+	"while":    TokenTypeWhile,
 }
 
 type TokenType int
@@ -74,6 +75,7 @@ const (
 	TokenTypeArrow
 	TokenTypeLBracket
 	TokenTypeRBracket
+	TokenTypeWhile
 )
 
 // String returns a human-readable name for the token type
@@ -169,6 +171,8 @@ func (t TokenType) String() string {
 		return "LBRACKET"
 	case TokenTypeRBracket:
 		return "RBRACKET"
+	case TokenTypeWhile:
+		return "WHILE"
 	default:
 		return "UNKNOWN"
 	}

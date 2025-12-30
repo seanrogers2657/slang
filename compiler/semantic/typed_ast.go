@@ -317,6 +317,18 @@ func (s *TypedForStmt) End() ast.Position { return s.Body.End() }
 func (s *TypedForStmt) GetType() Type     { return TypeVoid }
 func (s *TypedForStmt) typedStmtNode()    {}
 
+// TypedWhileStmt represents a typed while-loop statement
+type TypedWhileStmt struct {
+	WhileKeyword ast.Position
+	Condition    TypedExpression // required for while loops
+	Body         *TypedBlockStmt
+}
+
+func (s *TypedWhileStmt) Pos() ast.Position { return s.WhileKeyword }
+func (s *TypedWhileStmt) End() ast.Position { return s.Body.End() }
+func (s *TypedWhileStmt) GetType() Type     { return TypeVoid }
+func (s *TypedWhileStmt) typedStmtNode()    {}
+
 // TypedBreakStmt represents a typed break statement
 type TypedBreakStmt struct {
 	Keyword ast.Position

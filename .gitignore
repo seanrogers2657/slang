@@ -6,3 +6,4 @@ go.work
 go.work.sum
 slasm
 !slasm/
+_programs/scratch/

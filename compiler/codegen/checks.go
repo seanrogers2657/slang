@@ -40,13 +40,11 @@ func (c *CheckGenerator) EmitSignedAddCheck(line int) string {
 	labelID := c.nextLabel()
 	var b strings.Builder
 
-	// Use adds to set overflow flag
+	// Use adds to set overflow flag, branch if NO overflow (vc = overflow clear)
 	b.WriteString("    adds x2, x0, x1\n")
-	b.WriteString(fmt.Sprintf("    b.vs _panic_%d\n", labelID))
+	b.WriteString(fmt.Sprintf("    b.vc _continue_%d\n", labelID))
 
-	// Add the panic label at the end (will be placed in cold section)
-	b.WriteString(fmt.Sprintf("    b _continue_%d\n", labelID))
-	b.WriteString(fmt.Sprintf("_panic_%d:\n", labelID))
+	// Panic code (only reached on overflow)
 	b.WriteString(fmt.Sprintf("    mov x0, #%d\n", runtime.ErrOverflowAddSigned))
 	b.WriteString(fmt.Sprintf("    mov x1, #%d\n", line))
 	b.WriteString("    bl _slang_panic\n")
@@ -60,10 +58,11 @@ func (c *CheckGenerator) EmitSignedSubCheck(line int) string {
 	labelID := c.nextLabel()
 	var b strings.Builder
 
+	// Use subs to set overflow flag, branch if NO overflow (vc = overflow clear)
 	b.WriteString("    subs x2, x0, x1\n")
-	b.WriteString(fmt.Sprintf("    b.vs _panic_%d\n", labelID))
-	b.WriteString(fmt.Sprintf("    b _continue_%d\n", labelID))
-	b.WriteString(fmt.Sprintf("_panic_%d:\n", labelID))
+	b.WriteString(fmt.Sprintf("    b.vc _continue_%d\n", labelID))
+
+	// Panic code (only reached on overflow)
 	b.WriteString(fmt.Sprintf("    mov x0, #%d\n", runtime.ErrOverflowSubSigned))
 	b.WriteString(fmt.Sprintf("    mov x1, #%d\n", line))
 	b.WriteString("    bl _slang_panic\n")
@@ -83,10 +82,11 @@ func (c *CheckGenerator) EmitSignedMulCheck(line int) string {
 	b.WriteString("    smulh x3, x0, x1\n")
 	// If no overflow, high bits should be sign extension of low bits
 	// Sign extension of x2 is: x2, asr #63 (all 0s or all 1s)
+	// Branch if equal (no overflow)
 	b.WriteString("    cmp x3, x2, asr #63\n")
-	b.WriteString(fmt.Sprintf("    b.ne _panic_%d\n", labelID))
-	b.WriteString(fmt.Sprintf("    b _continue_%d\n", labelID))
-	b.WriteString(fmt.Sprintf("_panic_%d:\n", labelID))
+	b.WriteString(fmt.Sprintf("    b.eq _continue_%d\n", labelID))
+
+	// Panic code (only reached on overflow)
 	b.WriteString(fmt.Sprintf("    mov x0, #%d\n", runtime.ErrOverflowMulSigned))
 	b.WriteString(fmt.Sprintf("    mov x1, #%d\n", line))
 	b.WriteString("    bl _slang_panic\n")
@@ -100,10 +100,11 @@ func (c *CheckGenerator) EmitUnsignedAddCheck(line int) string {
 	labelID := c.nextLabel()
 	var b strings.Builder
 
+	// Branch if NO overflow (cc = carry clear)
 	b.WriteString("    adds x2, x0, x1\n")
-	b.WriteString(fmt.Sprintf("    b.cs _panic_%d\n", labelID)) // carry set = overflow
-	b.WriteString(fmt.Sprintf("    b _continue_%d\n", labelID))
-	b.WriteString(fmt.Sprintf("_panic_%d:\n", labelID))
+	b.WriteString(fmt.Sprintf("    b.cc _continue_%d\n", labelID))
+
+	// Panic code (only reached on overflow)
 	b.WriteString(fmt.Sprintf("    mov x0, #%d\n", runtime.ErrOverflowAddUnsigned))
 	b.WriteString(fmt.Sprintf("    mov x1, #%d\n", line))
 	b.WriteString("    bl _slang_panic\n")
@@ -117,10 +118,11 @@ func (c *CheckGenerator) EmitUnsignedSubCheck(line int) string {
 	labelID := c.nextLabel()
 	var b strings.Builder
 
+	// Branch if NO underflow (cs = carry set means no borrow)
 	b.WriteString("    subs x2, x0, x1\n")
-	b.WriteString(fmt.Sprintf("    b.cc _panic_%d\n", labelID)) // carry clear = underflow
-	b.WriteString(fmt.Sprintf("    b _continue_%d\n", labelID))
-	b.WriteString(fmt.Sprintf("_panic_%d:\n", labelID))
+	b.WriteString(fmt.Sprintf("    b.cs _continue_%d\n", labelID))
+
+	// Panic code (only reached on underflow)
 	b.WriteString(fmt.Sprintf("    mov x0, #%d\n", runtime.ErrUnderflowSubUnsigned))
 	b.WriteString(fmt.Sprintf("    mov x1, #%d\n", line))
 	b.WriteString("    bl _slang_panic\n")
@@ -136,10 +138,10 @@ func (c *CheckGenerator) EmitUnsignedMulCheck(line int) string {
 
 	b.WriteString("    mul x2, x0, x1\n")
 	b.WriteString("    umulh x3, x0, x1\n")
-	// If no overflow, high bits should be zero
-	b.WriteString(fmt.Sprintf("    cbnz x3, _panic_%d\n", labelID))
-	b.WriteString(fmt.Sprintf("    b _continue_%d\n", labelID))
-	b.WriteString(fmt.Sprintf("_panic_%d:\n", labelID))
+	// If no overflow, high bits should be zero - branch if zero (no overflow)
+	b.WriteString(fmt.Sprintf("    cbz x3, _continue_%d\n", labelID))
+
+	// Panic code (only reached on overflow)
 	b.WriteString(fmt.Sprintf("    mov x0, #%d\n", runtime.ErrOverflowMulUnsigned))
 	b.WriteString(fmt.Sprintf("    mov x1, #%d\n", line))
 	b.WriteString("    bl _slang_panic\n")
@@ -154,18 +156,20 @@ func (c *CheckGenerator) EmitDivByZeroCheck(line int, signed bool) string {
 	labelID := c.nextLabel()
 	var b strings.Builder
 
-	b.WriteString(fmt.Sprintf("    cbz x1, _panic_%d\n", labelID))
+	// Branch if divisor is non-zero (skip panic)
+	b.WriteString(fmt.Sprintf("    cbnz x1, _ok_%d\n", labelID))
+
+	// Panic code (only reached on division by zero)
+	b.WriteString(fmt.Sprintf("    mov x0, #%d\n", runtime.ErrDivByZero))
+	b.WriteString(fmt.Sprintf("    mov x1, #%d\n", line))
+	b.WriteString("    bl _slang_panic\n")
+
+	b.WriteString(fmt.Sprintf("_ok_%d:\n", labelID))
 	if signed {
 		b.WriteString("    sdiv x2, x0, x1\n")
 	} else {
 		b.WriteString("    udiv x2, x0, x1\n")
 	}
-	b.WriteString(fmt.Sprintf("    b _continue_%d\n", labelID))
-	b.WriteString(fmt.Sprintf("_panic_%d:\n", labelID))
-	b.WriteString(fmt.Sprintf("    mov x0, #%d\n", runtime.ErrDivByZero))
-	b.WriteString(fmt.Sprintf("    mov x1, #%d\n", line))
-	b.WriteString("    bl _slang_panic\n")
-	b.WriteString(fmt.Sprintf("_continue_%d:\n", labelID))
 
 	return b.String()
 }
@@ -176,19 +180,21 @@ func (c *CheckGenerator) EmitModByZeroCheck(line int, signed bool) string {
 	labelID := c.nextLabel()
 	var b strings.Builder
 
-	b.WriteString(fmt.Sprintf("    cbz x1, _panic_%d\n", labelID))
+	// Branch if divisor is non-zero (skip panic)
+	b.WriteString(fmt.Sprintf("    cbnz x1, _ok_%d\n", labelID))
+
+	// Panic code (only reached on modulo by zero)
+	b.WriteString(fmt.Sprintf("    mov x0, #%d\n", runtime.ErrModByZero))
+	b.WriteString(fmt.Sprintf("    mov x1, #%d\n", line))
+	b.WriteString("    bl _slang_panic\n")
+
+	b.WriteString(fmt.Sprintf("_ok_%d:\n", labelID))
 	if signed {
 		b.WriteString("    sdiv x3, x0, x1\n")
 	} else {
 		b.WriteString("    udiv x3, x0, x1\n")
 	}
 	b.WriteString("    msub x2, x3, x1, x0\n")
-	b.WriteString(fmt.Sprintf("    b _continue_%d\n", labelID))
-	b.WriteString(fmt.Sprintf("_panic_%d:\n", labelID))
-	b.WriteString(fmt.Sprintf("    mov x0, #%d\n", runtime.ErrModByZero))
-	b.WriteString(fmt.Sprintf("    mov x1, #%d\n", line))
-	b.WriteString("    bl _slang_panic\n")
-	b.WriteString(fmt.Sprintf("_continue_%d:\n", labelID))
 
 	return b.String()
 }

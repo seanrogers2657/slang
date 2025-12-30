@@ -737,10 +737,11 @@ func (g *TypedCodeGenerator) generateIfStmt(stmt *semantic.TypedIfStmt, ctx *Bas
 func (g *TypedCodeGenerator) generateForStmt(stmt *semantic.TypedForStmt, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
-	// Generate labels
-	loopStartLabel := ctx.NextLabel("for_start")
-	loopContinueLabel := ctx.NextLabel("for_continue")
-	loopEndLabel := ctx.NextLabel("for_end")
+	// Generate labels with shared ID for the same loop
+	loopID := ctx.NextLabelID()
+	loopStartLabel := fmt.Sprintf("_for_%d", loopID)
+	loopContinueLabel := fmt.Sprintf("_for_continue_%d", loopID)
+	loopEndLabel := fmt.Sprintf("_for_end_%d", loopID)
 
 	// Push loop labels onto stack for break/continue
 	ctx.PushLoop(loopContinueLabel, loopEndLabel)
@@ -760,14 +761,12 @@ func (g *TypedCodeGenerator) generateForStmt(stmt *semantic.TypedForStmt, ctx *B
 
 	// Generate condition check (if present)
 	if stmt.Condition != nil {
-		condCode, err := g.generateExpr(stmt.Condition, ctx)
+		// Use optimized direct conditional branch for simple comparisons
+		condCode, _, err := g.generateConditionBranchIfFalse(stmt.Condition, loopEndLabel, ctx)
 		if err != nil {
 			return "", err
 		}
 		builder.WriteString(condCode)
-
-		// If condition is false (x2 == 0), jump to loop end
-		builder.WriteString(fmt.Sprintf("    cbz x2, %s\n", loopEndLabel))
 	}
 	// If no condition, it's an infinite loop (no conditional jump)
 
@@ -962,6 +961,114 @@ func isComplexOperand(expr semantic.TypedExpression) bool {
 	default:
 		return false
 	}
+}
+
+// isComparisonOp returns true if the operator is a comparison operator.
+func isComparisonOp(op string) bool {
+	switch op {
+	case "<", ">", "<=", ">=", "==", "!=":
+		return true
+	default:
+		return false
+	}
+}
+
+// inverseCondition returns the ARM64 condition code for branching when the
+// comparison is FALSE (i.e., the inverse of the comparison).
+func inverseCondition(op string, signed bool) string {
+	switch op {
+	case "<":
+		if signed {
+			return "ge" // branch if >= (signed)
+		}
+		return "hs" // branch if >= (unsigned: higher or same)
+	case ">":
+		if signed {
+			return "le" // branch if <= (signed)
+		}
+		return "ls" // branch if <= (unsigned: lower or same)
+	case "<=":
+		if signed {
+			return "gt" // branch if > (signed)
+		}
+		return "hi" // branch if > (unsigned: higher)
+	case ">=":
+		if signed {
+			return "lt" // branch if < (signed)
+		}
+		return "lo" // branch if < (unsigned: lower)
+	case "==":
+		return "ne" // branch if not equal
+	case "!=":
+		return "eq" // branch if equal
+	default:
+		return ""
+	}
+}
+
+// generateConditionBranchIfFalse generates code that branches to falseLabel if
+// the condition is false. For simple comparisons, this generates optimized code
+// using a direct conditional branch instead of cset+cbz.
+// Returns the generated code and a boolean indicating if it was optimized.
+func (g *TypedCodeGenerator) generateConditionBranchIfFalse(cond semantic.TypedExpression, falseLabel string, ctx *BaseContext) (string, bool, error) {
+	// Check if condition is a simple comparison
+	binExpr, ok := cond.(*semantic.TypedBinaryExpr)
+	if !ok || !isComparisonOp(binExpr.Op) {
+		// Fall back to general expression generation
+		condCode, err := g.generateExpr(cond, ctx)
+		if err != nil {
+			return "", false, err
+		}
+		return condCode + fmt.Sprintf("    cbz x2, %s\n", falseLabel), false, nil
+	}
+
+	// Skip optimization for complex operands (need register preservation)
+	if isComplexOperand(binExpr.Left) || isComplexOperand(binExpr.Right) {
+		condCode, err := g.generateExpr(cond, ctx)
+		if err != nil {
+			return "", false, err
+		}
+		return condCode + fmt.Sprintf("    cbz x2, %s\n", falseLabel), false, nil
+	}
+
+	builder := strings.Builder{}
+
+	// Generate left operand into x0
+	leftCode, err := g.generateOperandToReg(binExpr.Left, "x0", ctx)
+	if err != nil {
+		return "", false, err
+	}
+	builder.WriteString(leftCode)
+
+	// Determine signedness for condition code
+	isSigned := true
+	if numType, ok := binExpr.Left.GetType().(semantic.NumericType); ok {
+		isSigned = numType.IsSigned()
+	}
+
+	// Check if right operand is a small literal (can use immediate)
+	if lit, ok := binExpr.Right.(*semantic.TypedLiteralExpr); ok && lit.LitType == ast.LiteralTypeInteger {
+		val, err := strconv.ParseInt(lit.Value, 10, 64)
+		if err == nil && val >= 0 && val < 4096 {
+			// Use compare with immediate
+			builder.WriteString(fmt.Sprintf("    cmp x0, #%d\n", val))
+			builder.WriteString(fmt.Sprintf("    b.%s %s\n", inverseCondition(binExpr.Op, isSigned), falseLabel))
+			return builder.String(), true, nil
+		}
+	}
+
+	// Generate right operand into x1
+	rightCode, err := g.generateOperandToReg(binExpr.Right, "x1", ctx)
+	if err != nil {
+		return "", false, err
+	}
+	builder.WriteString(rightCode)
+
+	// Generate compare and conditional branch
+	builder.WriteString("    cmp x0, x1\n")
+	builder.WriteString(fmt.Sprintf("    b.%s %s\n", inverseCondition(binExpr.Op, isSigned), falseLabel))
+
+	return builder.String(), true, nil
 }
 
 func (g *TypedCodeGenerator) generateBinaryExpr(expr *semantic.TypedBinaryExpr, ctx *BaseContext) (string, error) {

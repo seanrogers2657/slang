@@ -199,7 +199,7 @@ func TestTypedCodeGenerator_VarDeclWithExpression(t *testing.T) {
 		"mov x0, #10",
 		"mov x1, #20",
 		"adds x2, x0, x1", // checked add with flags
-		"b.vs _panic",     // branch on overflow
+		"b.vc _continue",  // branch if no overflow (skip panic)
 		"str x2, [x29, #-16]",
 	}
 
@@ -217,11 +217,11 @@ func TestTypedCodeGenerator_BinaryExpr_AllIntOperations(t *testing.T) {
 		op       string
 		expected []string
 	}{
-		{"addition", "+", []string{"adds x2, x0, x1", "b.vs"}},                  // checked add
-		{"subtraction", "-", []string{"subs x2, x0, x1", "b.vs"}},               // checked sub
+		{"addition", "+", []string{"adds x2, x0, x1", "b.vc"}},                  // checked add (branch if no overflow)
+		{"subtraction", "-", []string{"subs x2, x0, x1", "b.vc"}},               // checked sub (branch if no overflow)
 		{"multiplication", "*", []string{"mul x2, x0, x1", "smulh x3, x0, x1"}}, // checked mul
-		{"division", "/", []string{"cbz x1", "sdiv x2, x0, x1"}},                // div-by-zero check
-		{"modulo", "%", []string{"cbz x1", "sdiv x3, x0, x1", "msub x2, x3, x1, x0"}},
+		{"division", "/", []string{"cbnz x1", "sdiv x2, x0, x1"}},               // div-by-zero check (branch if non-zero)
+		{"modulo", "%", []string{"cbnz x1", "sdiv x3, x0, x1", "msub x2, x3, x1, x0"}},
 		{"equal", "==", []string{"cmp x0, x1", "cset x2, eq"}},
 		{"not equal", "!=", []string{"cmp x0, x1", "cset x2, ne"}},
 		{"less than", "<", []string{"cmp x0, x1", "cset x2, lt"}},

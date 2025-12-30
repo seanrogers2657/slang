@@ -73,6 +73,13 @@ func (ctx *BaseContext) NextLabel(prefix string) string {
 	return fmt.Sprintf("_%s_%d", prefix, ctx.labelCounter)
 }
 
+// NextLabelID returns the next unique label ID without a prefix.
+// Use this when you need multiple related labels to share the same ID.
+func (ctx *BaseContext) NextLabelID() int {
+	ctx.labelCounter++
+	return ctx.labelCounter
+}
+
 // PushLoop pushes new loop labels onto the stack for break/continue support.
 func (ctx *BaseContext) PushLoop(continueLabel, breakLabel string) {
 	ctx.loopStack = append(ctx.loopStack, loopLabels{continueLabel, breakLabel})

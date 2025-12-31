@@ -322,6 +322,49 @@ func TestAnalyzeBoundsCheckingNegative(t *testing.T) {
 	})
 }
 
+func TestAnalyzeUntypedIntegerLiteralOverflow(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		errorMsg string
+	}{
+		// i64 max is 9223372036854775807
+		{"i64 overflow by 1", "9223372036854775808", "out of range for i64"},
+		{"large overflow", "99999999999999999999999999999", "out of range for i64"},
+		{"i64 min underflow by 1", "-9223372036854775809", "out of range for i64"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			test := newTest(t).withScope()
+			// Untyped variable declaration - should infer i64 and check bounds
+			test.analyzer.analyzeVarDeclStatement(varDecl("x", false, intLit(tt.value)))
+			test.expectErrorContaining(tt.errorMsg)
+		})
+	}
+}
+
+func TestAnalyzeUntypedIntegerLiteralValid(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{"i64 max", "9223372036854775807"},
+		{"i64 min", "-9223372036854775808"},
+		{"zero", "0"},
+		{"small positive", "42"},
+		{"small negative", "-100"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			test := newTest(t).withScope()
+			test.analyzer.analyzeVarDeclStatement(varDecl("x", false, intLit(tt.value)))
+			test.expectNoErrors()
+		})
+	}
+}
+
 // -----------------------------------------------------------------------------
 // Type Compatibility Tests
 // -----------------------------------------------------------------------------

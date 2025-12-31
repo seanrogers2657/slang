@@ -484,6 +484,13 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 	} else {
 		// Infer type from initializer
 		declaredType = initType
+
+		// For integer literals without type annotation, check bounds against i64 (the default type)
+		if litExpr, ok := typedInit.(*TypedLiteralExpr); ok && litExpr.LitType == ast.LiteralTypeInteger {
+			if !a.checkIntegerBounds(litExpr.Value, TypeInteger, litExpr.StartPos) {
+				declaredType = TypeError
+			}
+		}
 	}
 
 	// Check for duplicate declaration in the current scope

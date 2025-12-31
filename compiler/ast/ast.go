@@ -119,6 +119,39 @@ func (c *CallExpr) exprNode()     {}
 // HasNamedArguments returns true if the call uses named arguments
 func (c *CallExpr) HasNamedArguments() bool { return len(c.NamedArguments) > 0 }
 
+// StructLiteral represents a struct instantiation with braces (e.g., Point { 10, 20 } or Point { x: 10, y: 20 })
+type StructLiteral struct {
+	Name           string          // struct name
+	NamePos        Position        // position of struct name
+	LeftBrace      Position        // position of '{'
+	Arguments      []Expression    // list of positional argument expressions
+	NamedArguments []NamedArgument // list of named arguments (e.g., x: 10, y: 20)
+	RightBrace     Position        // position of '}'
+}
+
+func (s *StructLiteral) Pos() Position { return s.NamePos }
+func (s *StructLiteral) End() Position { return s.RightBrace }
+func (s *StructLiteral) exprNode()     {}
+
+// HasNamedArguments returns true if the struct literal uses named arguments
+func (s *StructLiteral) HasNamedArguments() bool { return len(s.NamedArguments) > 0 }
+
+// AnonStructLiteral represents an anonymous struct literal without a type name (e.g., { x: 0, y: 0 })
+// Used when the type is inferred from context (e.g., val p: Point = { x: 0, y: 0 })
+type AnonStructLiteral struct {
+	LeftBrace      Position        // position of '{'
+	Arguments      []Expression    // list of positional argument expressions
+	NamedArguments []NamedArgument // list of named arguments (e.g., x: 10, y: 20)
+	RightBrace     Position        // position of '}'
+}
+
+func (a *AnonStructLiteral) Pos() Position { return a.LeftBrace }
+func (a *AnonStructLiteral) End() Position { return a.RightBrace }
+func (a *AnonStructLiteral) exprNode()     {}
+
+// HasNamedArguments returns true if the anonymous struct literal uses named arguments
+func (a *AnonStructLiteral) HasNamedArguments() bool { return len(a.NamedArguments) > 0 }
+
 // FieldAccessExpr represents field access (e.g., p.x, rect.topLeft.x)
 type FieldAccessExpr struct {
 	Object   Expression // the struct expression
@@ -407,34 +440,36 @@ func (f *FunctionDecl) Pos() Position { return f.NamePos }
 func (f *FunctionDecl) End() Position { return f.Body.End() }
 func (f *FunctionDecl) declNode()     {}
 
-// StructField represents a field in a struct definition (e.g., val x: i64)
+// StructField represents a field in a struct definition (e.g., val x: i64, var y: i64)
 type StructField struct {
-	Keyword  Position // position of 'val' or 'var' keyword
-	Mutable  bool     // true for var, false for val
-	Name     string   // field name
-	NamePos  Position // position of field name
-	Colon    Position // position of ':'
-	TypeName string   // type name (e.g., "i64", "Point")
-	TypePos  Position // position of type name
+	Mutable    bool     // true for var, false for val
+	KeywordPos Position // position of 'val' or 'var' keyword
+	Name       string   // field name
+	NamePos    Position // position of field name
+	Colon      Position // position of ':'
+	TypeName   string   // type name (e.g., "i64", "Point")
+	TypePos    Position // position of type name
 }
 
-func (f *StructField) Pos() Position { return f.Keyword }
+func (f *StructField) Pos() Position { return f.KeywordPos }
 func (f *StructField) End() Position {
 	return Position{Line: f.TypePos.Line, Column: f.TypePos.Column + len(f.TypeName), Offset: f.TypePos.Offset + len(f.TypeName)}
 }
 
-// StructDecl represents a struct declaration (e.g., struct Point(val x: i64, var y: i64))
+// StructDecl represents a struct declaration
+// Syntax: Name = struct { fields }
 type StructDecl struct {
-	StructKeyword Position      // position of 'struct' keyword
 	Name          string        // struct name
 	NamePos       Position      // position of struct name
-	LeftParen     Position      // position of '('
+	EqualsPos     Position      // position of '='
+	StructKeyword Position      // position of 'struct' keyword
+	LeftBrace     Position      // position of '{'
 	Fields        []StructField // list of fields
-	RightParen    Position      // position of ')'
+	RightBrace    Position      // position of '}'
 }
 
-func (s *StructDecl) Pos() Position { return s.StructKeyword }
-func (s *StructDecl) End() Position { return s.RightParen }
+func (s *StructDecl) Pos() Position { return s.NamePos }
+func (s *StructDecl) End() Position { return s.RightBrace }
 func (s *StructDecl) declNode()     {}
 
 // ============================================================================

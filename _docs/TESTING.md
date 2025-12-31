@@ -6,10 +6,10 @@ This document describes the comprehensive testing framework for the Slang compil
 
 The testing framework covers all major components of the Slang compiler:
 
-- **Lexer** (frontend/lexer) - Tokenization of source code
-- **Parser** (frontend/parser) - AST construction
-- **Semantic Analyzer** (frontend/semantic) - Type checking and validation
-- **Code Generator** (backend/codegen) - ARM64 assembly generation
+- **Lexer** (compiler/lexer) - Tokenization of source code
+- **Parser** (compiler/parser) - AST construction
+- **Semantic Analyzer** (compiler/semantic) - Type checking and validation
+- **Code Generator** (compiler/codegen) - ARM64 assembly generation
 - **Assembler** (assembler/slasm) - Native ARM64 assembler
 - **End-to-End Tests** (test/) - E2E tests for sl and slasm
 - **Integration Tests** - Pipeline integration tests
@@ -56,10 +56,10 @@ go test ./... -coverprofile=coverage.out
 go tool cover -html=coverage.out -o coverage.html
 
 # Run specific package tests
-go test ./frontend/lexer/...
-go test ./frontend/parser/...
-go test ./frontend/semantic/...
-go test ./backend/codegen/...
+go test ./compiler/lexer/...
+go test ./compiler/parser/...
+go test ./compiler/semantic/...
+go test ./compiler/codegen/...
 go test ./assembler/slasm/...
 go test ./test/sl/...      # E2E tests for sl compiler
 go test ./test/slasm/...   # E2E tests for slasm assembler
@@ -78,7 +78,7 @@ go test ./assembler/slasm/... -run TestEncode
 
 ## Test Organization
 
-### Lexer Tests (`frontend/lexer/lexer_test.go`)
+### Lexer Tests (`compiler/lexer/lexer_test.go`)
 
 Tests for the tokenization stage of the compiler:
 
@@ -89,7 +89,7 @@ Tests for the tokenization stage of the compiler:
 - **TestLexerErrors**: Error handling for invalid input
 - **TestLexerWhitespace**: Whitespace handling (spaces, tabs, mixed)
 
-### Parser Tests (`frontend/parser/parser_test.go`)
+### Parser Tests (`compiler/parser/parser_test.go`)
 
 Tests for the AST construction stage:
 
@@ -100,7 +100,7 @@ Tests for the AST construction stage:
 - **TestParserErrors**: Error handling for unsupported operations
 - **TestParserIntegrationWithLexer**: Integration between lexer and parser
 
-### Semantic Analyzer Tests (`frontend/semantic/analyzer_test.go`)
+### Semantic Analyzer Tests (`compiler/semantic/analyzer_test.go`)
 
 Tests for type checking and semantic validation:
 
@@ -110,7 +110,7 @@ Tests for type checking and semantic validation:
 - **TestAnalyzerMultiStatement**: Analysis of multi-statement programs
 - **TestAnalyzerMainFunction**: Validation of main function presence
 
-### Code Generator Tests (`backend/codegen/codegen_test.go`)
+### Code Generator Tests (`compiler/codegen/codegen_test.go`)
 
 Tests for ARM64 assembly generation:
 
@@ -189,7 +189,7 @@ Example files use `@test:` directives in header comments:
 
 ```slang
 // @test: exit_code=42
-fn main() {
+main = () {
     42
 }
 ```
@@ -224,7 +224,7 @@ _start:
 2. Add `@test:` directives at the top of the file:
    ```slang
    // @test: exit_code=0
-   fn main() {
+   main = () {
        // your test code
    }
    ```
@@ -298,7 +298,7 @@ if err.Error() != expectedError {
 
 ### For Lexer
 
-Add tests to `frontend/lexer/lexer_test.go`:
+Add tests to `compiler/lexer/lexer_test.go`:
 
 ```go
 func TestLexerNewFeature(t *testing.T) {
@@ -322,7 +322,7 @@ func TestLexerNewFeature(t *testing.T) {
 
 ### For Parser
 
-Add tests to `frontend/parser/parser_test.go`:
+Add tests to `compiler/parser/parser_test.go`:
 
 ```go
 func TestParserNewFeature(t *testing.T) {
@@ -346,7 +346,7 @@ func TestParserNewFeature(t *testing.T) {
 
 ### For Code Generator
 
-Add tests to `backend/codegen/codegen_test.go`:
+Add tests to `compiler/codegen/codegen_test.go`:
 
 ```go
 func TestCodegenNewFeature(t *testing.T) {
@@ -407,7 +407,7 @@ Add example files to `_examples/` with `@test:` directives:
 **Slang E2E Test** (`_examples/slang/new_feature.sl`):
 ```slang
 // @test: exit_code=0
-fn main(): void {
+main = () {
     val x = 42
     print(x)
 }

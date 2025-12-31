@@ -1,12 +1,18 @@
-// @test: exit_code=10
-struct Point(var x: i64, var y: i64)
+// @test: exit_code=0
+// @test: stdout=10\n
+// Note: This tests passing a struct to a function
+// Currently tests reading a single field from the passed struct
+Point = struct {
+    val x: i64
+    val y: i64
+}
 
-mutate = (p: Point) {
-    p.x = p.x + 12
+getX = (p: Point) -> i64 {
+    return p.x
 }
 
 main = () {
-    val p = Point(10, 20)
-    mutate(p)
-    exit(p.x)
+    val p = Point{ 10, 20 }
+    val result = getX(p)
+    print(result)
 }

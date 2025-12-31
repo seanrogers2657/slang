@@ -156,7 +156,7 @@ macro swap {
     }
 }
 
-fn main(): void {
+main = () {
     var x = 1
     var y = 2
     var temp = 100       // user's temp, unaffected
@@ -238,7 +238,7 @@ Expands to:
 ### `todo!()`
 
 ```slang
-fn unimplemented(): i64 {
+unimplemented = () -> i64 {
     todo!()  // panics with "not yet implemented"
 }
 ```
@@ -306,7 +306,7 @@ macro dbg {
     }
 }
 
-fn main(): void {
+main = () {
     val x = dbg!(5 + 3)    // prints 8, x = 8
     print(x)               // prints 8
 }
@@ -325,7 +325,7 @@ macro swap {
     }
 }
 
-fn main(): void {
+main = () {
     var x = 10
     var y = 20
     swap!(x, y)
@@ -354,7 +354,7 @@ macro assert {
     }
 }
 
-fn main(): void {
+main = () {
     val x = 5
     assert!(x > 0)
     assert!(x < 10, "x should be less than 10")
@@ -373,7 +373,7 @@ macro print_all {
     }
 }
 
-fn main(): void {
+main = () {
     print_all!(1, 2, 3)
     // Expands to:
     // print(1)
@@ -396,7 +396,7 @@ macro max {
     }
 }
 
-fn main(): void {
+main = () {
     val m1 = max!(3, 7)           // 7
     val m2 = max!(3, 7, 5)        // 7
     print(m1)
@@ -418,7 +418,7 @@ macro with_temp {
     }
 }
 
-fn main(): void {
+main = () {
     val temp = 100           // user's temp
     val result = with_temp!(5)   // macro's temp is renamed
     print(temp)              // prints 100 (unaffected)
@@ -443,7 +443,7 @@ macro repeat {
     }
 }
 
-fn main(): void {
+main = () {
     repeat!(3, print("hello"))
     // prints "hello" three times
 }
@@ -460,7 +460,7 @@ macro need_two {
     }
 }
 
-fn main(): void {
+main = () {
     // Error: macro pattern mismatch
     // 'need_two' expects exactly 2 expression arguments
     val x = need_two!(1, 2, 3)

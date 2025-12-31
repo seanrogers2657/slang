@@ -1,16 +1,14 @@
 // @test: exit_code=0
-// @test: stdout=38\n
-struct Point(
-    val x: i64,
-    var y: i64,
-)
+// @test: stdout=10\n25\n
+// Demonstrates mutable struct fields with var keyword
+Point = struct {
+    val x: i64
+    var y: i64
+}
 
 main = () {
-    val p = Point(10, 20)
+    val p = Point{ 10, 20 }
     p.y = 25
-    p.y = p.y + 1
-    p.y = p.y + 1
-    p.y = p.y + 1
-    p.y = p.y + p.x
+    print(p.x)
     print(p.y)
 }

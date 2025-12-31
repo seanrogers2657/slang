@@ -576,7 +576,7 @@ val street = person.address.street  // Error if address is nullable: use ?. for 
 Demonstrates declaring nullable variables and basic null checks.
 
 ```slang
-fn main(): void {
+main = () {
     val x: i64? = 42              // nullable with value
     val y: i64? = null            // nullable with null
 
@@ -597,12 +597,19 @@ fn main(): void {
 Shows chaining through nullable values without explicit null checks.
 
 ```slang
-struct Address(val street: string, val city: string)
-struct Person(val name: string, val address: Address?)
+Address = struct {
+    val street: string
+    val city: string
+}
 
-fn main(): void {
-    val person1 = Person("Alice", Address("123 Main St", "Springfield"))
-    val person2 = Person("Bob", null)
+Person = struct {
+    val name: string
+    val address: Address?
+}
+
+main = () {
+    val person1 = Person{ "Alice", Address{ "123 Main St", "Springfield" } }
+    val person2 = Person{ "Bob", null }
 
     // Safe call chains - returns null if any part is null
     val street1: string? = person1.address?.street
@@ -625,7 +632,7 @@ fn main(): void {
 Demonstrates automatic type narrowing after null checks.
 
 ```slang
-fn processValue(x: i64?): i64 {
+processValue = (x: i64?) -> i64 {
     // Early return pattern - x is smart cast after this
     if x == null {
         return 0
@@ -635,7 +642,7 @@ fn processValue(x: i64?): i64 {
     x * 2
 }
 
-fn main(): void {
+main = () {
     print(processValue(21))       // prints: 42
     print(processValue(null))     // prints: 0
 }
@@ -646,14 +653,21 @@ fn main(): void {
 Demonstrates complex nullable chains with safe calls.
 
 ```slang
-struct Company(val name: string, val ceo: Person?)
-struct Person(val name: string, val assistant: Person?)
+Company = struct {
+    val name: string
+    val ceo: Person?
+}
 
-fn getCompany(id: i64): Company? {
+Person = struct {
+    val name: string
+    val assistant: Person?
+}
+
+getCompany = (id: i64) -> Company? {
     // ... lookup logic
 }
 
-fn main(): void {
+main = () {
     val company = getCompany(1)
 
     // Deep nullable chain
@@ -681,7 +695,7 @@ fn main(): void {
 Shows nullable element types in arrays.
 
 ```slang
-fn main(): void {
+main = () {
     val maybeNumbers: Array<i64?> = [1, null, 3, null, 5]
 
     var sum = 0
@@ -699,17 +713,20 @@ fn main(): void {
 Shows functions that may return null.
 
 ```slang
-struct User(val name: string, val id: i64)
+User = struct {
+    val name: string
+    val id: i64
+}
 
-fn findUser(id: i64): User? {
+findUser = (id: i64) -> User? {
     if id == 1 {
-        User("admin", 1)
+        User{ "admin", 1 }
     } else {
         null
     }
 }
 
-fn main(): void {
+main = () {
     val user1 = findUser(1)
     val user2 = findUser(999)
 
@@ -730,13 +747,16 @@ fn main(): void {
 Shows practical patterns for working with nullable values.
 
 ```slang
-struct Config(val timeout: i64?, val retries: i64?)
+Config = struct {
+    val timeout: i64?
+    val retries: i64?
+}
 
-fn loadConfig(): Config? {
+loadConfig = () -> Config? {
     // ... load from file
 }
 
-fn main(): void {
+main = () {
     val config = loadConfig()
 
     // Pattern: check and use

@@ -432,6 +432,62 @@ square = (x: int) -> int {
 }
 ```
 
+### Struct Syntax
+
+Structs are declared at the top level using the assignment syntax with `struct` keyword. Each field must have a `val` (immutable) or `var` (mutable) prefix:
+
+```slang
+// Define a struct with immutable and mutable fields
+Point = struct {
+    val x: i64    // immutable field
+    var y: i64    // mutable field
+}
+
+// Nested structs
+Rectangle = struct {
+    val topLeft: Point
+    val bottomRight: Point
+}
+
+main = () {
+    // Create struct instances with positional arguments
+    // Note: no space between struct name and opening brace
+    val p = Point{ 10, 20 }
+    print(p.x)  // prints 10
+    print(p.y)  // prints 20
+
+    // Mutable fields can be reassigned
+    p.y = 25
+    print(p.y)  // prints 25
+
+    // Immutable fields cannot be reassigned
+    // p.x = 30  // Error: cannot assign to immutable field 'x'
+
+    // Create with named arguments (any order)
+    val q = Point{ y: 5, x: 3 }
+    print(q.x)  // prints 3
+
+    // Anonymous struct literal with type annotation
+    val r: Point = { x: 7, y: 8 }
+    print(r.x)  // prints 7
+
+    // Nested struct creation
+    val rect = Rectangle{ Point{ 0, 0 }, Point{ 100, 100 } }
+    print(rect.topLeft.x)       // prints 0
+    print(rect.bottomRight.x)   // prints 100
+}
+```
+
+**Struct rules:**
+- Each field must be prefixed with `val` (immutable) or `var` (mutable)
+- `val` fields cannot be reassigned after struct creation
+- `var` fields can be reassigned
+- Field names must be unique within a struct
+- Structs must be declared at the top level (not inside functions)
+- Struct names must be unique (no duplicate definitions)
+- Struct literals use braces: `Point{ 1, 2 }` (no space between name and `{`)
+- Anonymous struct literals require type annotation: `val p: Point = { x: 1, y: 2 }`
+
 ### Variable Syntax
 
 Variables are declared using `val` (immutable) or `var` (mutable) keywords (Kotlin-style):

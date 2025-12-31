@@ -1,3 +1,7 @@
+# Status
+
+DRAFT, 2025-12-31
+
 # Summary/Motivation
 
 Add heap allocation through pointer types to Slang, enabling dynamic memory allocation and data structures like linked lists and trees. This introduces `ptr<T>` types with `ptr::new(value)` for allocation and `.deref()` for dereferencing, with auto-dereference convenience for field access and array indexing.
@@ -72,7 +76,7 @@ x.deref()                                 // Error: .deref() on non-pointer
 val p = ptr::new(42)
 print(p.x)                                // Error: ptr<i64> has no fields
 
-val p = ptr::new(Point(1, 2))
+val p = ptr::new(Point{ 1, 2 })
 print(p[0])                               // Error: ptr<Point> not indexable
 ```
 
@@ -116,7 +120,7 @@ print(p[0])                               // Error: ptr<Point> not indexable
 Demonstrates basic pointer allocation with `ptr::new` and explicit dereferencing with `.deref()`.
 
 ```slang
-fn main(): void {
+main = () {
     val p = ptr::new(42)
     print(p.deref())                      // prints: 42
 
@@ -130,10 +134,13 @@ fn main(): void {
 Shows auto-dereference for field access on a pointer to a struct.
 
 ```slang
-struct Point(val x: i64, val y: i64)
+Point = struct {
+    val x: i64
+    val y: i64
+}
 
-fn main(): void {
-    val p = ptr::new(Point(10, 20))
+main = () {
+    val p = ptr::new(Point{ 10, 20 })
     print(p.x)                            // prints: 10 (auto-deref)
     print(p.y)                            // prints: 20 (auto-deref)
     print(p.x + p.y)                      // prints: 30
@@ -145,7 +152,7 @@ fn main(): void {
 Shows auto-dereference for index access on a pointer to an array.
 
 ```slang
-fn main(): void {
+main = () {
     val arr = ptr::new([1, 2, 3, 4, 5])
     print(arr[0])                         // prints: 1 (auto-deref)
     print(arr[2])                         // prints: 3
@@ -158,12 +165,15 @@ fn main(): void {
 Demonstrates chained auto-dereference through multiple pointer levels in a linked list.
 
 ```slang
-struct Node(val value: i64, val next: ptr<Node>)
+Node = struct {
+    val value: i64
+    val next: ptr<Node>
+}
 
-fn main(): void {
-    val n3 = ptr::new(Node(30, ???))      // null handling TBD
-    val n2 = ptr::new(Node(20, n3))
-    val n1 = ptr::new(Node(10, n2))
+main = () {
+    val n3 = ptr::new(Node{ 30, ??? })    // null handling TBD
+    val n2 = ptr::new(Node{ 20, n3 })
+    val n1 = ptr::new(Node{ 10, n2 })
 
     print(n1.value)                       // prints: 10
     print(n1.next.value)                  // prints: 20
@@ -176,11 +186,11 @@ fn main(): void {
 Shows a function that allocates and returns a pointer.
 
 ```slang
-fn createPoint(x: i64, y: i64): ptr<Point> {
-    ptr::new(Point(x, y))
+createPoint = (x: i64, y: i64) -> ptr<Point> {
+    ptr::new(Point{ x, y })
 }
 
-fn main(): void {
+main = () {
     val p = createPoint(5, 10)
     print(p.x + p.y)                      // prints: 15
 }

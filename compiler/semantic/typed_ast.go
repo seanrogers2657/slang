@@ -112,13 +112,13 @@ func (e *TypedFieldAccessExpr) typedExprNode() {}
 type TypedStructLiteralExpr struct {
 	Type       StructType        // the struct type being constructed
 	TypePos    ast.Position      // position of struct name
-	LeftParen  ast.Position      // position of '('
+	LeftBrace  ast.Position      // position of '{'
 	Args       []TypedExpression // typed argument expressions (in field order)
-	RightParen ast.Position      // position of ')'
+	RightBrace ast.Position      // position of '}'
 }
 
 func (e *TypedStructLiteralExpr) Pos() ast.Position { return e.TypePos }
-func (e *TypedStructLiteralExpr) End() ast.Position { return e.RightParen }
+func (e *TypedStructLiteralExpr) End() ast.Position { return e.RightBrace }
 func (e *TypedStructLiteralExpr) GetType() Type     { return e.Type }
 func (e *TypedStructLiteralExpr) typedExprNode()    {}
 
@@ -421,17 +421,19 @@ func (d *TypedFunctionDecl) GetType() Type     { return d.ReturnType }
 func (d *TypedFunctionDecl) typedDeclNode()    {}
 
 // TypedStructDecl represents a typed struct declaration
+// Syntax: Name = struct { fields }
 type TypedStructDecl struct {
-	StructKeyword ast.Position
 	Name          string
 	NamePos       ast.Position
-	LeftParen     ast.Position
+	EqualsPos     ast.Position
+	StructKeyword ast.Position
+	LeftBrace     ast.Position
 	StructType    StructType // the full struct type with field info
-	RightParen    ast.Position
+	RightBrace    ast.Position
 }
 
-func (d *TypedStructDecl) Pos() ast.Position { return d.StructKeyword }
-func (d *TypedStructDecl) End() ast.Position { return d.RightParen }
+func (d *TypedStructDecl) Pos() ast.Position { return d.NamePos }
+func (d *TypedStructDecl) End() ast.Position { return d.RightBrace }
 func (d *TypedStructDecl) GetType() Type     { return d.StructType }
 func (d *TypedStructDecl) typedDeclNode()    {}
 

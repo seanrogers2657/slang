@@ -298,12 +298,13 @@ func (a *Analyzer) analyzeStructDecl(s *ast.StructDecl) TypedDeclaration {
 	structType := a.structs[s.Name]
 
 	return &TypedStructDecl{
-		StructKeyword: s.StructKeyword,
 		Name:          s.Name,
 		NamePos:       s.NamePos,
-		LeftParen:     s.LeftParen,
+		EqualsPos:     s.EqualsPos,
+		StructKeyword: s.StructKeyword,
+		LeftBrace:     s.LeftBrace,
 		StructType:    structType,
-		RightParen:    s.RightParen,
+		RightBrace:    s.RightBrace,
 	}
 }
 
@@ -458,38 +459,75 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 
 // analyzeVarDeclStatement analyzes a variable declaration statement
 func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement {
-	// Analyze the initializer expression
-	typedInit := a.analyzeExpression(stmt.Initializer)
-	initType := typedInit.GetType()
-
-	// Determine the declared type
+	var typedInit TypedExpression
+	var initType Type
 	var declaredType Type
-	if stmt.TypeName != "" {
-		// Explicit type annotation - use resolveTypeName to support struct types
-		declaredType = a.resolveTypeNameNoError(stmt.TypeName)
-		if _, isErr := declaredType.(ErrorType); isErr {
-			a.addError(
-				fmt.Sprintf("unknown type '%s'", stmt.TypeName),
-				stmt.TypePos, stmt.TypePos,
-			)
-			declaredType = TypeError
+
+	// Check if this is an anonymous struct literal with a type annotation
+	if anonLit, ok := stmt.Initializer.(*ast.AnonStructLiteral); ok {
+		if stmt.TypeName == "" {
+			a.addError("anonymous struct literal requires type annotation (e.g., val p: Point = { ... })",
+				anonLit.LeftBrace, anonLit.RightBrace)
+			typedInit = &TypedLiteralExpr{Type: ErrorType{}}
+			initType = ErrorType{}
+			declaredType = ErrorType{}
 		} else {
-			// Type compatibility check
-			if _, isErr := initType.(ErrorType); !isErr {
-				// Check if initializer type is compatible with declared type
-				if !a.checkTypeCompatibility(declaredType, initType, typedInit, stmt.Initializer.Pos()) {
-					// Error already reported by checkTypeCompatibility
-				}
+			// Resolve the declared type
+			declaredType = a.resolveTypeNameNoError(stmt.TypeName)
+			if _, isErr := declaredType.(ErrorType); isErr {
+				a.addError(
+					fmt.Sprintf("unknown type '%s'", stmt.TypeName),
+					stmt.TypePos, stmt.TypePos,
+				)
+				declaredType = TypeError
+				typedInit = &TypedLiteralExpr{Type: ErrorType{}}
+				initType = ErrorType{}
+			} else if structType, ok := declaredType.(StructType); ok {
+				// Analyze the anonymous struct literal with the expected type
+				typedInit = a.analyzeAnonStructLiteralWithType(anonLit, structType)
+				initType = typedInit.GetType()
+			} else {
+				a.addError(
+					fmt.Sprintf("anonymous struct literal cannot be used with non-struct type '%s'", stmt.TypeName),
+					anonLit.LeftBrace, anonLit.RightBrace,
+				)
+				typedInit = &TypedLiteralExpr{Type: ErrorType{}}
+				initType = ErrorType{}
 			}
 		}
 	} else {
-		// Infer type from initializer
-		declaredType = initType
+		// Regular expression - analyze normally
+		typedInit = a.analyzeExpression(stmt.Initializer)
+		initType = typedInit.GetType()
 
-		// For integer literals without type annotation, check bounds against i64 (the default type)
-		if litExpr, ok := typedInit.(*TypedLiteralExpr); ok && litExpr.LitType == ast.LiteralTypeInteger {
-			if !a.checkIntegerBounds(litExpr.Value, TypeInteger, litExpr.StartPos) {
+		// Determine the declared type
+		if stmt.TypeName != "" {
+			// Explicit type annotation - use resolveTypeName to support struct types
+			declaredType = a.resolveTypeNameNoError(stmt.TypeName)
+			if _, isErr := declaredType.(ErrorType); isErr {
+				a.addError(
+					fmt.Sprintf("unknown type '%s'", stmt.TypeName),
+					stmt.TypePos, stmt.TypePos,
+				)
 				declaredType = TypeError
+			} else {
+				// Type compatibility check
+				if _, isErr := initType.(ErrorType); !isErr {
+					// Check if initializer type is compatible with declared type
+					if !a.checkTypeCompatibility(declaredType, initType, typedInit, stmt.Initializer.Pos()) {
+						// Error already reported by checkTypeCompatibility
+					}
+				}
+			}
+		} else {
+			// Infer type from initializer
+			declaredType = initType
+
+			// For integer literals without type annotation, check bounds against i64 (the default type)
+			if litExpr, ok := typedInit.(*TypedLiteralExpr); ok && litExpr.LitType == ast.LiteralTypeInteger {
+				if !a.checkIntegerBounds(litExpr.Value, TypeInteger, litExpr.StartPos) {
+					declaredType = TypeError
+				}
 			}
 		}
 	}
@@ -1254,6 +1292,13 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 		return a.analyzeIdentifier(e)
 	case *ast.CallExpr:
 		return a.analyzeCallExpr(e)
+	case *ast.StructLiteral:
+		return a.analyzeStructLiteralExpr(e)
+	case *ast.AnonStructLiteral:
+		// Anonymous struct literals require type context - report error here
+		// The proper way is to use analyzeAnonStructLiteralWithType from variable declaration
+		a.addError("anonymous struct literal requires type annotation (e.g., val p: Point = { ... })", e.LeftBrace, e.RightBrace)
+		return &TypedLiteralExpr{Type: ErrorType{}}
 	case *ast.FieldAccessExpr:
 		return a.analyzeFieldAccessExpr(e)
 	case *ast.ArrayLiteralExpr:
@@ -1517,9 +1562,9 @@ func (a *Analyzer) analyzeStructLiteral(call *ast.CallExpr, structType StructTyp
 	return &TypedStructLiteralExpr{
 		Type:       structType,
 		TypePos:    call.NamePos,
-		LeftParen:  call.LeftParen,
+		LeftBrace:  call.LeftParen,
 		Args:       typedArgs,
-		RightParen: call.RightParen,
+		RightBrace: call.RightParen,
 	}
 }
 
@@ -1599,9 +1644,276 @@ func (a *Analyzer) analyzeStructLiteralNamed(call *ast.CallExpr, structType Stru
 	return &TypedStructLiteralExpr{
 		Type:       structType,
 		TypePos:    call.NamePos,
-		LeftParen:  call.LeftParen,
+		LeftBrace:  call.LeftParen,
 		Args:       typedArgs,
-		RightParen: call.RightParen,
+		RightBrace: call.RightParen,
+	}
+}
+
+// analyzeStructLiteralExpr analyzes a struct literal expression with braces (e.g., Point { 10, 20 } or Point { x: 10, y: 20 })
+func (a *Analyzer) analyzeStructLiteralExpr(lit *ast.StructLiteral) TypedExpression {
+	// Check if this is a known struct type
+	structType, ok := a.structs[lit.Name]
+	if !ok {
+		a.addError(
+			fmt.Sprintf("undefined struct '%s'", lit.Name),
+			lit.NamePos, lit.NamePos,
+		)
+		return &TypedLiteralExpr{Type: ErrorType{}}
+	}
+
+	// Handle named arguments
+	if lit.HasNamedArguments() {
+		return a.analyzeStructLiteralExprNamed(lit, structType)
+	}
+
+	// Handle positional arguments
+	// Check argument count matches field count
+	if len(lit.Arguments) != len(structType.Fields) {
+		a.addError(
+			fmt.Sprintf("struct '%s' has %d field(s), but %d argument(s) were provided",
+				structType.Name, len(structType.Fields), len(lit.Arguments)),
+			lit.LeftBrace, lit.RightBrace,
+		)
+	}
+
+	// Analyze arguments and check types
+	typedArgs := make([]TypedExpression, len(lit.Arguments))
+	for i, arg := range lit.Arguments {
+		typedArgs[i] = a.analyzeExpression(arg)
+
+		// Type check if we have a corresponding field
+		if i < len(structType.Fields) {
+			argType := typedArgs[i].GetType()
+			fieldType := structType.Fields[i].Type
+			fieldName := structType.Fields[i].Name
+			if _, isErr := argType.(ErrorType); !isErr && !fieldType.Equals(argType) {
+				a.addError(
+					fmt.Sprintf("field '%s': expected %s, got %s",
+						fieldName, fieldType.String(), argType.String()),
+					arg.Pos(), arg.End(),
+				)
+			}
+		}
+	}
+
+	return &TypedStructLiteralExpr{
+		Type:       structType,
+		TypePos:    lit.NamePos,
+		LeftBrace:  lit.LeftBrace,
+		Args:       typedArgs,
+		RightBrace: lit.RightBrace,
+	}
+}
+
+// analyzeStructLiteralExprNamed analyzes a struct literal with named arguments (e.g., Point { x: 10, y: 20 })
+func (a *Analyzer) analyzeStructLiteralExprNamed(lit *ast.StructLiteral, structType StructType) TypedExpression {
+	// Build a map of field name -> index for quick lookup
+	fieldIndex := make(map[string]int)
+	for i, field := range structType.Fields {
+		fieldIndex[field.Name] = i
+	}
+
+	// Check argument count matches field count
+	if len(lit.NamedArguments) != len(structType.Fields) {
+		a.addError(
+			fmt.Sprintf("struct '%s' has %d field(s), but %d argument(s) were provided",
+				structType.Name, len(structType.Fields), len(lit.NamedArguments)),
+			lit.LeftBrace, lit.RightBrace,
+		)
+	}
+
+	// Track which fields have been provided (for duplicate detection)
+	providedFields := make(map[string]ast.Position)
+
+	// Create typed arguments array in field order
+	typedArgs := make([]TypedExpression, len(structType.Fields))
+
+	for _, namedArg := range lit.NamedArguments {
+		// Check if field exists
+		idx, exists := fieldIndex[namedArg.Name]
+		if !exists {
+			a.addError(
+				fmt.Sprintf("struct '%s' has no field '%s'", structType.Name, namedArg.Name),
+				namedArg.NamePos, namedArg.NamePos,
+			)
+			continue
+		}
+
+		// Check for duplicate field
+		if prevPos, duplicate := providedFields[namedArg.Name]; duplicate {
+			a.addError(
+				fmt.Sprintf("field '%s' specified multiple times", namedArg.Name),
+				namedArg.NamePos, namedArg.NamePos,
+			).WithHint(fmt.Sprintf("first specified at line %d", prevPos.Line))
+			continue
+		}
+		providedFields[namedArg.Name] = namedArg.NamePos
+
+		// Analyze the argument value
+		typedArg := a.analyzeExpression(namedArg.Value)
+		typedArgs[idx] = typedArg
+
+		// Type check
+		argType := typedArg.GetType()
+		fieldType := structType.Fields[idx].Type
+		if _, isErr := argType.(ErrorType); !isErr && !fieldType.Equals(argType) {
+			a.addError(
+				fmt.Sprintf("field '%s': expected %s, got %s",
+					namedArg.Name, fieldType.String(), argType.String()),
+				namedArg.Value.Pos(), namedArg.Value.End(),
+			)
+		}
+	}
+
+	// Check for missing fields
+	for _, field := range structType.Fields {
+		if _, provided := providedFields[field.Name]; !provided {
+			// Only report if we haven't already reported a count mismatch
+			if len(lit.NamedArguments) == len(structType.Fields) {
+				a.addError(
+					fmt.Sprintf("missing field '%s' in struct '%s'", field.Name, structType.Name),
+					lit.LeftBrace, lit.RightBrace,
+				)
+			}
+		}
+	}
+
+	return &TypedStructLiteralExpr{
+		Type:       structType,
+		TypePos:    lit.NamePos,
+		LeftBrace:  lit.LeftBrace,
+		Args:       typedArgs,
+		RightBrace: lit.RightBrace,
+	}
+}
+
+// analyzeAnonStructLiteralWithType analyzes an anonymous struct literal with a known type
+// (e.g., val p: Point = { x: 0, y: 0 })
+func (a *Analyzer) analyzeAnonStructLiteralWithType(lit *ast.AnonStructLiteral, structType StructType) TypedExpression {
+	// Handle named arguments
+	if lit.HasNamedArguments() {
+		return a.analyzeAnonStructLiteralNamed(lit, structType)
+	}
+
+	// Handle positional arguments
+	// Check argument count matches field count
+	if len(lit.Arguments) != len(structType.Fields) {
+		a.addError(
+			fmt.Sprintf("struct '%s' has %d field(s), but %d argument(s) were provided",
+				structType.Name, len(structType.Fields), len(lit.Arguments)),
+			lit.LeftBrace, lit.RightBrace,
+		)
+	}
+
+	// Analyze arguments and check types
+	typedArgs := make([]TypedExpression, len(lit.Arguments))
+	for i, arg := range lit.Arguments {
+		typedArgs[i] = a.analyzeExpression(arg)
+
+		// Type check if we have a corresponding field
+		if i < len(structType.Fields) {
+			argType := typedArgs[i].GetType()
+			fieldType := structType.Fields[i].Type
+			fieldName := structType.Fields[i].Name
+			if _, isErr := argType.(ErrorType); !isErr && !fieldType.Equals(argType) {
+				a.addError(
+					fmt.Sprintf("field '%s': expected %s, got %s",
+						fieldName, fieldType.String(), argType.String()),
+					arg.Pos(), arg.End(),
+				)
+			}
+		}
+	}
+
+	return &TypedStructLiteralExpr{
+		Type:       structType,
+		TypePos:    lit.LeftBrace, // Use left brace position since there's no type name
+		LeftBrace:  lit.LeftBrace,
+		Args:       typedArgs,
+		RightBrace: lit.RightBrace,
+	}
+}
+
+// analyzeAnonStructLiteralNamed analyzes an anonymous struct literal with named arguments
+func (a *Analyzer) analyzeAnonStructLiteralNamed(lit *ast.AnonStructLiteral, structType StructType) TypedExpression {
+	// Build a map of field name -> index for quick lookup
+	fieldIndex := make(map[string]int)
+	for i, field := range structType.Fields {
+		fieldIndex[field.Name] = i
+	}
+
+	// Check argument count matches field count
+	if len(lit.NamedArguments) != len(structType.Fields) {
+		a.addError(
+			fmt.Sprintf("struct '%s' has %d field(s), but %d argument(s) were provided",
+				structType.Name, len(structType.Fields), len(lit.NamedArguments)),
+			lit.LeftBrace, lit.RightBrace,
+		)
+	}
+
+	// Track which fields have been provided (for duplicate detection)
+	providedFields := make(map[string]ast.Position)
+
+	// Create typed arguments array in field order
+	typedArgs := make([]TypedExpression, len(structType.Fields))
+
+	for _, namedArg := range lit.NamedArguments {
+		// Check if field exists
+		idx, exists := fieldIndex[namedArg.Name]
+		if !exists {
+			a.addError(
+				fmt.Sprintf("struct '%s' has no field '%s'", structType.Name, namedArg.Name),
+				namedArg.NamePos, namedArg.NamePos,
+			)
+			continue
+		}
+
+		// Check for duplicate field
+		if prevPos, duplicate := providedFields[namedArg.Name]; duplicate {
+			a.addError(
+				fmt.Sprintf("field '%s' specified multiple times", namedArg.Name),
+				namedArg.NamePos, namedArg.NamePos,
+			).WithHint(fmt.Sprintf("first specified at line %d", prevPos.Line))
+			continue
+		}
+		providedFields[namedArg.Name] = namedArg.NamePos
+
+		// Analyze the argument value
+		typedArg := a.analyzeExpression(namedArg.Value)
+		typedArgs[idx] = typedArg
+
+		// Type check
+		argType := typedArg.GetType()
+		fieldType := structType.Fields[idx].Type
+		if _, isErr := argType.(ErrorType); !isErr && !fieldType.Equals(argType) {
+			a.addError(
+				fmt.Sprintf("field '%s': expected %s, got %s",
+					namedArg.Name, fieldType.String(), argType.String()),
+				namedArg.Value.Pos(), namedArg.Value.End(),
+			)
+		}
+	}
+
+	// Check for missing fields
+	for _, field := range structType.Fields {
+		if _, provided := providedFields[field.Name]; !provided {
+			// Only report if we haven't already reported a count mismatch
+			if len(lit.NamedArguments) == len(structType.Fields) {
+				a.addError(
+					fmt.Sprintf("missing field '%s' in struct '%s'", field.Name, structType.Name),
+					lit.LeftBrace, lit.RightBrace,
+				)
+			}
+		}
+	}
+
+	return &TypedStructLiteralExpr{
+		Type:       structType,
+		TypePos:    lit.LeftBrace, // Use left brace position since there's no type name
+		LeftBrace:  lit.LeftBrace,
+		Args:       typedArgs,
+		RightBrace: lit.RightBrace,
 	}
 }
 

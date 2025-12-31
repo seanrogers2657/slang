@@ -1,8 +1,11 @@
 // @test: expect_error=true
 // @test: error_stage=semantic
 // @test: error_contains=has 2 field(s), but 1 argument(s) were provided
-struct Point(val x: i64, val y: i64)
+Point = struct {
+    val x: i64
+    val y: i64
+}
 
 main = () {
-    val p = Point(1)
+    val p = Point{ 1 }
 }

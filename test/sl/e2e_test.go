@@ -221,3 +221,100 @@ func checkCompilerErrorContains(t *testing.T, errs []*slangErrors.CompilerError,
 	}
 	t.Errorf("no error contains %q, got: %v", contains, errs)
 }
+
+// getProgramsDir returns the path to the _programs directory.
+func getProgramsDir() string {
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		panic("failed to get current file path")
+	}
+	// Go up from test/sl/ to repo root, then into _programs
+	return filepath.Join(filepath.Dir(filename), "..", "..", "_programs")
+}
+
+// TestProgramsCompile tests that all programs in _programs/ compile successfully.
+// These are more complex programs that may use features not yet fully implemented,
+// so we only verify compilation, not execution.
+func TestProgramsCompile(t *testing.T) {
+	programsDir := getProgramsDir()
+
+	// Find all .sl files recursively
+	var slFiles []string
+	err := filepath.Walk(programsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasSuffix(path, ".sl") {
+			slFiles = append(slFiles, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to walk programs directory: %v", err)
+	}
+
+	if len(slFiles) == 0 {
+		t.Fatalf("no .sl files found in %s", programsDir)
+	}
+
+	for _, filePath := range slFiles {
+		filePath := filePath // capture range variable
+		// Create test name from relative path
+		relPath, _ := filepath.Rel(programsDir, filePath)
+		testName := strings.TrimSuffix(relPath, ".sl")
+
+		t.Run(testName, func(t *testing.T) {
+			t.Parallel()
+			testProgramCompiles(t, filePath)
+		})
+	}
+}
+
+func testProgramCompiles(t *testing.T, filePath string) {
+	t.Helper()
+
+	// Read the source file
+	source, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("failed to read source file: %v", err)
+	}
+
+	// Lexer stage
+	l := lexer.NewLexer(source)
+	l.Parse()
+
+	if len(l.Errors) > 0 {
+		t.Fatalf("lexer errors: %v", l.Errors)
+	}
+
+	// Parser stage
+	p := parser.NewParser(l.Tokens)
+	program := p.Parse()
+
+	if len(p.Errors) > 0 {
+		t.Fatalf("parser errors: %v", p.Errors)
+	}
+
+	if program == nil || (len(program.Statements) == 0 && len(program.Declarations) == 0) {
+		t.Fatalf("parser returned nil or empty program")
+	}
+
+	// Semantic analysis stage
+	analyzer := semantic.NewAnalyzer(filePath)
+	semanticErrors, typedAST := analyzer.Analyze(program)
+
+	if len(semanticErrors) > 0 {
+		t.Fatalf("semantic errors: %v", semanticErrors)
+	}
+
+	// Code generation stage
+	sourceLines := strings.Split(string(source), "\n")
+	generator := codegen.NewTypedCodeGeneratorWithFilename(typedAST, sourceLines, filePath)
+	_, err = generator.Generate()
+
+	if err != nil {
+		t.Fatalf("codegen error: %v", err)
+	}
+
+	// Success - program compiles without execution
+}

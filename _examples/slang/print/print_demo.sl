@@ -1,6 +1,6 @@
 // @test: exit_code=0
 // @test: stdout=42\n0\n123\n42\n42\n42\n2\n
-fn main(): void {
+main = () {
     print(42)
     print(0)
     print(100 + 23)

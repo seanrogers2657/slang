@@ -1,6 +1,6 @@
 // @test: exit_code=0
 // @test: stdout=50\n55\n25\n
-fn main(): void {
+main = () {
     val a = 5
     val b = 10
     val c = a * b

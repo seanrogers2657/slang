@@ -3,6 +3,6 @@
 // @test: error_contains=field 'x' specified multiple times
 struct Point(val x: i64, val y: i64)
 
-fn main(): void {
+main = () {
     val p = Point(x: 10, x: 20)
 }

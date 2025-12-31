@@ -1,7 +1,7 @@
 // @test: exit_code=0
 // @test: stdout=yes\n
 // Tests if with print statement
-fn main(): void {
+main = () {
     val x = 10
     if x > 5 {
         print("yes")

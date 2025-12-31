@@ -1,6 +1,6 @@
 // @test: exit_code=42
 // Tests when with boolean variable in condition
-fn main(): void {
+main = () {
     val isLarge = false
     val isSmall = true
     val result = when {

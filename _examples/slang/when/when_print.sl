@@ -1,5 +1,5 @@
 // @test: stdout=hello\n
-fn main(): void {
+main = () {
     val x = 5
     when {
         x > 10 -> print("big")

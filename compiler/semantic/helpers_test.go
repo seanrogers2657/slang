@@ -219,18 +219,19 @@ func param(name string, typeName string) ast.Parameter {
 
 func funcDecl(name string, returnType string, params []ast.Parameter, stmts ...ast.Statement) *ast.FunctionDecl {
 	return &ast.FunctionDecl{
-		FnKeyword:  pos(1, 1),
 		Name:       name,
-		NamePos:    pos(1, 4),
+		NamePos:    pos(1, 1),
+		EqualsPos:  pos(1, 3),
 		LeftParen:  pos(1, 5),
 		Parameters: params,
 		RightParen: pos(1, 6),
+		ArrowPos:   pos(1, 8),
 		ReturnType: returnType,
-		ReturnPos:  pos(1, 9),
+		ReturnPos:  pos(1, 11),
 		Body: &ast.BlockStmt{
-			LeftBrace:  pos(1, 10),
+			LeftBrace:  pos(1, 15),
 			Statements: stmts,
-			RightBrace: pos(1, 20),
+			RightBrace: pos(1, 25),
 		},
 	}
 }

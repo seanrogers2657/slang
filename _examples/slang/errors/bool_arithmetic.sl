@@ -2,6 +2,6 @@
 // @test: error_stage=semantic
 // @test: error_contains=requires numeric operands
 // Tests that arithmetic on booleans is rejected
-fn main(): void {
+main = () {
     val x = true + false
 }

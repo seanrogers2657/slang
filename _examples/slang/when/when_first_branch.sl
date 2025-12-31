@@ -1,6 +1,6 @@
 // @test: exit_code=1
 // Tests that the first matching branch is taken
-fn main(): void {
+main = () {
     val x = 100
     val result = when {
         x > 50 -> 1

@@ -1,4 +1,4 @@
 // @test: exit_code=42
-fn main() {
+main = () {
     exit(42)
 }

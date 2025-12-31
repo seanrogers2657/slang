@@ -2,7 +2,7 @@
 // @test: stdout=0\n1\n10\n11\n20\n21\n
 // Test that break only exits the innermost loop
 // Output: i*10 + j for each iteration before inner break
-fn main(): void {
+main = () {
     var i = 0
     while i < 3 {
         var j = 0

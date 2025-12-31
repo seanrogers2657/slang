@@ -1,5 +1,5 @@
 // @test: exit_code=7
-fn main(): void {
+main = () {
     val code = 7
     exit(code)
 }

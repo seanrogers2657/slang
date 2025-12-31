@@ -2,6 +2,6 @@
 // @test: error_stage=semantic
 // @test: error_contains=requires boolean operand
 // Tests that logical NOT on integers is rejected
-fn main(): void {
+main = () {
     val x = !5
 }

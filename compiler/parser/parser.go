@@ -120,12 +120,34 @@ func (p *parser) peekPastNewlinesIs(tokenType lexer.TokenType) bool {
 	return p.Source[i].Type == tokenType
 }
 
-// skipUntilDecl skips tokens until we find a 'fn' or 'struct' keyword or reach end of input.
+// peekToken returns the token at the given offset from the current position.
+// Returns an invalid token if the offset is out of bounds.
+func (p *parser) peekToken(offset int) lexer.Token {
+	idx := p.Index + offset
+	if idx >= len(p.Source) || idx < 0 {
+		return lexer.Token{Type: lexer.TokenTypeInvalid}
+	}
+	return p.Source[idx]
+}
+
+// looksLikeFunctionDecl returns true if the current position looks like a function declaration.
+// Pattern: identifier = (
+func (p *parser) looksLikeFunctionDecl() bool {
+	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+		return false
+	}
+	if p.peekToken(1).Type != lexer.TokenTypeAssign {
+		return false
+	}
+	return p.peekToken(2).Type == lexer.TokenTypeLParen
+}
+
+// skipUntilDecl skips tokens until we find a function declaration or 'struct' keyword or reach end of input.
 // This is used for error recovery to continue parsing after a syntax error.
 func (p *parser) skipUntilDecl() {
 	for !p.isAtEnd() {
-		// If we find 'fn' or 'struct' at the start of a line (after newlines), stop
-		if p.CurrentToken().Type == lexer.TokenTypeFn || p.CurrentToken().Type == lexer.TokenTypeStruct {
+		// If we find a function declaration (identifier = () or 'struct', stop
+		if p.looksLikeFunctionDecl() || p.CurrentToken().Type == lexer.TokenTypeStruct {
 			return
 		}
 		p.Index++
@@ -260,7 +282,7 @@ func (p *parser) Parse() *ast.Program {
 	}
 
 	// Check if this is a declaration-based program or legacy statement-based program
-	if !p.isAtEnd() && (p.CurrentToken().Type == lexer.TokenTypeFn || p.CurrentToken().Type == lexer.TokenTypeStruct) {
+	if !p.isAtEnd() && (p.looksLikeFunctionDecl() || p.CurrentToken().Type == lexer.TokenTypeStruct) {
 		// New style: parse declarations (functions and structs)
 		for !p.isAtEnd() {
 			p.skipNewlines()
@@ -268,8 +290,8 @@ func (p *parser) Parse() *ast.Program {
 				break
 			}
 
-			// Check if current token is 'fn' or 'struct' before trying to parse
-			if p.CurrentToken().Type == lexer.TokenTypeFn {
+			// Check if current position looks like a function declaration or struct
+			if p.looksLikeFunctionDecl() {
 				fnDecl := p.ParseFunctionDecl()
 				if fnDecl != nil {
 					program.Declarations = append(program.Declarations, fnDecl)
@@ -287,8 +309,8 @@ func (p *parser) Parse() *ast.Program {
 				}
 			} else {
 				// Report error for unexpected token and try to recover
-				p.addError(fmt.Sprintf("expected declaration (fn or struct), got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
-				// Skip tokens until we find 'fn' or 'struct' or reach end
+				p.addError(fmt.Sprintf("expected declaration (name = (...) or struct), got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+				// Skip tokens until we find a function declaration or 'struct' or reach end
 				p.skipUntilDecl()
 				continue
 			}
@@ -1309,17 +1331,9 @@ func (p *parser) ParseBlockStmt() *ast.BlockStmt {
 	}
 }
 
-// ParseFunctionDecl parses a function declaration: fn <name>(params): returnType { <body> }
+// ParseFunctionDecl parses a function declaration: name = (params) -> returnType { body }
+// The return type is optional: name = (params) { body } defaults to void
 func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
-	// Expect 'fn' keyword
-	if p.CurrentToken().Type != lexer.TokenTypeFn {
-		p.addError(fmt.Sprintf("expected 'fn', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
-		return nil
-	}
-
-	fnKeyword := p.CurrentToken().Pos
-	p.advance() // consume 'fn'
-
 	// Expect identifier (function name)
 	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
 		p.addError(fmt.Sprintf("expected function name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
@@ -1330,9 +1344,18 @@ func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 	namePos := p.CurrentToken().Pos
 	p.advance() // consume identifier
 
+	// Expect '='
+	if p.CurrentToken().Type != lexer.TokenTypeAssign {
+		p.addError(fmt.Sprintf("expected '=' after function name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	equalsPos := p.CurrentToken().Pos
+	p.advance() // consume '='
+
 	// Expect '('
 	if p.CurrentToken().Type != lexer.TokenTypeLParen {
-		p.addError(fmt.Sprintf("expected '(' after function name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		p.addError(fmt.Sprintf("expected '(' after '=', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
@@ -1351,16 +1374,18 @@ func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 	rightParen := p.CurrentToken().Pos
 	p.advance() // consume ')'
 
-	// Check for optional return type annotation
+	// Check for optional return type: -> returnType
+	var arrowPos ast.Position
 	var returnType string
 	var returnPos ast.Position
-	if p.CurrentToken().Type == lexer.TokenTypeColon {
-		colonPos := p.CurrentToken().Pos
-		p.advance() // consume ':'
+
+	if p.CurrentToken().Type == lexer.TokenTypeArrow {
+		arrowPos = p.CurrentToken().Pos
+		p.advance() // consume '->'
 
 		// Expect return type identifier
 		if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-			p.addError(fmt.Sprintf("expected return type, got '%s'", p.CurrentToken().Value), colonPos)
+			p.addError(fmt.Sprintf("expected return type after '->', got '%s'", p.CurrentToken().Value), arrowPos)
 			return nil
 		}
 
@@ -1370,7 +1395,7 @@ func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 	} else {
 		// No return type specified - default to void
 		returnType = "void"
-		// returnPos stays as zero value
+		// arrowPos and returnPos stay as zero values
 	}
 
 	// Skip newlines before body
@@ -1383,12 +1408,13 @@ func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 	}
 
 	return &ast.FunctionDecl{
-		FnKeyword:  fnKeyword,
 		Name:       name,
 		NamePos:    namePos,
+		EqualsPos:  equalsPos,
 		LeftParen:  leftParen,
 		Parameters: parameters,
 		RightParen: rightParen,
+		ArrowPos:   arrowPos,
 		ReturnType: returnType,
 		ReturnPos:  returnPos,
 		Body:       body,

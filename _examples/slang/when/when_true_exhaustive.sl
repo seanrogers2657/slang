@@ -1,6 +1,6 @@
 // @test: exit_code=99
 // Tests that `true` literal makes when exhaustive (no else needed)
-fn main(): void {
+main = () {
     val x = 5
     when {
         x > 100 -> exit(1)

@@ -610,10 +610,10 @@ func TestLexerStringErrors(t *testing.T) {
 }
 
 func TestLexerFunctionDeclaration(t *testing.T) {
-	input := "fn main() { }"
+	input := "main = () { }"
 	expected := []Token{
-		{Type: TokenTypeFn, Value: "fn"},
 		{Type: TokenTypeIdentifier, Value: "main"},
+		{Type: TokenTypeAssign, Value: "="},
 		{Type: TokenTypeLParen, Value: "("},
 		{Type: TokenTypeRParen, Value: ")"},
 		{Type: TokenTypeLBrace, Value: "{"},
@@ -951,11 +951,11 @@ func TestLexerComments(t *testing.T) {
 		},
 		{
 			name:  "comment with @test directive",
-			input: "// @test: exit_code=0\nfn main() { }",
+			input: "// @test: exit_code=0\nmain = () { }",
 			expected: []Token{
 				{Type: TokenTypeNewline, Value: "\n"},
-				{Type: TokenTypeFn, Value: "fn"},
 				{Type: TokenTypeIdentifier, Value: "main"},
+				{Type: TokenTypeAssign, Value: "="},
 				{Type: TokenTypeLParen, Value: "("},
 				{Type: TokenTypeRParen, Value: ")"},
 				{Type: TokenTypeLBrace, Value: "{"},

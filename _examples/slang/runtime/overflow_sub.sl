@@ -1,6 +1,6 @@
 // @test: exit_code=1
 // @test: stderr_contains=panic: integer overflow: subtraction
-fn main(): void {
+main = () {
     // Compute MIN_I64 step by step to avoid negative literals
     var min: i64 = 0
     min = min - 9223372036854775807

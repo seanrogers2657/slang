@@ -388,19 +388,22 @@ func (p *Parameter) End() Position {
 }
 
 // FunctionDecl represents a function declaration
+// Syntax: name = (params) -> returnType { body }
+// Return type is optional (defaults to void): name = (params) { body }
 type FunctionDecl struct {
-	FnKeyword  Position    // position of 'fn' keyword
 	Name       string      // function name
 	NamePos    Position    // position of function name
+	EqualsPos  Position    // position of '='
 	LeftParen  Position    // position of '('
 	Parameters []Parameter // function parameters
 	RightParen Position    // position of ')'
-	ReturnType string      // return type (e.g., "int", "void")
-	ReturnPos  Position    // position of return type
+	ArrowPos   Position    // position of '->' (zero if no return type specified)
+	ReturnType string      // return type (e.g., "int", "void", empty = void)
+	ReturnPos  Position    // position of return type (zero if no return type)
 	Body       *BlockStmt  // function body
 }
 
-func (f *FunctionDecl) Pos() Position { return f.FnKeyword }
+func (f *FunctionDecl) Pos() Position { return f.NamePos }
 func (f *FunctionDecl) End() Position { return f.Body.End() }
 func (f *FunctionDecl) declNode()     {}
 

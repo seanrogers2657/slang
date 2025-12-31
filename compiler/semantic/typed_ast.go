@@ -401,19 +401,21 @@ type TypedParameter struct {
 }
 
 // TypedFunctionDecl represents a typed function declaration
+// Syntax: name = (params) -> returnType { body }
 type TypedFunctionDecl struct {
-	FnKeyword  ast.Position
 	Name       string
 	NamePos    ast.Position
+	EqualsPos  ast.Position
 	LeftParen  ast.Position
 	Parameters []TypedParameter
 	RightParen ast.Position
+	ArrowPos   ast.Position // position of '->' (zero if no return type specified)
 	ReturnType Type
 	ReturnPos  ast.Position
 	Body       *TypedBlockStmt
 }
 
-func (d *TypedFunctionDecl) Pos() ast.Position { return d.FnKeyword }
+func (d *TypedFunctionDecl) Pos() ast.Position { return d.NamePos }
 func (d *TypedFunctionDecl) End() ast.Position { return d.Body.End() }
 func (d *TypedFunctionDecl) GetType() Type     { return d.ReturnType }
 func (d *TypedFunctionDecl) typedDeclNode()    {}

@@ -1,6 +1,6 @@
 // @test: exit_code=42
 // Tests nested if expressions
-fn main(): void {
+main = () {
     val x = 10
     val y = 5
     val result = if x > 5 {

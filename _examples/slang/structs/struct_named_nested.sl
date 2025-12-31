@@ -3,7 +3,7 @@
 struct Point(val x: i64, val y: i64)
 struct Rectangle(val topLeft: Point, val bottomRight: Point)
 
-fn main(): void {
+main = () {
     val rect = Rectangle(
         bottomRight: Point(x: 100, y: 100),
         topLeft: Point(y: 0, x: 0),

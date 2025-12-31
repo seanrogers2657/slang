@@ -1,6 +1,6 @@
 // @test: exit_code=2
 // Tests when with logical operators in conditions
-fn main(): void {
+main = () {
     val x = 5
     val y = 10
     val result = when {

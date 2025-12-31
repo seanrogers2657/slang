@@ -2,7 +2,7 @@
 // @test: stdout=10\n5\n
 struct Point(val x: i64, val y: i64)
 
-fn main(): void {
+main = () {
     val p = Point(y: 5, x: 10)
     print(p.x)
     print(p.y)

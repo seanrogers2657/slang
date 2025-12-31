@@ -1,6 +1,6 @@
 // @test: exit_code=0
 // @test: stdout=5\n10\n15\n
-fn main(): void {
+main = () {
     var x = 5
     print(x)
     x = 10

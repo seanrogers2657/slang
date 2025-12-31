@@ -1,5 +1,5 @@
 // @test: exit_code=10
-fn main(): void {
+main = () {
     val x = 5
     when {
         x > 10 -> exit(0)

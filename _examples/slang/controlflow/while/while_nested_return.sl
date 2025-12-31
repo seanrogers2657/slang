@@ -2,7 +2,7 @@
 // @test: stdout=0\n1\n2\n3\n4\n10\n11\nfound\n
 // Test that return exits the entire function from nested loops
 // Prints i*10+j until i==1 && j==1, then returns early
-fn main(): void {
+main = () {
     val result = search()
     if result {
         print("found")
@@ -11,7 +11,7 @@ fn main(): void {
     }
 }
 
-fn search(): bool {
+search = () -> bool {
     var i = 0
     while i < 5 {
         var j = 0

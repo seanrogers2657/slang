@@ -1,6 +1,6 @@
 // @test: exit_code=0
 // @test: stdout=42\n52\n
-fn main(): void {
+main = () {
     val x = 42
     print(x)
     val y = 10

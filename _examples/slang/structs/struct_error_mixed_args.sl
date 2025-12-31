@@ -3,6 +3,6 @@
 // @test: error_contains=cannot mix positional and named arguments
 struct Point(val x: i64, val y: i64)
 
-fn main(): void {
+main = () {
     val p = Point(10, y: 20)
 }

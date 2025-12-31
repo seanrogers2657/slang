@@ -757,25 +757,25 @@ func TestParserFunctionDeclaration(t *testing.T) {
 	}{
 		{
 			name:         "empty main function",
-			source:       "fn main(): void {}",
+			source:       "main = () {}",
 			expectedName: "main",
 			expectedBody: 0,
 		},
 		{
 			name:         "main function with single statement",
-			source:       "fn main(): void {\n    print(42)\n}",
+			source:       "main = () {\n    print(42)\n}",
 			expectedName: "main",
 			expectedBody: 1,
 		},
 		{
 			name:         "main function with multiple statements",
-			source:       "fn main(): void {\n    print(1)\n    print(2)\n}",
+			source:       "main = () {\n    print(1)\n    print(2)\n}",
 			expectedName: "main",
 			expectedBody: 2,
 		},
 		{
 			name:         "function with expression statement",
-			source:       "fn main(): void {\n    5 + 3\n}",
+			source:       "main = () {\n    5 + 3\n}",
 			expectedName: "main",
 			expectedBody: 1,
 		},
@@ -835,22 +835,22 @@ func TestParserVariableDeclaration(t *testing.T) {
 	}{
 		{
 			name:    "simple variable declaration",
-			source:  "fn main(): void {\n    val x = 5\n}",
+			source:  "main = () {\n    val x = 5\n}",
 			varName: "x",
 		},
 		{
 			name:    "variable with expression",
-			source:  "fn main(): void {\n    val result = 10 + 20\n}",
+			source:  "main = () {\n    val result = 10 + 20\n}",
 			varName: "result",
 		},
 		{
 			name:    "variable with underscore name",
-			source:  "fn main(): void {\n    val my_var = 42\n}",
+			source:  "main = () {\n    val my_var = 42\n}",
 			varName: "my_var",
 		},
 		{
 			name:    "variable with digits in name",
-			source:  "fn main(): void {\n    val x1 = 100\n}",
+			source:  "main = () {\n    val x1 = 100\n}",
 			varName: "x1",
 		},
 	}
@@ -912,19 +912,19 @@ func TestParserMutableVariableDeclaration(t *testing.T) {
 	}{
 		{
 			name:    "immutable variable with val",
-			source:  "fn main(): void {\n    val x = 5\n}",
+			source:  "main = () {\n    val x = 5\n}",
 			varName: "x",
 			mutable: false,
 		},
 		{
 			name:    "mutable variable with var",
-			source:  "fn main(): void {\n    var x = 5\n}",
+			source:  "main = () {\n    var x = 5\n}",
 			varName: "x",
 			mutable: true,
 		},
 		{
 			name:    "mutable variable with expression",
-			source:  "fn main(): void {\n    var result = 10 + 20\n}",
+			source:  "main = () {\n    var result = 10 + 20\n}",
 			varName: "result",
 			mutable: true,
 		},
@@ -971,12 +971,12 @@ func TestParserAssignmentStatement(t *testing.T) {
 	}{
 		{
 			name:    "simple assignment",
-			source:  "fn main(): void {\n    var x = 5\n    x = 10\n}",
+			source:  "main = () {\n    var x = 5\n    x = 10\n}",
 			varName: "x",
 		},
 		{
 			name:    "assignment with expression",
-			source:  "fn main(): void {\n    var x = 5\n    x = x + 10\n}",
+			source:  "main = () {\n    var x = 5\n    x = x + 10\n}",
 			varName: "x",
 		},
 	}
@@ -1027,17 +1027,17 @@ func TestParserIdentifierExpression(t *testing.T) {
 	}{
 		{
 			name:         "simple identifier",
-			source:       "fn main(): void {\n    print(x)\n}",
+			source:       "main = () {\n    print(x)\n}",
 			expectedName: "x",
 		},
 		{
 			name:         "identifier with underscore",
-			source:       "fn main(): void {\n    print(my_var)\n}",
+			source:       "main = () {\n    print(my_var)\n}",
 			expectedName: "my_var",
 		},
 		{
 			name:         "identifier in binary expression",
-			source:       "fn main(): void {\n    val x = 5\n    print(x + 10)\n}",
+			source:       "main = () {\n    val x = 5\n    print(x + 10)\n}",
 			expectedName: "x",
 		},
 	}
@@ -1161,31 +1161,31 @@ func TestParserTypeAnnotation(t *testing.T) {
 	}{
 		{
 			name:         "i8 type annotation",
-			source:       "fn main(): void {\n    val x: i8 = 42\n}",
+			source:       "main = () {\n    val x: i8 = 42\n}",
 			varName:      "x",
 			expectedType: "i8",
 		},
 		{
 			name:         "i32 type annotation",
-			source:       "fn main(): void {\n    val y: i32 = 100\n}",
+			source:       "main = () {\n    val y: i32 = 100\n}",
 			varName:      "y",
 			expectedType: "i32",
 		},
 		{
 			name:         "u64 type annotation",
-			source:       "fn main(): void {\n    val z: u64 = 999\n}",
+			source:       "main = () {\n    val z: u64 = 999\n}",
 			varName:      "z",
 			expectedType: "u64",
 		},
 		{
 			name:         "f64 type annotation",
-			source:       "fn main(): void {\n    val pi: f64 = 3.14\n}",
+			source:       "main = () {\n    val pi: f64 = 3.14\n}",
 			varName:      "pi",
 			expectedType: "f64",
 		},
 		{
 			name:         "no type annotation",
-			source:       "fn main(): void {\n    val x = 42\n}",
+			source:       "main = () {\n    val x = 42\n}",
 			varName:      "x",
 			expectedType: "",
 		},
@@ -1234,35 +1234,35 @@ func TestParserOptionalReturnType(t *testing.T) {
 	}{
 		{
 			name:               "function without return type defaults to void",
-			source:             "fn main() {}",
+			source:             "main = () {}",
 			expectedName:       "main",
 			expectedReturnType: "void",
 			expectedBody:       0,
 		},
 		{
 			name:               "function without return type with body",
-			source:             "fn main() {\n    print(42)\n}",
+			source:             "main = () {\n    print(42)\n}",
 			expectedName:       "main",
 			expectedReturnType: "void",
 			expectedBody:       1,
 		},
 		{
 			name:               "function with explicit void return type",
-			source:             "fn main(): void {}",
+			source:             "main = () {}",
 			expectedName:       "main",
 			expectedReturnType: "void",
 			expectedBody:       0,
 		},
 		{
 			name:               "function with explicit i64 return type",
-			source:             "fn add(): i64 {\n    return 42\n}",
+			source:             "add = () -> i64 {\n    return 42\n}",
 			expectedName:       "add",
 			expectedReturnType: "i64",
 			expectedBody:       1,
 		},
 		{
 			name:               "function without return type and newline before body",
-			source:             "fn main()\n{}",
+			source:             "main = ()\n{}",
 			expectedName:       "main",
 			expectedReturnType: "void",
 			expectedBody:       0,
@@ -1800,31 +1800,31 @@ func TestParserBooleanInFunction(t *testing.T) {
 	}{
 		{
 			name: "boolean variable declaration",
-			source: `fn main(): void {
+			source: `main = () {
     val x = true
 }`,
 		},
 		{
 			name: "boolean expression in variable",
-			source: `fn main(): void {
+			source: `main = () {
     val x = true && false
 }`,
 		},
 		{
 			name: "comparison result in variable",
-			source: `fn main(): void {
+			source: `main = () {
     val x = 5 < 10
 }`,
 		},
 		{
 			name: "complex boolean in variable",
-			source: `fn main(): void {
+			source: `main = () {
     val x = 5 < 10 && 3 > 1
 }`,
 		},
 		{
 			name: "negation in variable",
-			source: `fn main(): void {
+			source: `main = () {
     val x = !true
 }`,
 		},
@@ -1872,7 +1872,7 @@ func TestParserBooleanInFunction(t *testing.T) {
 }
 
 func TestParserMultipleVariables(t *testing.T) {
-	source := `fn main(): void {
+	source := `main = () {
     val x = 5
     val y = 10
     val z = x + y
@@ -2142,7 +2142,7 @@ func TestParserWhenStatement(t *testing.T) {
 	}{
 		{
 			name: "simple when with else",
-			source: `fn main(): void {
+			source: `main = () {
     when {
         true -> exit(0)
         else -> exit(1)
@@ -2152,7 +2152,7 @@ func TestParserWhenStatement(t *testing.T) {
 		},
 		{
 			name: "when with multiple conditions",
-			source: `fn main(): void {
+			source: `main = () {
     val x = 5
     when {
         x > 10 -> exit(100)
@@ -2164,7 +2164,7 @@ func TestParserWhenStatement(t *testing.T) {
 		},
 		{
 			name: "when with literal true (exhaustive without else)",
-			source: `fn main(): void {
+			source: `main = () {
     val x = 5
     when {
         x > 10 -> exit(100)
@@ -2175,7 +2175,7 @@ func TestParserWhenStatement(t *testing.T) {
 		},
 		{
 			name: "when with block body",
-			source: `fn main(): void {
+			source: `main = () {
     when {
         true -> {
             val x = 1
@@ -2240,7 +2240,7 @@ func TestParserWhenExpression(t *testing.T) {
 	}{
 		{
 			name: "when as expression in variable",
-			source: `fn main(): void {
+			source: `main = () {
     val x = when {
         true -> 42
         else -> 0
@@ -2249,7 +2249,7 @@ func TestParserWhenExpression(t *testing.T) {
 		},
 		{
 			name: "when as expression in return",
-			source: `fn foo(): i64 {
+			source: `foo = () -> i64 {
     return when {
         true -> 42
         else -> 0
@@ -2289,7 +2289,7 @@ func TestParserWhenErrors(t *testing.T) {
 	}{
 		{
 			name: "when with subject syntax",
-			source: `fn main(): void {
+			source: `main = () {
     when (x) {
         true -> exit(0)
     }
@@ -2298,7 +2298,7 @@ func TestParserWhenErrors(t *testing.T) {
 		},
 		{
 			name: "when missing brace",
-			source: `fn main(): void {
+			source: `main = () {
     when
         true -> exit(0)
     }
@@ -2345,7 +2345,7 @@ func TestParserWhileStatement(t *testing.T) {
 	}{
 		{
 			name: "simple while without parens",
-			source: `fn main(): void {
+			source: `main = () {
     var i = 0
     while i < 5 {
         i = i + 1
@@ -2355,7 +2355,7 @@ func TestParserWhileStatement(t *testing.T) {
 		},
 		{
 			name: "simple while with parens",
-			source: `fn main(): void {
+			source: `main = () {
     var i = 0
     while (i < 5) {
         i = i + 1
@@ -2365,7 +2365,7 @@ func TestParserWhileStatement(t *testing.T) {
 		},
 		{
 			name: "while with break",
-			source: `fn main(): void {
+			source: `main = () {
     var i = 0
     while i < 10 {
         if i == 5 {
@@ -2378,7 +2378,7 @@ func TestParserWhileStatement(t *testing.T) {
 		},
 		{
 			name: "while with continue",
-			source: `fn main(): void {
+			source: `main = () {
     var i = 0
     while i < 10 {
         i = i + 1
@@ -2391,7 +2391,7 @@ func TestParserWhileStatement(t *testing.T) {
 		},
 		{
 			name: "nested while loops",
-			source: `fn main(): void {
+			source: `main = () {
     var i = 0
     while i < 3 {
         var j = 0
@@ -2466,7 +2466,7 @@ func TestParserWhileErrors(t *testing.T) {
 	}{
 		{
 			name: "while missing closing paren",
-			source: `fn main(): void {
+			source: `main = () {
     while (i < 5 {
         i = i + 1
     }
@@ -2475,7 +2475,7 @@ func TestParserWhileErrors(t *testing.T) {
 		},
 		{
 			name: "while missing body",
-			source: `fn main(): void {
+			source: `main = () {
     while i < 5
 }`,
 			expectedError: "expected '{'",

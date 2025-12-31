@@ -1,6 +1,6 @@
 // @test: exit_code=42
 // Tests basic if statement (condition true)
-fn main(): void {
+main = () {
     if true {
         exit(42)
     }

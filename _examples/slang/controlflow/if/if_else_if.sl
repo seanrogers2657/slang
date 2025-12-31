@@ -1,6 +1,6 @@
 // @test: exit_code=2
 // Tests else-if chaining
-fn main(): void {
+main = () {
     val x = 5
     if x > 10 {
         exit(1)

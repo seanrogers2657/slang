@@ -48,7 +48,7 @@ The compiler currently supports:
   - Logical: `&&` (and), `||` (or), `!` (not)
 - **Boolean literals**: `true`, `false`
 - **Statements**: Expression statements, variable declarations
-- **Functions**: Function declarations with `fn` keyword (e.g., `fn main() { ... }`)
+- **Functions**: Function declarations (e.g., `main = () { ... }`, `add = (a: int, b: int) -> int { ... }`)
 - **Built-in Functions**:
   - `print(value)` - print a value to stdout (accepts `i64`, `string`, or `bool`)
   - `exit(code)` - exit program with specified exit code
@@ -318,7 +318,7 @@ Example files use `@test:` directives in header comments to specify expectations
 
 ```slang
 // @test: exit_code=42
-fn main() {
+main = () {
     42
 }
 ```
@@ -395,7 +395,7 @@ Built-in functions are registered in a central registry and handled specially by
 **Example: The `exit()` built-in**
 
 ```slang
-fn main(): void {
+main = () {
     exit(42)           // exit with literal
     exit(10 + 20)      // exit with expression
     val code = 7
@@ -411,12 +411,33 @@ Generated ARM64 assembly for `exit(42)`:
     svc #0           // invoke syscall
 ```
 
+### Function Syntax
+
+Functions are declared using the assignment syntax with optional return type:
+
+```slang
+// Function with no parameters, void return (omit return type)
+main = () {
+    print(42)
+}
+
+// Function with parameters and return type
+add = (a: int, b: int) -> int {
+    return a + b
+}
+
+// Function can use implicit return (last expression)
+square = (x: int) -> int {
+    x * x
+}
+```
+
 ### Variable Syntax
 
 Variables are declared using `val` (immutable) or `var` (mutable) keywords (Kotlin-style):
 
 ```slang
-fn main(): void {
+main = () {
     val x = 42           // declare immutable x with value 42
     var y = 10           // declare mutable y with value 10
     val sum = x + y      // use variables in expressions
@@ -449,11 +470,6 @@ val x = 5
 val x = 10     // Error: variable 'x' is already declared in this scope
 x = 20         // Error: cannot assign to immutable variable 'x'
 ```
-
-### Current Limitations
-
-- No parentheses support in expressions
-- No control flow (if/else, loops)
 
 ## Module Information
 

@@ -72,7 +72,7 @@ func (g *TypedCodeGenerator) generateFunctionBasedProgram(builder *strings.Build
 
 	// Register functions in symbol table for stack traces
 	for _, fn := range functions {
-		g.symtab.AddFunction(fn.Name, fn.FnKeyword.Line)
+		g.symtab.AddFunction(fn.Name, fn.NamePos.Line)
 	}
 
 	// Write .data section if needed

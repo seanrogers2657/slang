@@ -11,7 +11,6 @@ import (
 
 // keywords maps keyword strings to their token types
 var keywords = map[string]TokenType{
-	"fn":       TokenTypeFn,
 	"val":      TokenTypeVal,
 	"var":      TokenTypeVar,
 	"return":   TokenTypeReturn,
@@ -46,7 +45,6 @@ const (
 	TokenTypeLessThanOrEqual
 	TokenTypeGreaterThanOrEqual
 	TokenTypeNewline
-	TokenTypeFn
 	TokenTypeVal
 	TokenTypeVar
 	TokenTypeAssign
@@ -113,8 +111,6 @@ func (t TokenType) String() string {
 		return "GREATER_EQUAL"
 	case TokenTypeNewline:
 		return "NEWLINE"
-	case TokenTypeFn:
-		return "FN"
 	case TokenTypeVal:
 		return "VAL"
 	case TokenTypeVar:

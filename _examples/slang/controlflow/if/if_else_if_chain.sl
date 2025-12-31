@@ -1,6 +1,6 @@
 // @test: exit_code=3
 // Tests longer else-if chain
-fn main(): void {
+main = () {
     val x = 15
     if x < 0 {
         exit(1)

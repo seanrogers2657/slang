@@ -1,6 +1,6 @@
 // @test: exit_code=99
 // Tests that else branch is taken when no conditions match
-fn main(): void {
+main = () {
     val x = 1
     val result = when {
         x > 100 -> 1

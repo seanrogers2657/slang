@@ -1,6 +1,6 @@
 // @test: exit_code=0
 // @test: stdout=10\n20\n30\n
-fn main(): void {
+main = () {
     var arr = [1, 2, 3]
     arr[0] = 10
     arr[1] = 20

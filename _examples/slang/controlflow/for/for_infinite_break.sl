@@ -1,5 +1,5 @@
 // @test: exit_code=42
-fn main(): void {
+main = () {
     var count = 0
     for ;; {
         count = count + 1

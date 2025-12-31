@@ -1,7 +1,7 @@
 // @test: expect_error=true
 // @test: error_stage=parser
 // @test: error_contains=when (subject) { } syntax is not supported
-fn main(): void {
+main = () {
     val flag = true
     when (flag) {
         true -> exit(1)

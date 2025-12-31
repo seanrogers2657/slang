@@ -1,5 +1,5 @@
 // @test: exit_code=42
-fn main(): void {
+main = () {
     val x = 5
     val result = when {
         x > 10 -> 100

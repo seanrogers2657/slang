@@ -1,7 +1,7 @@
 // @test: expect_error=true
 // @test: error_stage=semantic
 // @test: error_contains=cannot assign to immutable variable
-fn main(): void {
+main = () {
     val x = 5
     x = 10
 }

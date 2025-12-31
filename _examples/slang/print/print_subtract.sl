@@ -1,5 +1,5 @@
 // @test: exit_code=0
 // @test: stdout=3\n
-fn main(): void {
+main = () {
     print(5 - 2)
 }

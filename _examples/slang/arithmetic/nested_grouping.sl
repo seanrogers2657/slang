@@ -1,6 +1,6 @@
 // @test: exit_code=0
 // @test: stdout=5\n10\n
-fn main(): void {
+main = () {
     // nested parentheses
     print(((5)))
 

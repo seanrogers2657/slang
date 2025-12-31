@@ -1,4 +1,4 @@
 // @test: exit_code=0
-fn main(): void {
+main = () {
     5 - 2
 }

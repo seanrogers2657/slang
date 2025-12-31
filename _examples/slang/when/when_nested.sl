@@ -1,6 +1,6 @@
 // @test: exit_code=42
 // Tests nested when expressions
-fn main(): void {
+main = () {
     val x = 5
     val y = 10
     val result = when {

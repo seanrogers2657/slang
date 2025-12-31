@@ -1,8 +1,8 @@
 // @test: expect_error=true
 // @test: error_stage=semantic
 // @test: error_contains=function 'foo' is already declared
-fn foo(): void {}
+foo = () {}
 
-fn foo(): void {}
+foo = () {}
 
-fn main(): void {}
+main = () {}

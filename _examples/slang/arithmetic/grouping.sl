@@ -1,6 +1,6 @@
 // @test: exit_code=0
 // @test: stdout=20\n14\n21\n
-fn main(): void {
+main = () {
     // (2 + 3) * 4 = 20 (grouping overrides precedence)
     print((2 + 3) * 4)
 

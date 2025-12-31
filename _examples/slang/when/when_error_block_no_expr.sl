@@ -1,7 +1,7 @@
 // @test: expect_error=true
 // @test: error_stage=semantic
 // @test: error_contains=must end with an expression
-fn main(): void {
+main = () {
     var x = 0
     val result = when {
         true -> {

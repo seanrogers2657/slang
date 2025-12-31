@@ -278,9 +278,9 @@ func (a *Analyzer) analyzeDeclaration(decl ast.Declaration) TypedDeclaration {
 	default:
 		a.addError("unknown declaration type", decl.Pos(), decl.End())
 		return &TypedFunctionDecl{
-			FnKeyword:  decl.Pos(),
 			Name:       "error",
 			NamePos:    decl.Pos(),
+			EqualsPos:  decl.Pos(),
 			LeftParen:  decl.Pos(),
 			RightParen: decl.Pos(),
 			Body: &TypedBlockStmt{
@@ -356,12 +356,13 @@ func (a *Analyzer) analyzeFunctionDecl(fn *ast.FunctionDecl) TypedDeclaration {
 	a.currentReturnType = prevReturnType
 
 	return &TypedFunctionDecl{
-		FnKeyword:  fn.FnKeyword,
 		Name:       fn.Name,
 		NamePos:    fn.NamePos,
+		EqualsPos:  fn.EqualsPos,
 		LeftParen:  fn.LeftParen,
 		Parameters: typedParams,
 		RightParen: fn.RightParen,
+		ArrowPos:   fn.ArrowPos,
 		ReturnType: fnInfo.ReturnType,
 		ReturnPos:  fn.ReturnPos,
 		Body:       typedBody,

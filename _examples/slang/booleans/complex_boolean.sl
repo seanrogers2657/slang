@@ -1,7 +1,7 @@
 // @test: exit_code=0
 // @test: stdout=true\n
 // Tests complex boolean expressions with mixed operators
-fn main(): void {
+main = () {
     val x = 5
     val y = 10
     val cond1 = x < y      // true

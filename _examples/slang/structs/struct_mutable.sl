@@ -5,7 +5,7 @@ struct Point(
     var y: i64,
 )
 
-fn main(): void {
+main = () {
     val p = Point(10, 20)
     p.y = 25
     p.y = p.y + 1

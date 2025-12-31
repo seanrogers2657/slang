@@ -5,4 +5,4 @@ struct Point(val x: i64)
 
 struct Point(val y: i64)
 
-fn main(): void {}
+main = () {}

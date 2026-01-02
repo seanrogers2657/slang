@@ -41,8 +41,20 @@ func NewBaseContext(sourceLines []string) *BaseContext {
 
 // DeclareVariable allocates stack space for a variable and records its type.
 // Returns the stack offset (positive, relative to frame pointer).
+// For nullable primitive types, allocates 16 bytes (tag + value).
+// For nullable reference types, allocates 8 bytes (null pointer).
 func (ctx *BaseContext) DeclareVariable(name string, typ semantic.Type) int {
-	ctx.stackOffset += StackAlignment
+	// Determine size needed for this type
+	slots := 1 // default: 1 slot (8 bytes)
+	if nullableType, isNullable := typ.(semantic.NullableType); isNullable {
+		if !semantic.IsReferenceType(nullableType.InnerType) {
+			// Nullable primitives need 2 slots: tag (8 bytes) + value (8 bytes)
+			slots = 2
+		}
+		// Nullable references just need 1 slot (null pointer)
+	}
+
+	ctx.stackOffset += StackAlignment * slots
 	ctx.variables[name] = VariableInfo{Offset: ctx.stackOffset, Type: typ}
 	return ctx.stackOffset
 }

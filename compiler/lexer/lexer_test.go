@@ -1347,3 +1347,102 @@ func TestLexerWhileTokens(t *testing.T) {
 		})
 	}
 }
+
+func TestLexerNullability(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []Token
+	}{
+		{
+			name:  "null keyword",
+			input: "null",
+			expected: []Token{
+				{Type: TokenTypeNull, Value: "null"},
+			},
+		},
+		{
+			name:  "question mark for nullable type",
+			input: "i64?",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "i64"},
+				{Type: TokenTypeQuestion, Value: "?"},
+			},
+		},
+		{
+			name:  "safe call operator",
+			input: "x?.field",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "x"},
+				{Type: TokenTypeSafeCall, Value: "?."},
+				{Type: TokenTypeIdentifier, Value: "field"},
+			},
+		},
+		{
+			name:  "nullable type in variable declaration",
+			input: "val x: i64? = null",
+			expected: []Token{
+				{Type: TokenTypeVal, Value: "val"},
+				{Type: TokenTypeIdentifier, Value: "x"},
+				{Type: TokenTypeColon, Value: ":"},
+				{Type: TokenTypeIdentifier, Value: "i64"},
+				{Type: TokenTypeQuestion, Value: "?"},
+				{Type: TokenTypeAssign, Value: "="},
+				{Type: TokenTypeNull, Value: "null"},
+			},
+		},
+		{
+			name:  "safe call chain",
+			input: "a?.b?.c",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "a"},
+				{Type: TokenTypeSafeCall, Value: "?."},
+				{Type: TokenTypeIdentifier, Value: "b"},
+				{Type: TokenTypeSafeCall, Value: "?."},
+				{Type: TokenTypeIdentifier, Value: "c"},
+			},
+		},
+		{
+			name:  "null comparison",
+			input: "x == null",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "x"},
+				{Type: TokenTypeEqual, Value: "=="},
+				{Type: TokenTypeNull, Value: "null"},
+			},
+		},
+		{
+			name:  "null not equal comparison",
+			input: "x != null",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "x"},
+				{Type: TokenTypeNotEqual, Value: "!="},
+				{Type: TokenTypeNull, Value: "null"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("unexpected errors: %v", l.Errors)
+			}
+
+			if len(l.Tokens) != len(tt.expected) {
+				t.Fatalf("expected %d tokens, got %d: %v", len(tt.expected), len(l.Tokens), l.Tokens)
+			}
+
+			for i, token := range l.Tokens {
+				if token.Type != tt.expected[i].Type {
+					t.Errorf("token %d: expected type %v, got %v", i, tt.expected[i].Type, token.Type)
+				}
+				if token.Value != tt.expected[i].Value {
+					t.Errorf("token %d: expected value %q, got %q", i, tt.expected[i].Value, token.Value)
+				}
+			}
+		})
+	}
+}

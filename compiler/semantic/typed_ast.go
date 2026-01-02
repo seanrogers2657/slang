@@ -108,6 +108,25 @@ func (e *TypedFieldAccessExpr) End() ast.Position {
 func (e *TypedFieldAccessExpr) GetType() Type  { return e.Type }
 func (e *TypedFieldAccessExpr) typedExprNode() {}
 
+// TypedSafeCallExpr represents a typed safe call expression (e.g., person?.address)
+// Result is always nullable: if object is null, returns null; otherwise returns field value
+type TypedSafeCallExpr struct {
+	Type        Type            // the result type (always nullable)
+	Object      TypedExpression // the nullable struct expression
+	SafeCallPos ast.Position    // position of '?.'
+	Field       string          // field name
+	FieldPos    ast.Position    // position of field name
+	FieldOffset int             // byte offset of field in struct (for codegen)
+	InnerType   Type            // the unwrapped inner type of the nullable object
+}
+
+func (e *TypedSafeCallExpr) Pos() ast.Position { return e.Object.Pos() }
+func (e *TypedSafeCallExpr) End() ast.Position {
+	return ast.Position{Line: e.FieldPos.Line, Column: e.FieldPos.Column + len(e.Field), Offset: e.FieldPos.Offset + len(e.Field)}
+}
+func (e *TypedSafeCallExpr) GetType() Type  { return e.Type }
+func (e *TypedSafeCallExpr) typedExprNode() {}
+
 // TypedStructLiteralExpr represents a typed struct literal (construction)
 type TypedStructLiteralExpr struct {
 	Type       StructType        // the struct type being constructed
@@ -263,8 +282,9 @@ func (s *TypedIndexAssignStmt) typedStmtNode()    {}
 
 // TypedReturnStmt represents a typed return statement
 type TypedReturnStmt struct {
-	Keyword ast.Position
-	Value   TypedExpression // nil for void returns
+	Keyword      ast.Position
+	Value        TypedExpression // nil for void returns
+	ExpectedType Type            // the function's declared return type (for nullable handling)
 }
 
 func (s *TypedReturnStmt) Pos() ast.Position { return s.Keyword }

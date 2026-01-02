@@ -1241,3 +1241,147 @@ func TestAnalyzeWhileStatement(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// Nullability Tests
+// =============================================================================
+
+func TestAnalyzeNullLiteral(t *testing.T) {
+	t.Run("null literal has NothingType", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeLiteral(nullLit())
+		test.expectType(result, TypeNothing)
+		test.expectNoErrors()
+	})
+}
+
+func TestAnalyzeNullableTypes(t *testing.T) {
+	t.Run("null can be assigned to nullable type", func(t *testing.T) {
+		test := newTest(t).withScope()
+		result := test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", "i64?", false, nullLit()))
+
+		if result == nil {
+			t.Fatal("expected result, got nil")
+		}
+		test.expectNoErrors()
+	})
+
+	t.Run("non-null value can be assigned to nullable type", func(t *testing.T) {
+		test := newTest(t).withScope()
+		result := test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", "i64?", false, intLit("42")))
+
+		if result == nil {
+			t.Fatal("expected result, got nil")
+		}
+		test.expectNoErrors()
+	})
+
+	t.Run("null cannot be assigned to non-nullable type", func(t *testing.T) {
+		test := newTest(t).withScope()
+		test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", "i64", false, nullLit()))
+
+		test.expectErrorContaining("cannot assign null to non-nullable")
+	})
+
+	t.Run("bare null without type annotation is error", func(t *testing.T) {
+		test := newTest(t).withScope()
+		test.analyzer.analyzeVarDeclStatement(varDecl("x", false, nullLit()))
+
+		test.expectErrorContaining("cannot infer type from null")
+	})
+}
+
+func TestAnalyzeNullComparison(t *testing.T) {
+	t.Run("nullable equals null returns bool", func(t *testing.T) {
+		test := newTest(t).withScope().declare("x", NullableType{InnerType: TypeI64}, false)
+		result := test.analyzer.analyzeBinaryExpression(binExpr(ident("x"), "==", nullLit()))
+		test.expectType(result, TypeBoolean)
+		test.expectNoErrors()
+	})
+
+	t.Run("nullable not equals null returns bool", func(t *testing.T) {
+		test := newTest(t).withScope().declare("x", NullableType{InnerType: TypeI64}, false)
+		result := test.analyzer.analyzeBinaryExpression(binExpr(ident("x"), "!=", nullLit()))
+		test.expectType(result, TypeBoolean)
+		test.expectNoErrors()
+	})
+
+	t.Run("null equals null returns bool", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeBinaryExpression(binExpr(nullLit(), "==", nullLit()))
+		test.expectType(result, TypeBoolean)
+		test.expectNoErrors()
+	})
+
+	t.Run("non-nullable compared to null is error", func(t *testing.T) {
+		test := newTest(t).withScope().declare("x", TypeI64, false)
+		test.analyzer.analyzeBinaryExpression(binExpr(ident("x"), "==", nullLit()))
+		test.expectErrorContaining("cannot compare non-nullable")
+	})
+}
+
+func TestNullableTypeHelpers(t *testing.T) {
+	t.Run("IsNullable returns true for NullableType", func(t *testing.T) {
+		nullableInt := NullableType{InnerType: TypeI64}
+		if !IsNullable(nullableInt) {
+			t.Error("expected IsNullable to return true")
+		}
+	})
+
+	t.Run("IsNullable returns false for non-nullable type", func(t *testing.T) {
+		if IsNullable(TypeI64) {
+			t.Error("expected IsNullable to return false")
+		}
+	})
+
+	t.Run("MakeNullable wraps type", func(t *testing.T) {
+		result := MakeNullable(TypeI64)
+		nullable, ok := result.(NullableType)
+		if !ok {
+			t.Fatal("expected NullableType")
+		}
+		if !nullable.InnerType.Equals(TypeI64) {
+			t.Error("expected inner type to be i64")
+		}
+	})
+
+	t.Run("MakeNullable does not double-wrap", func(t *testing.T) {
+		nullable := NullableType{InnerType: TypeI64}
+		result := MakeNullable(nullable)
+		if result != nullable {
+			t.Error("expected MakeNullable to return same type for already nullable")
+		}
+	})
+
+	t.Run("UnwrapNullable extracts inner type", func(t *testing.T) {
+		nullable := NullableType{InnerType: TypeI64}
+		inner, ok := UnwrapNullable(nullable)
+		if !ok {
+			t.Error("expected ok to be true")
+		}
+		if !inner.Equals(TypeI64) {
+			t.Error("expected inner type to be i64")
+		}
+	})
+
+	t.Run("UnwrapNullable returns false for non-nullable", func(t *testing.T) {
+		_, ok := UnwrapNullable(TypeI64)
+		if ok {
+			t.Error("expected ok to be false")
+		}
+	})
+
+	t.Run("NullableSize returns 16 for primitives", func(t *testing.T) {
+		size := NullableSize(TypeI64)
+		if size != 16 {
+			t.Errorf("expected 16, got %d", size)
+		}
+	})
+
+	t.Run("NullableSize returns 8 for reference types", func(t *testing.T) {
+		size := NullableSize(TypeString)
+		if size != 8 {
+			t.Errorf("expected 8, got %d", size)
+		}
+	})
+}

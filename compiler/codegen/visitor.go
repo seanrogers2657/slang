@@ -229,12 +229,19 @@ func CountTypedVariables(stmts []semantic.TypedStatement) int {
 }
 
 // countStructSlots counts the total number of stack slots needed for a struct type
-// (recursively counting nested struct fields)
+// (recursively counting nested struct fields and nullable primitives)
 func countStructSlots(structType semantic.StructType) int {
 	count := 0
 	for _, field := range structType.Fields {
 		if nestedStruct, ok := field.Type.(semantic.StructType); ok {
 			count += countStructSlots(nestedStruct)
+		} else if nullableType, ok := field.Type.(semantic.NullableType); ok {
+			// Nullable primitives need 2 slots: tag + value
+			if !semantic.IsReferenceType(nullableType.InnerType) {
+				count += 2
+			} else {
+				count++
+			}
 		} else {
 			count++
 		}
@@ -257,8 +264,20 @@ func countTypedVarsInStmt(stmt semantic.TypedStatement) int {
 			if structType, ok := arrayType.ElementType.(semantic.StructType); ok {
 				return arrayType.Size * countStructSlots(structType)
 			}
+			// Nullable primitive arrays: 2 slots per element (tag + value)
+			if nullableType, ok := arrayType.ElementType.(semantic.NullableType); ok {
+				if !semantic.IsReferenceType(nullableType.InnerType) {
+					return arrayType.Size * 2
+				}
+			}
 			// Primitive arrays: one slot per element
 			return arrayType.Size
+		}
+		// Nullable primitives need 2 slots: tag (8 bytes) + value (8 bytes)
+		if nullableType, isNullable := s.DeclaredType.(semantic.NullableType); isNullable {
+			if !semantic.IsReferenceType(nullableType.InnerType) {
+				return 2
+			}
 		}
 		return 1
 	case *semantic.TypedIfStmt:

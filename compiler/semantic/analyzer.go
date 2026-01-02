@@ -213,6 +213,23 @@ func (a *Analyzer) registerStruct(s *ast.StructDecl) {
 
 // resolveTypeName converts a type name string to a Type, checking both primitive types and structs
 func (a *Analyzer) resolveTypeName(name string, pos ast.Position) Type {
+	// Check for nullable type T?
+	if strings.HasSuffix(name, "?") {
+		innerName := name[:len(name)-1]
+		innerType := a.resolveTypeName(innerName, pos)
+		if _, isErr := innerType.(ErrorType); isErr {
+			return TypeError
+		}
+		// Check for nested nullables (T??) - defense-in-depth
+		// The parser already catches this at parse time, but this check remains
+		// for programmatically constructed ASTs (e.g., in tests)
+		if IsNullable(innerType) {
+			a.addError("nested nullable types are not allowed", pos, pos)
+			return TypeError
+		}
+		return NullableType{InnerType: innerType}
+	}
+
 	// Check for Array<T> syntax
 	if strings.HasPrefix(name, "Array<") && strings.HasSuffix(name, ">") {
 		elementTypeName := name[6 : len(name)-1] // extract T from Array<T>
@@ -243,6 +260,20 @@ func (a *Analyzer) resolveTypeName(name string, pos ast.Position) Type {
 // resolveTypeNameNoError converts a type name string to a Type without adding errors
 // (used when caller wants to handle errors itself)
 func (a *Analyzer) resolveTypeNameNoError(name string) Type {
+	// Check for nullable type T?
+	if strings.HasSuffix(name, "?") {
+		innerName := name[:len(name)-1]
+		innerType := a.resolveTypeNameNoError(innerName)
+		if _, isErr := innerType.(ErrorType); isErr {
+			return TypeError
+		}
+		// Nested nullables are error - defense-in-depth (parser catches this at parse time)
+		if IsNullable(innerType) {
+			return TypeError
+		}
+		return NullableType{InnerType: innerType}
+	}
+
 	// Check for Array<T> syntax
 	if strings.HasPrefix(name, "Array<") && strings.HasSuffix(name, ">") {
 		elementTypeName := name[6 : len(name)-1] // extract T from Array<T>
@@ -523,6 +554,12 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 			// Infer type from initializer
 			declaredType = initType
 
+			// Check for bare null without type annotation
+			if _, isNothing := initType.(NothingType); isNothing {
+				a.addError("cannot infer type from null, add type annotation", stmt.Initializer.Pos(), stmt.Initializer.End())
+				declaredType = TypeError
+			}
+
 			// For integer literals without type annotation, check bounds against i64 (the default type)
 			if litExpr, ok := typedInit.(*TypedLiteralExpr); ok && litExpr.LitType == ast.LiteralTypeInteger {
 				if !a.checkIntegerBounds(litExpr.Value, TypeInteger, litExpr.StartPos) {
@@ -554,46 +591,121 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 	}
 }
 
+// typeCheckContext indicates the context for type compatibility checking
+type typeCheckContext int
+
+const (
+	contextAssignment typeCheckContext = iota // variable/field/element assignment
+	contextReturn                             // return statement
+)
+
 // checkTypeCompatibility checks if an initializer is compatible with the declared type
 func (a *Analyzer) checkTypeCompatibility(declaredType, initType Type, typedInit TypedExpression, pos ast.Position) bool {
+	return a.checkTypeCompatibilityCore(declaredType, initType, typedInit, pos, contextAssignment)
+}
+
+// checkReturnTypeCompatibility checks if a return value is compatible with the expected return type.
+func (a *Analyzer) checkReturnTypeCompatibility(expectedType, actualType Type, typedValue TypedExpression, pos ast.Position) bool {
+	return a.checkTypeCompatibilityCore(expectedType, actualType, typedValue, pos, contextReturn)
+}
+
+// checkTypeCompatibilityCore is the shared implementation for type compatibility checking.
+// It handles nullable types, literal bounds checking, and generates context-appropriate error messages.
+func (a *Analyzer) checkTypeCompatibilityCore(targetType, sourceType Type, typedSource TypedExpression, pos ast.Position, ctx typeCheckContext) bool {
+	// Helper to generate context-appropriate error messages
+	errMsg := func(msg string) string {
+		if ctx == contextReturn {
+			return "return type mismatch: " + msg
+		}
+		return msg
+	}
+
 	// If either type is ErrorType, skip compatibility check to avoid cascading errors
-	if _, isErr := declaredType.(ErrorType); isErr {
+	if _, isErr := targetType.(ErrorType); isErr {
 		return true
 	}
-	if _, isErr := initType.(ErrorType); isErr {
+	if _, isErr := sourceType.(ErrorType); isErr {
 		return true
 	}
 
 	// If types are exactly equal, always ok
-	if declaredType.Equals(initType) {
+	if targetType.Equals(sourceType) {
 		return true
 	}
 
+	// Nullable type rules:
+	// 1. Nothing (null) can be assigned to any T?
+	if _, isNothing := sourceType.(NothingType); isNothing {
+		if IsNullable(targetType) {
+			return true
+		}
+		a.addError(
+			errMsg(fmt.Sprintf("cannot assign null to non-nullable type '%s'", targetType.String())),
+			pos, pos,
+		)
+		return false
+	}
+
+	// 2. T can be assigned to T? (implicit upcast)
+	if nullableType, isNullable := targetType.(NullableType); isNullable {
+		if nullableType.InnerType.Equals(sourceType) {
+			return true
+		}
+		// Also allow integer literal bounds check for nullable integer types
+		if litExpr, ok := typedSource.(*TypedLiteralExpr); ok && litExpr.LitType == ast.LiteralTypeInteger {
+			if IsIntegerType(nullableType.InnerType) {
+				return a.checkIntegerBounds(litExpr.Value, nullableType.InnerType, pos)
+			}
+		}
+		// Also allow float literal bounds check for nullable float types
+		if litExpr, ok := typedSource.(*TypedLiteralExpr); ok && litExpr.LitType == ast.LiteralTypeFloat {
+			if IsFloatType(nullableType.InnerType) {
+				return a.checkFloatBounds(litExpr.Value, nullableType.InnerType, pos)
+			}
+		}
+	}
+
+	// 3. T? cannot be assigned to T
+	if IsNullable(sourceType) && !IsNullable(targetType) {
+		innerType, _ := UnwrapNullable(sourceType)
+		if innerType.Equals(targetType) {
+			hint := "use a null check or provide a default value"
+			if ctx == contextAssignment {
+				hint = "use a null check like 'if x != null { ... }' or provide a default value"
+			}
+			a.addError(
+				errMsg(fmt.Sprintf("cannot assign '%s' to '%s', handle null first", sourceType.String(), targetType.String())),
+				pos, pos,
+			).WithHint(hint)
+			return false
+		}
+	}
+
 	// Check for literal bounds when assigning to a specific type
-	if litExpr, ok := typedInit.(*TypedLiteralExpr); ok {
+	if litExpr, ok := typedSource.(*TypedLiteralExpr); ok {
 		// Integer literal -> any integer type (with bounds check)
-		if litExpr.LitType == ast.LiteralTypeInteger && IsIntegerType(declaredType) {
-			return a.checkIntegerBounds(litExpr.Value, declaredType, pos)
+		if litExpr.LitType == ast.LiteralTypeInteger && IsIntegerType(targetType) {
+			return a.checkIntegerBounds(litExpr.Value, targetType, pos)
 		}
 
 		// Float literal -> any float type (with bounds check)
-		if litExpr.LitType == ast.LiteralTypeFloat && IsFloatType(declaredType) {
-			return a.checkFloatBounds(litExpr.Value, declaredType, pos)
+		if litExpr.LitType == ast.LiteralTypeFloat && IsFloatType(targetType) {
+			return a.checkFloatBounds(litExpr.Value, targetType, pos)
 		}
 
 		// Integer literal cannot be assigned to float type
-		if litExpr.LitType == ast.LiteralTypeInteger && IsFloatType(declaredType) {
+		if litExpr.LitType == ast.LiteralTypeInteger && IsFloatType(targetType) {
 			a.addError(
-				fmt.Sprintf("cannot assign integer literal to %s", declaredType.String()),
+				errMsg(fmt.Sprintf("cannot assign integer literal to %s", targetType.String())),
 				pos, pos,
 			).WithHint("use a float literal like 42.0 instead")
 			return false
 		}
 
 		// Float literal cannot be assigned to integer type
-		if litExpr.LitType == ast.LiteralTypeFloat && IsIntegerType(declaredType) {
+		if litExpr.LitType == ast.LiteralTypeFloat && IsIntegerType(targetType) {
 			a.addError(
-				fmt.Sprintf("cannot assign float literal to %s", declaredType.String()),
+				errMsg(fmt.Sprintf("cannot assign float literal to %s", targetType.String())),
 				pos, pos,
 			)
 			return false
@@ -601,10 +713,17 @@ func (a *Analyzer) checkTypeCompatibility(declaredType, initType Type, typedInit
 	}
 
 	// Types don't match and no special conversion allowed
-	a.addError(
-		fmt.Sprintf("cannot assign %s to variable of type %s", initType.String(), declaredType.String()),
-		pos, pos,
-	)
+	if ctx == contextReturn {
+		a.addError(
+			fmt.Sprintf("return type mismatch: expected %s, got %s", targetType.String(), sourceType.String()),
+			pos, pos,
+		)
+	} else {
+		a.addError(
+			fmt.Sprintf("cannot assign %s to variable of type %s", sourceType.String(), targetType.String()),
+			pos, pos,
+		)
+	}
 	return false
 }
 
@@ -669,14 +788,9 @@ func (a *Analyzer) analyzeAssignStatement(stmt *ast.AssignStmt) TypedStatement {
 	typedValue := a.analyzeExpression(stmt.Value)
 	valueType := typedValue.GetType()
 
-	// Type check: value must match variable type (skip if value is already error type)
-	if _, isErr := valueType.(ErrorType); !isErr && !info.Type.Equals(valueType) {
-		a.addError(
-			fmt.Sprintf("cannot assign %s to variable '%s' of type %s",
-				valueType.String(), stmt.Name, info.Type.String()),
-			stmt.Value.Pos(), stmt.Value.End(),
-		)
-	}
+	// Type check using the same rules as variable declaration
+	// This handles: null -> T?, T -> T?, exact match, etc.
+	a.checkTypeCompatibility(info.Type, valueType, typedValue, stmt.Value.Pos())
 
 	return &TypedAssignStmt{
 		Name:    stmt.Name,
@@ -744,14 +858,9 @@ func (a *Analyzer) analyzeFieldAssignStatement(stmt *ast.FieldAssignStmt) TypedS
 	typedValue := a.analyzeExpression(stmt.Value)
 	valueType := typedValue.GetType()
 
-	// Type check: value must match field type
-	if _, isErr := valueType.(ErrorType); !isErr && !fieldInfo.Type.Equals(valueType) {
-		a.addError(
-			fmt.Sprintf("cannot assign %s to field '%s' of type %s",
-				valueType.String(), stmt.Field, fieldInfo.Type.String()),
-			stmt.Value.Pos(), stmt.Value.End(),
-		)
-	}
+	// Type check using the same rules as variable declaration
+	// This handles: null -> T?, T -> T?, exact match, etc.
+	a.checkTypeCompatibility(fieldInfo.Type, valueType, typedValue, stmt.Value.Pos())
 
 	return &TypedFieldAssignStmt{
 		Object:   typedObject,
@@ -821,14 +930,9 @@ func (a *Analyzer) analyzeIndexAssignStatement(stmt *ast.IndexAssignStmt) TypedS
 	// Compile-time bounds check for literal indices
 	a.checkLiteralIndexBounds(typedIndex, arrType.Size, stmt.Index.Pos(), stmt.Index.End())
 
-	// Check value type matches element type
-	if _, isErr := valueType.(ErrorType); !isErr && !arrType.ElementType.Equals(valueType) {
-		a.addError(
-			fmt.Sprintf("cannot assign %s to array element of type %s",
-				valueType.String(), arrType.ElementType.String()),
-			stmt.Value.Pos(), stmt.Value.End(),
-		)
-	}
+	// Type check using the same rules as variable declaration
+	// This handles: null -> T?, T -> T?, exact match, etc.
+	a.checkTypeCompatibility(arrType.ElementType, valueType, typedValue, stmt.Value.Pos())
 
 	return &TypedIndexAssignStmt{
 		Array:        typedArray,
@@ -971,8 +1075,9 @@ func (a *Analyzer) analyzeReturnStatement(stmt *ast.ReturnStmt) TypedStatement {
 	if a.currentReturnType == nil {
 		a.addError("return statement outside of function", stmt.Keyword, stmt.Keyword)
 		return &TypedReturnStmt{
-			Keyword: stmt.Keyword,
-			Value:   nil,
+			Keyword:      stmt.Keyword,
+			Value:        nil,
+			ExpectedType: TypeVoid,
 		}
 	}
 
@@ -985,12 +1090,8 @@ func (a *Analyzer) analyzeReturnStatement(stmt *ast.ReturnStmt) TypedStatement {
 		// Check type matches expected return type
 		if _, isVoid := a.currentReturnType.(VoidType); isVoid {
 			a.addError("void function should not return a value", stmt.Value.Pos(), stmt.Value.End())
-		} else if _, isErr := valueType.(ErrorType); !isErr && !a.currentReturnType.Equals(valueType) {
-			a.addError(
-				fmt.Sprintf("return type mismatch: expected %s, got %s",
-					a.currentReturnType.String(), valueType.String()),
-				stmt.Value.Pos(), stmt.Value.End(),
-			)
+		} else {
+			a.checkReturnTypeCompatibility(a.currentReturnType, valueType, typedValue, stmt.Value.Pos())
 		}
 	} else {
 		// No return value
@@ -1003,8 +1104,9 @@ func (a *Analyzer) analyzeReturnStatement(stmt *ast.ReturnStmt) TypedStatement {
 	}
 
 	return &TypedReturnStmt{
-		Keyword: stmt.Keyword,
-		Value:   typedValue,
+		Keyword:      stmt.Keyword,
+		Value:        typedValue,
+		ExpectedType: a.currentReturnType,
 	}
 }
 
@@ -1301,6 +1403,8 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 		return &TypedLiteralExpr{Type: ErrorType{}}
 	case *ast.FieldAccessExpr:
 		return a.analyzeFieldAccessExpr(e)
+	case *ast.SafeCallExpr:
+		return a.analyzeSafeCallExpr(e)
 	case *ast.ArrayLiteralExpr:
 		return a.analyzeArrayLiteral(e)
 	case *ast.IndexExpr:
@@ -1545,17 +1649,10 @@ func (a *Analyzer) analyzeStructLiteral(call *ast.CallExpr, structType StructTyp
 		typedArgs[i] = a.analyzeExpression(arg)
 
 		// Type check if we have a corresponding field
+		// Use checkTypeCompatibilityCore to allow nullable coercions (i64 -> i64?, null -> T?)
 		if i < len(structType.Fields) {
-			argType := typedArgs[i].GetType()
 			fieldType := structType.Fields[i].Type
-			fieldName := structType.Fields[i].Name
-			if _, isErr := argType.(ErrorType); !isErr && !fieldType.Equals(argType) {
-				a.addError(
-					fmt.Sprintf("field '%s': expected %s, got %s",
-						fieldName, fieldType.String(), argType.String()),
-					arg.Pos(), arg.End(),
-				)
-			}
+			a.checkTypeCompatibilityCore(fieldType, typedArgs[i].GetType(), typedArgs[i], arg.Pos(), contextAssignment)
 		}
 	}
 
@@ -1616,16 +1713,9 @@ func (a *Analyzer) analyzeStructLiteralNamed(call *ast.CallExpr, structType Stru
 		typedArg := a.analyzeExpression(namedArg.Value)
 		typedArgs[idx] = typedArg
 
-		// Type check
-		argType := typedArg.GetType()
+		// Type check - use checkTypeCompatibilityCore to allow nullable coercions
 		fieldType := structType.Fields[idx].Type
-		if _, isErr := argType.(ErrorType); !isErr && !fieldType.Equals(argType) {
-			a.addError(
-				fmt.Sprintf("field '%s': expected %s, got %s",
-					namedArg.Name, fieldType.String(), argType.String()),
-				namedArg.Value.Pos(), namedArg.Value.End(),
-			)
-		}
+		a.checkTypeCompatibilityCore(fieldType, typedArg.GetType(), typedArg, namedArg.Value.Pos(), contextAssignment)
 	}
 
 	// Check for missing fields
@@ -1683,17 +1773,10 @@ func (a *Analyzer) analyzeStructLiteralExpr(lit *ast.StructLiteral) TypedExpress
 		typedArgs[i] = a.analyzeExpression(arg)
 
 		// Type check if we have a corresponding field
+		// Use checkTypeCompatibilityCore to allow nullable coercions (i64 -> i64?, null -> T?)
 		if i < len(structType.Fields) {
-			argType := typedArgs[i].GetType()
 			fieldType := structType.Fields[i].Type
-			fieldName := structType.Fields[i].Name
-			if _, isErr := argType.(ErrorType); !isErr && !fieldType.Equals(argType) {
-				a.addError(
-					fmt.Sprintf("field '%s': expected %s, got %s",
-						fieldName, fieldType.String(), argType.String()),
-					arg.Pos(), arg.End(),
-				)
-			}
+			a.checkTypeCompatibilityCore(fieldType, typedArgs[i].GetType(), typedArgs[i], arg.Pos(), contextAssignment)
 		}
 	}
 
@@ -1754,16 +1837,9 @@ func (a *Analyzer) analyzeStructLiteralExprNamed(lit *ast.StructLiteral, structT
 		typedArg := a.analyzeExpression(namedArg.Value)
 		typedArgs[idx] = typedArg
 
-		// Type check
-		argType := typedArg.GetType()
+		// Type check - use checkTypeCompatibilityCore to allow nullable coercions
 		fieldType := structType.Fields[idx].Type
-		if _, isErr := argType.(ErrorType); !isErr && !fieldType.Equals(argType) {
-			a.addError(
-				fmt.Sprintf("field '%s': expected %s, got %s",
-					namedArg.Name, fieldType.String(), argType.String()),
-				namedArg.Value.Pos(), namedArg.Value.End(),
-			)
-		}
+		a.checkTypeCompatibilityCore(fieldType, typedArg.GetType(), typedArg, namedArg.Value.Pos(), contextAssignment)
 	}
 
 	// Check for missing fields
@@ -1812,17 +1888,10 @@ func (a *Analyzer) analyzeAnonStructLiteralWithType(lit *ast.AnonStructLiteral, 
 		typedArgs[i] = a.analyzeExpression(arg)
 
 		// Type check if we have a corresponding field
+		// Use checkTypeCompatibilityCore to allow nullable coercions (i64 -> i64?, null -> T?)
 		if i < len(structType.Fields) {
-			argType := typedArgs[i].GetType()
 			fieldType := structType.Fields[i].Type
-			fieldName := structType.Fields[i].Name
-			if _, isErr := argType.(ErrorType); !isErr && !fieldType.Equals(argType) {
-				a.addError(
-					fmt.Sprintf("field '%s': expected %s, got %s",
-						fieldName, fieldType.String(), argType.String()),
-					arg.Pos(), arg.End(),
-				)
-			}
+			a.checkTypeCompatibilityCore(fieldType, typedArgs[i].GetType(), typedArgs[i], arg.Pos(), contextAssignment)
 		}
 	}
 
@@ -1883,16 +1952,9 @@ func (a *Analyzer) analyzeAnonStructLiteralNamed(lit *ast.AnonStructLiteral, str
 		typedArg := a.analyzeExpression(namedArg.Value)
 		typedArgs[idx] = typedArg
 
-		// Type check
-		argType := typedArg.GetType()
+		// Type check - use checkTypeCompatibilityCore to allow nullable coercions
 		fieldType := structType.Fields[idx].Type
-		if _, isErr := argType.(ErrorType); !isErr && !fieldType.Equals(argType) {
-			a.addError(
-				fmt.Sprintf("field '%s': expected %s, got %s",
-					namedArg.Name, fieldType.String(), argType.String()),
-				namedArg.Value.Pos(), namedArg.Value.End(),
-			)
-		}
+		a.checkTypeCompatibilityCore(fieldType, typedArg.GetType(), typedArg, namedArg.Value.Pos(), contextAssignment)
 	}
 
 	// Check for missing fields
@@ -1966,6 +2028,85 @@ func (a *Analyzer) analyzeFieldAccessExpr(expr *ast.FieldAccessExpr) TypedExpres
 		Field:    expr.Field,
 		FieldPos: expr.FieldPos,
 		Mutable:  fieldInfo.Mutable,
+	}
+}
+
+// analyzeSafeCallExpr analyzes a safe call expression (e.g., person?.address)
+func (a *Analyzer) analyzeSafeCallExpr(expr *ast.SafeCallExpr) TypedExpression {
+	// Analyze the object expression
+	typedObject := a.analyzeExpression(expr.Object)
+	objectType := typedObject.GetType()
+
+	// Object must be nullable
+	innerType, isNullable := UnwrapNullable(objectType)
+	if !isNullable {
+		if _, isErr := objectType.(ErrorType); !isErr {
+			a.addError(
+				fmt.Sprintf("safe call '?.' used on non-nullable type '%s'", objectType.String()),
+				expr.SafeCallPos, expr.SafeCallPos,
+			).WithHint("use '.' for non-nullable types")
+		}
+		return &TypedSafeCallExpr{
+			Type:        TypeError,
+			Object:      typedObject,
+			SafeCallPos: expr.SafeCallPos,
+			Field:       expr.Field,
+			FieldPos:    expr.FieldPos,
+			FieldOffset: 0,
+			InnerType:   TypeError,
+		}
+	}
+
+	// The inner type must be a struct
+	structType, isStruct := innerType.(StructType)
+	if !isStruct {
+		if _, isErr := innerType.(ErrorType); !isErr {
+			a.addError(
+				fmt.Sprintf("cannot access field '%s' on non-struct type '%s'", expr.Field, innerType.String()),
+				expr.SafeCallPos, expr.FieldPos,
+			)
+		}
+		return &TypedSafeCallExpr{
+			Type:        TypeError,
+			Object:      typedObject,
+			SafeCallPos: expr.SafeCallPos,
+			Field:       expr.Field,
+			FieldPos:    expr.FieldPos,
+			FieldOffset: 0,
+			InnerType:   innerType,
+		}
+	}
+
+	// Look up the field
+	fieldInfo, found := structType.GetField(expr.Field)
+	if !found {
+		a.addError(
+			fmt.Sprintf("struct '%s' has no field '%s'", structType.Name, expr.Field),
+			expr.FieldPos, expr.FieldPos,
+		)
+		return &TypedSafeCallExpr{
+			Type:        TypeError,
+			Object:      typedObject,
+			SafeCallPos: expr.SafeCallPos,
+			Field:       expr.Field,
+			FieldPos:    expr.FieldPos,
+			FieldOffset: 0,
+			InnerType:   innerType,
+		}
+	}
+
+	// Result type is always nullable (field value or null)
+	resultType := MakeNullable(fieldInfo.Type)
+	fieldOffset := structType.FieldOffset(expr.Field)
+
+	return &TypedSafeCallExpr{
+		Type:        resultType,
+		Object:      typedObject,
+		SafeCallPos: expr.SafeCallPos,
+		Field:       expr.Field,
+		FieldPos:    expr.FieldPos,
+		FieldOffset: fieldOffset,
+		InnerType:   innerType,
 	}
 }
 
@@ -2050,6 +2191,8 @@ func (a *Analyzer) analyzeLiteral(lit *ast.LiteralExpr) TypedExpression {
 		typ = TypeString
 	case ast.LiteralTypeBoolean:
 		typ = TypeBoolean
+	case ast.LiteralTypeNull:
+		typ = TypeNothing // null has type Nothing, assignable to any T?
 	default:
 		a.addError(fmt.Sprintf("unknown literal type: %v", lit.Kind), lit.StartPos, lit.EndPos)
 		typ = TypeError
@@ -2210,6 +2353,46 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 	// Comparison operators: ==, !=, <, >, <=, >=
 	// These require matching numeric types and return bool
 	if op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" {
+		// Special case: null comparison (x == null, x != null)
+		// These are only allowed for nullable types and return bool
+		if op == "==" || op == "!=" {
+			_, leftIsNothing := leftType.(NothingType)
+			_, rightIsNothing := rightType.(NothingType)
+
+			// One side is null
+			if leftIsNothing || rightIsNothing {
+				// Get the non-null type
+				var otherType Type
+				if leftIsNothing {
+					otherType = rightType
+				} else {
+					otherType = leftType
+				}
+
+				// The other side must be nullable or also null
+				_, otherIsNothing := otherType.(NothingType)
+				if otherIsNothing || IsNullable(otherType) {
+					return TypeBoolean // null == null or T? == null returns bool
+				}
+
+				// Cannot compare non-nullable with null
+				a.addError(
+					fmt.Sprintf("cannot compare non-nullable type '%s' with null", otherType.String()),
+					leftPos, rightPos,
+				).WithHint("only nullable types can be compared with null")
+				return TypeError
+			}
+
+			// Both sides are nullable - comparing two T? values
+			if IsNullable(leftType) && IsNullable(rightType) {
+				leftInner, _ := UnwrapNullable(leftType)
+				rightInner, _ := UnwrapNullable(rightType)
+				if leftInner.Equals(rightInner) {
+					return TypeBoolean
+				}
+			}
+		}
+
 		// Check left operand is numeric
 		if !IsIntegerType(leftType) && !IsFloatType(leftType) {
 			a.addError(

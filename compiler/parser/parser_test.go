@@ -2507,3 +2507,177 @@ func TestParserWhileErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestParserNullLiteral(t *testing.T) {
+	t.Run("null literal parses correctly", func(t *testing.T) {
+		tokens := []lexer.Token{
+			{Type: lexer.TokenTypeNull, Value: "null", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+		}
+		p := NewParser(tokens)
+		literal := p.ParseLiteral()
+
+		if literal == nil {
+			t.Fatal("expected literal, got nil")
+		}
+
+		litExpr, ok := literal.(*ast.LiteralExpr)
+		if !ok {
+			t.Fatal("expected LiteralExpr")
+		}
+
+		if litExpr.Kind != ast.LiteralTypeNull {
+			t.Errorf("expected LiteralTypeNull, got %d", litExpr.Kind)
+		}
+
+		if litExpr.Value != "null" {
+			t.Errorf("expected value 'null', got %q", litExpr.Value)
+		}
+	})
+}
+
+func TestParserNullableType(t *testing.T) {
+	tests := []struct {
+		name         string
+		source       string
+		expectedType string
+	}{
+		{
+			name:         "nullable i64",
+			source:       "main = () { val x: i64? = null }",
+			expectedType: "i64?",
+		},
+		{
+			name:         "nullable bool",
+			source:       "main = () { val x: bool? = null }",
+			expectedType: "bool?",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("unexpected parser errors: %v", p.Errors)
+			}
+
+			if len(program.Declarations) != 1 {
+				t.Fatalf("expected 1 declaration, got %d", len(program.Declarations))
+			}
+
+			funcDecl, ok := program.Declarations[0].(*ast.FunctionDecl)
+			if !ok {
+				t.Fatal("expected FunctionDecl")
+			}
+
+			if len(funcDecl.Body.Statements) != 1 {
+				t.Fatalf("expected 1 statement, got %d", len(funcDecl.Body.Statements))
+			}
+
+			varDecl, ok := funcDecl.Body.Statements[0].(*ast.VarDeclStmt)
+			if !ok {
+				t.Fatal("expected VarDeclStmt")
+			}
+
+			if varDecl.TypeName != tt.expectedType {
+				t.Errorf("expected type %q, got %q", tt.expectedType, varDecl.TypeName)
+			}
+		})
+	}
+}
+
+func TestParserSafeCall(t *testing.T) {
+	t.Run("safe call expression parses correctly", func(t *testing.T) {
+		source := `main = () { x?.field }`
+		l := lexer.NewLexer([]byte(source))
+		l.Parse()
+
+		p := NewParser(l.Tokens)
+		program := p.Parse()
+
+		if len(p.Errors) > 0 {
+			t.Fatalf("unexpected parser errors: %v", p.Errors)
+		}
+
+		funcDecl := program.Declarations[0].(*ast.FunctionDecl)
+		exprStmt := funcDecl.Body.Statements[0].(*ast.ExprStmt)
+		safeCall, ok := exprStmt.Expr.(*ast.SafeCallExpr)
+		if !ok {
+			t.Fatalf("expected SafeCallExpr, got %T", exprStmt.Expr)
+		}
+
+		if safeCall.Field != "field" {
+			t.Errorf("expected field name 'field', got %q", safeCall.Field)
+		}
+
+		ident, ok := safeCall.Object.(*ast.IdentifierExpr)
+		if !ok {
+			t.Fatalf("expected IdentifierExpr as object, got %T", safeCall.Object)
+		}
+
+		if ident.Name != "x" {
+			t.Errorf("expected object name 'x', got %q", ident.Name)
+		}
+	})
+
+	t.Run("chained safe calls", func(t *testing.T) {
+		source := `main = () { a?.b?.c }`
+		l := lexer.NewLexer([]byte(source))
+		l.Parse()
+
+		p := NewParser(l.Tokens)
+		program := p.Parse()
+
+		if len(p.Errors) > 0 {
+			t.Fatalf("unexpected parser errors: %v", p.Errors)
+		}
+
+		funcDecl := program.Declarations[0].(*ast.FunctionDecl)
+		exprStmt := funcDecl.Body.Statements[0].(*ast.ExprStmt)
+		outerSafeCall, ok := exprStmt.Expr.(*ast.SafeCallExpr)
+		if !ok {
+			t.Fatalf("expected SafeCallExpr, got %T", exprStmt.Expr)
+		}
+
+		if outerSafeCall.Field != "c" {
+			t.Errorf("expected outer field 'c', got %q", outerSafeCall.Field)
+		}
+
+		innerSafeCall, ok := outerSafeCall.Object.(*ast.SafeCallExpr)
+		if !ok {
+			t.Fatalf("expected inner SafeCallExpr, got %T", outerSafeCall.Object)
+		}
+
+		if innerSafeCall.Field != "b" {
+			t.Errorf("expected inner field 'b', got %q", innerSafeCall.Field)
+		}
+	})
+}
+
+func TestParserNestedNullableError(t *testing.T) {
+	source := `main = () { val x: i64?? = null }`
+	l := lexer.NewLexer([]byte(source))
+	l.Parse()
+
+	p := NewParser(l.Tokens)
+	p.Parse()
+
+	if len(p.Errors) == 0 {
+		t.Fatal("expected parser error for nested nullable")
+	}
+
+	found := false
+	for _, err := range p.Errors {
+		if strings.Contains(err.Message, "nested nullable") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected error containing 'nested nullable', got: %v", p.Errors)
+	}
+}

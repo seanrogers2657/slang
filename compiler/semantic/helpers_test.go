@@ -95,6 +95,24 @@ func boolLit(value string) *ast.LiteralExpr {
 	}
 }
 
+func nullLit() *ast.LiteralExpr {
+	return &ast.LiteralExpr{
+		Kind:     ast.LiteralTypeNull,
+		Value:    "null",
+		StartPos: pos(1, 1),
+		EndPos:   pos(1, 4),
+	}
+}
+
+func safeCallExpr(object ast.Expression, field string) *ast.SafeCallExpr {
+	return &ast.SafeCallExpr{
+		Object:      object,
+		SafeCallPos: pos(1, 2),
+		Field:       field,
+		FieldPos:    pos(1, 4),
+	}
+}
+
 func unaryExpr(op string, operand ast.Expression) *ast.UnaryExpr {
 	return &ast.UnaryExpr{
 		Op:         op,

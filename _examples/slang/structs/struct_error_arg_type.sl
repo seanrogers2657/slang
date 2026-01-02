@@ -1,6 +1,6 @@
 // @test: expect_error=true
 // @test: error_stage=semantic
-// @test: error_contains=field 'x': expected i64, got boolean
+// @test: error_contains=cannot assign boolean to variable of type i64
 Point = struct {
     val x: i64
     val y: i64

@@ -290,6 +290,80 @@ func (t ArrayType) TotalSize() int {
 	return t.Size * t.ElementSize()
 }
 
+// NullableType wraps a type to indicate it may be null (T?)
+type NullableType struct {
+	InnerType Type // the non-nullable inner type
+}
+
+func (t NullableType) String() string {
+	return t.InnerType.String() + "?"
+}
+
+func (t NullableType) Equals(other Type) bool {
+	o, ok := other.(NullableType)
+	if !ok {
+		return false
+	}
+	return t.InnerType.Equals(o.InnerType)
+}
+
+// NothingType is the type of 'null', assignable to any T?
+// This is the bottom type for nullable types.
+type NothingType struct{}
+
+func (t NothingType) String() string {
+	return "Nothing"
+}
+
+func (t NothingType) Equals(other Type) bool {
+	_, ok := other.(NothingType)
+	return ok
+}
+
+// IsNullable checks if a type is nullable (T?)
+func IsNullable(t Type) bool {
+	_, ok := t.(NullableType)
+	return ok
+}
+
+// MakeNullable wraps a type in NullableType, avoiding double-wrapping
+func MakeNullable(t Type) Type {
+	if IsNullable(t) {
+		return t // don't double-wrap
+	}
+	return NullableType{InnerType: t}
+}
+
+// UnwrapNullable extracts the inner type from a NullableType.
+// Returns (innerType, true) if t is nullable, (t, false) otherwise.
+func UnwrapNullable(t Type) (Type, bool) {
+	if n, ok := t.(NullableType); ok {
+		return n.InnerType, true
+	}
+	return t, false
+}
+
+// IsReferenceType checks if a type is a reference type (struct, string).
+// Reference types use 8-byte nullable pointers; primitives use 16-byte tagged unions.
+func IsReferenceType(t Type) bool {
+	switch t.(type) {
+	case StructType, StringType:
+		return true
+	default:
+		return false
+	}
+}
+
+// NullableSize returns the byte size of a nullable value.
+// Reference types: 8 bytes (nullable pointer)
+// Primitives: 16 bytes (tagged union: 8-byte tag + 8-byte value)
+func NullableSize(inner Type) int {
+	if IsReferenceType(inner) {
+		return 8 // nullable pointer
+	}
+	return 16 // tagged union
+}
+
 // TypeByteSize returns the byte size of a type for memory allocation purposes.
 // For numeric types, this is derived from the bit width.
 // For pointers (strings), this is 8 bytes on 64-bit systems.
@@ -301,7 +375,7 @@ func TypeByteSize(t Type) int {
 	}
 
 	// Handle other types
-	switch t.(type) {
+	switch tt := t.(type) {
 	case StringType:
 		return 8 // pointer size on 64-bit
 	case BooleanType:
@@ -310,10 +384,14 @@ func TypeByteSize(t Type) int {
 		return 0
 	case ErrorType:
 		return 0
+	case NothingType:
+		return 0 // null has no size on its own
+	case NullableType:
+		return NullableSize(tt.InnerType)
 	case StructType:
-		return t.(StructType).Size()
+		return tt.Size()
 	case ArrayType:
-		return t.(ArrayType).TotalSize()
+		return tt.TotalSize()
 	default:
 		return 8 // default to 8 bytes for unknown types
 	}
@@ -327,6 +405,7 @@ var (
 	TypeBoolean = BooleanType{}
 	TypeVoid    = VoidType{}
 	TypeError   = ErrorType{}
+	TypeNothing = NothingType{} // type of null literal
 
 	// Signed integer types
 	TypeI8   = I8Type{}

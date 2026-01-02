@@ -42,6 +42,25 @@ func NewTypedCodeGeneratorWithFilename(program *semantic.TypedProgram, sourceLin
 	}
 }
 
+// expressionHasNullableTag checks if a typed expression representing a nullable
+// primitive would have its tag loaded into x3 after generateExpr is called.
+// This is true for: identifiers, function calls, field access, and index access
+// that return nullable types.
+func expressionHasNullableTag(expr semantic.TypedExpression) bool {
+	switch e := expr.(type) {
+	case *semantic.TypedIdentifierExpr:
+		return semantic.IsNullable(e.Type)
+	case *semantic.TypedCallExpr:
+		return semantic.IsNullable(e.Type)
+	case *semantic.TypedFieldAccessExpr:
+		return semantic.IsNullable(e.Type)
+	case *semantic.TypedIndexExpr:
+		return semantic.IsNullable(e.Type)
+	default:
+		return false
+	}
+}
+
 // Generate produces ARM64 assembly code from the typed program.
 func (g *TypedCodeGenerator) Generate() (string, error) {
 	if len(g.program.Declarations) == 0 {
@@ -138,17 +157,51 @@ func (g *TypedCodeGenerator) generateFunction(fn *semantic.TypedFunctionDecl) (s
 
 	ctx := NewBaseContext(g.sourceLines)
 
-	paramCount := len(fn.Parameters)
+	// Count stack slots needed for parameters (nullable primitives need 2 slots)
+	paramSlots := 0
+	for _, param := range fn.Parameters {
+		if nullableType, isNullable := param.Type.(semantic.NullableType); isNullable {
+			if !semantic.IsReferenceType(nullableType.InnerType) {
+				paramSlots += 2 // tag + value
+			} else {
+				paramSlots += 1
+			}
+		} else {
+			paramSlots += 1
+		}
+	}
+
 	varCount := CountTypedVariables(fn.Body.Statements)
-	totalLocals := paramCount + varCount
+	totalLocals := paramSlots + varCount
 	stackSize := totalLocals * StackAlignment
 
 	EmitFunctionPrologue(&builder, stackSize)
 
-	// Store parameters
-	for i, param := range fn.Parameters {
+	// Store parameters from registers
+	// Nullable params use 2 consecutive registers (tag, value)
+	regIdx := 0
+	for _, param := range fn.Parameters {
 		offset := ctx.DeclareVariable(param.Name, param.Type)
-		EmitStoreToStack(&builder, fmt.Sprintf("x%d", i), offset)
+
+		if nullableType, isNullable := param.Type.(semantic.NullableType); isNullable {
+			if !semantic.IsReferenceType(nullableType.InnerType) {
+				// Nullable primitive: tag in xN, value in xN+1
+				// Store tag at offset-8, value at offset
+				tagOffset := offset - 8
+				builder.WriteString(fmt.Sprintf("    str x%d, [x29, #-%d]\n", regIdx, tagOffset))
+				regIdx++
+				EmitStoreToStack(&builder, fmt.Sprintf("x%d", regIdx), offset)
+				regIdx++
+			} else {
+				// Nullable reference: just one register
+				EmitStoreToStack(&builder, fmt.Sprintf("x%d", regIdx), offset)
+				regIdx++
+			}
+		} else {
+			// Non-nullable: single register
+			EmitStoreToStack(&builder, fmt.Sprintf("x%d", regIdx), offset)
+			regIdx++
+		}
 	}
 
 	// Generate body
@@ -220,6 +273,11 @@ func (g *TypedCodeGenerator) generateVarDecl(stmt *semantic.TypedVarDeclStmt, ct
 		return g.generateArrayVarDecl(stmt, arrayType, ctx)
 	}
 
+	// Check if this is a nullable type
+	if nullableType, isNullable := stmt.DeclaredType.(semantic.NullableType); isNullable {
+		return g.generateNullableVarDecl(stmt, nullableType, ctx)
+	}
+
 	code, err := g.generateExpr(stmt.Initializer, ctx)
 	if err != nil {
 		return "", err
@@ -232,6 +290,79 @@ func (g *TypedCodeGenerator) generateVarDecl(stmt *semantic.TypedVarDeclStmt, ct
 		builder.WriteString(fmt.Sprintf("    str d0, [x29, #-%d]\n", offset))
 	} else {
 		EmitStoreToStack(&builder, "x2", offset)
+	}
+
+	return builder.String(), nil
+}
+
+// generateNullableVarDecl generates code for declaring a nullable variable.
+// For nullable primitives: stores tag (8 bytes) + value (8 bytes)
+// For nullable references: stores pointer (8 bytes, 0 = null)
+func (g *TypedCodeGenerator) generateNullableVarDecl(stmt *semantic.TypedVarDeclStmt, nullableType semantic.NullableType, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	isRef := semantic.IsReferenceType(nullableType.InnerType)
+
+	// Check if initializer is null literal
+	isNullInit := false
+	if litExpr, ok := stmt.Initializer.(*semantic.TypedLiteralExpr); ok {
+		if litExpr.LitType == ast.LiteralTypeNull {
+			isNullInit = true
+		}
+	}
+
+	// Allocate stack space (DeclareVariable handles sizing)
+	offset := ctx.DeclareVariable(stmt.Name, stmt.DeclaredType)
+
+	if isRef {
+		// Nullable reference: just store pointer (0 for null)
+		if isNullInit {
+			// Store null (0)
+			builder.WriteString(fmt.Sprintf("    str xzr, [x29, #-%d]\n", offset))
+		} else {
+			// Generate the expression and store the pointer
+			code, err := g.generateExpr(stmt.Initializer, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(code)
+			EmitStoreToStack(&builder, "x2", offset)
+		}
+	} else {
+		// Nullable primitive: store tag + value
+		// Layout: [tag (8 bytes)][value (8 bytes)]
+		// offset points to the END of the allocation, so:
+		// - value is at offset
+		// - tag is at offset - 8
+		tagOffset := offset - 8
+		valueOffset := offset
+
+		if isNullInit {
+			// Store null: tag = 0, value = undefined
+			builder.WriteString(fmt.Sprintf("    str xzr, [x29, #-%d]\n", tagOffset))
+		} else {
+			// Check if initializer is a nullable expression that already has tag in x3
+			hasTagInX3 := expressionHasNullableTag(stmt.Initializer)
+
+			// Generate the expression
+			code, err := g.generateExpr(stmt.Initializer, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(code)
+
+			if hasTagInX3 {
+				// Tag is already in x3 from the expression
+				builder.WriteString(fmt.Sprintf("    str x3, [x29, #-%d]\n", tagOffset))
+			} else {
+				// Non-null value: store tag = 1
+				EmitMoveImm(&builder, "x3", "1")
+				builder.WriteString(fmt.Sprintf("    str x3, [x29, #-%d]\n", tagOffset))
+			}
+
+			// Store value
+			EmitStoreToStack(&builder, "x2", valueOffset)
+		}
 	}
 
 	return builder.String(), nil
@@ -276,6 +407,13 @@ func (g *TypedCodeGenerator) countStructSlots(structType semantic.StructType) in
 	for _, field := range structType.Fields {
 		if nestedStruct, ok := field.Type.(semantic.StructType); ok {
 			count += g.countStructSlots(nestedStruct)
+		} else if nullableType, ok := field.Type.(semantic.NullableType); ok {
+			// Nullable primitives need 2 slots: tag + value
+			if !semantic.IsReferenceType(nullableType.InnerType) {
+				count += 2
+			} else {
+				count++
+			}
 		} else {
 			count++
 		}
@@ -304,6 +442,33 @@ func (g *TypedCodeGenerator) generateStructFieldsInline(structLit *semantic.Type
 			// Advance offset by the nested struct size
 			nestedStruct := fieldType.(semantic.StructType)
 			currentOffset += g.countStructSlots(nestedStruct) * StackAlignment
+		} else if nullableType, ok := fieldType.(semantic.NullableType); ok && !semantic.IsReferenceType(nullableType.InnerType) {
+			// Nullable primitive field: store tag at currentOffset, value at currentOffset+8
+			tagOffset := currentOffset
+			valueOffset := currentOffset + 8
+
+			// Check if it's a null literal
+			if litExpr, ok := arg.(*semantic.TypedLiteralExpr); ok && litExpr.LitType == ast.LiteralTypeNull {
+				// Store tag = 0 (null)
+				builder.WriteString(fmt.Sprintf("    str xzr, [x29, #-%d]\n", tagOffset))
+				// Store value = 0
+				builder.WriteString(fmt.Sprintf("    str xzr, [x29, #-%d]\n", valueOffset))
+			} else {
+				// Generate the expression value
+				code, err := g.generateExpr(arg, ctx)
+				if err != nil {
+					return "", err
+				}
+				builder.WriteString(code)
+
+				// Store tag = 1 (non-null)
+				EmitMoveImm(&builder, "x3", "1")
+				builder.WriteString(fmt.Sprintf("    str x3, [x29, #-%d]\n", tagOffset))
+				// Store value
+				EmitStoreToStack(&builder, "x2", valueOffset)
+			}
+
+			currentOffset += 2 * StackAlignment
 		} else {
 			// Generate the field value
 			code, err := g.generateExpr(arg, ctx)
@@ -330,6 +495,12 @@ func (g *TypedCodeGenerator) generateStructFieldsInline(structLit *semantic.Type
 func (g *TypedCodeGenerator) getElementSlotCount(elementType semantic.Type) int {
 	if structType, ok := elementType.(semantic.StructType); ok {
 		return g.countStructSlots(structType)
+	}
+	// Nullable primitives need 2 slots: tag + value
+	if nullableType, ok := elementType.(semantic.NullableType); ok {
+		if !semantic.IsReferenceType(nullableType.InnerType) {
+			return 2
+		}
 	}
 	return 1 // primitives take 1 slot
 }
@@ -368,6 +539,39 @@ func (g *TypedCodeGenerator) generateArrayVarDecl(stmt *semantic.TypedVarDeclStm
 				return "", err
 			}
 			builder.WriteString(code)
+		} else if nullableType, ok := arrayType.ElementType.(semantic.NullableType); ok && !semantic.IsReferenceType(nullableType.InnerType) {
+			// Nullable primitive element: store tag at currentOffset, value at currentOffset+8
+			tagOffset := currentOffset
+			valueOffset := currentOffset + 8
+
+			// Check if element is a null literal
+			if litExpr, ok := elem.(*semantic.TypedLiteralExpr); ok && litExpr.LitType == ast.LiteralTypeNull {
+				// Store tag = 0 (null)
+				builder.WriteString(fmt.Sprintf("    str xzr, [x29, #-%d]\n", tagOffset))
+				// Store value = 0
+				builder.WriteString(fmt.Sprintf("    str xzr, [x29, #-%d]\n", valueOffset))
+			} else {
+				// Generate the expression
+				code, err := g.generateExpr(elem, ctx)
+				if err != nil {
+					return "", err
+				}
+				builder.WriteString(code)
+
+				// Check if element is a nullable expression that already has tag in x3
+				hasTagInX3 := expressionHasNullableTag(elem)
+
+				if hasTagInX3 {
+					// Tag is already in x3
+					builder.WriteString(fmt.Sprintf("    str x3, [x29, #-%d]\n", tagOffset))
+				} else {
+					// Non-null value: store tag = 1
+					EmitMoveImm(&builder, "x3", "1")
+					builder.WriteString(fmt.Sprintf("    str x3, [x29, #-%d]\n", tagOffset))
+				}
+				// Store value
+				EmitStoreToStack(&builder, "x2", valueOffset)
+			}
 		} else {
 			// Primitive element
 			code, err := g.generateExpr(elem, ctx)
@@ -399,9 +603,15 @@ func (g *TypedCodeGenerator) generateIndexAssignStmt(stmt *semantic.TypedIndexAs
 		return "", err
 	}
 
-	// Get element size from array type
+	// Get element type and size from array type
 	arrayType := stmt.Array.GetType().(semantic.ArrayType)
-	elementSizeBytes := g.getElementSlotCount(arrayType.ElementType) * StackAlignment
+	elementType := arrayType.ElementType
+	elementSizeBytes := g.getElementSlotCount(elementType) * StackAlignment
+
+	// Handle nullable elements specially
+	if semantic.IsNullable(elementType) {
+		return g.generateNullableIndexAssign(stmt, baseOffset, elementSizeBytes, &builder, ctx)
+	}
 
 	// Optimization: for literal indices, compute offset at compile time
 	// and skip runtime bounds check (already validated in semantic analysis)
@@ -451,6 +661,121 @@ func (g *TypedCodeGenerator) generateIndexAssignStmt(stmt *semantic.TypedIndexAs
 
 	// Store element at computed address
 	builder.WriteString("    str x5, [x4]\n")
+
+	return builder.String(), nil
+}
+
+// generateNullableIndexAssign handles assignment to nullable array elements.
+func (g *TypedCodeGenerator) generateNullableIndexAssign(stmt *semantic.TypedIndexAssignStmt, baseOffset, elementSizeBytes int, builder *strings.Builder, ctx *BaseContext) (string, error) {
+	// Check if assigning null
+	isNullAssign := false
+	if litExpr, ok := stmt.Value.(*semantic.TypedLiteralExpr); ok {
+		if litExpr.LitType == ast.LiteralTypeNull {
+			isNullAssign = true
+		}
+	}
+
+	// Check if value is a nullable expression that already has tag in x3
+	hasTagInX3 := expressionHasNullableTag(stmt.Value)
+
+	// Optimization: for literal indices, compute offset at compile time
+	if litIndex, ok := tryGetLiteralIndex(stmt.Index); ok {
+		// Compile-time offset: baseOffset + index * elementSizeBytes
+		offset := baseOffset + litIndex*elementSizeBytes
+		tagOffset := offset
+		valueOffset := offset + 8
+
+		if isNullAssign {
+			// Store null: tag = 0
+			builder.WriteString(fmt.Sprintf("    str xzr, [x29, #-%d]\n", tagOffset))
+			return builder.String(), nil
+		}
+
+		// Generate the value expression
+		valueCode, err := g.generateExpr(stmt.Value, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(valueCode)
+
+		if hasTagInX3 {
+			// Tag is already in x3 from the expression
+			builder.WriteString(fmt.Sprintf("    str x3, [x29, #-%d]\n", tagOffset))
+		} else {
+			// Non-null value: set tag = 1
+			EmitMoveImm(builder, "x3", "1")
+			builder.WriteString(fmt.Sprintf("    str x3, [x29, #-%d]\n", tagOffset))
+		}
+
+		// Store value
+		EmitStoreToStack(builder, "x2", valueOffset)
+		return builder.String(), nil
+	}
+
+	// Dynamic index case - more complex
+	// For now, generate a simpler but correct implementation
+
+	if isNullAssign {
+		// Generate the index expression
+		indexCode, err := g.generateExpr(stmt.Index, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(indexCode)
+
+		// Runtime bounds check
+		builder.WriteString(g.checkGen.ArrayBoundsCheck(stmt.ArraySize, stmt.LeftBracket.Line))
+
+		// Calculate element address (result in x4)
+		emitArrayElementAddress(builder, baseOffset, elementSizeBytes)
+
+		// Store null: tag = 0 at [x4], value undefined
+		builder.WriteString("    str xzr, [x4]\n")
+		return builder.String(), nil
+	}
+
+	// Generate the value expression first
+	valueCode, err := g.generateExpr(stmt.Value, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(valueCode)
+
+	// Save value and tag to stack temporarily
+	builder.WriteString("    str x2, [sp, #-16]!\n") // save value
+	if hasTagInX3 {
+		builder.WriteString("    str x3, [sp, #-16]!\n") // save tag from expression
+	}
+
+	// Generate the index expression
+	indexCode, err := g.generateExpr(stmt.Index, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(indexCode)
+
+	// Runtime bounds check
+	builder.WriteString(g.checkGen.ArrayBoundsCheck(stmt.ArraySize, stmt.LeftBracket.Line))
+
+	// Restore tag and value from stack
+	if hasTagInX3 {
+		builder.WriteString("    ldr x3, [sp], #16\n") // restore tag
+	}
+	builder.WriteString("    ldr x5, [sp], #16\n") // restore value
+
+	// Calculate element address (result in x4)
+	emitArrayElementAddress(builder, baseOffset, elementSizeBytes)
+
+	// Store tag at [x4]
+	if hasTagInX3 {
+		builder.WriteString("    str x3, [x4]\n")
+	} else {
+		EmitMoveImm(builder, "x3", "1")
+		builder.WriteString("    str x3, [x4]\n")
+	}
+
+	// Store value at [x4 + 8]
+	builder.WriteString("    str x5, [x4, #8]\n")
 
 	return builder.String(), nil
 }
@@ -525,16 +850,25 @@ func tryGetLiteralIndex(expr semantic.TypedExpression) (int, bool) {
 func (g *TypedCodeGenerator) generateAssignStmt(stmt *semantic.TypedAssignStmt, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
+	slot, ok := ctx.GetVariable(stmt.Name)
+	if !ok {
+		return "", fmt.Errorf("undefined variable: %s", stmt.Name)
+	}
+
+	// Check if this is a nullable primitive type
+	if nullableType, isNullable := slot.Type.(semantic.NullableType); isNullable {
+		if !semantic.IsReferenceType(nullableType.InnerType) {
+			// Nullable primitive: need to handle tag + value
+			return g.generateNullableAssign(stmt, slot, &builder, ctx)
+		}
+	}
+
+	// Non-nullable or nullable reference: generate value and store
 	code, err := g.generateExpr(stmt.Value, ctx)
 	if err != nil {
 		return "", err
 	}
 	builder.WriteString(code)
-
-	slot, ok := ctx.GetVariable(stmt.Name)
-	if !ok {
-		return "", fmt.Errorf("undefined variable: %s", stmt.Name)
-	}
 
 	if semantic.IsFloatType(slot.Type) {
 		builder.WriteString(fmt.Sprintf("    str d0, [x29, #-%d]\n", slot.Offset))
@@ -545,9 +879,63 @@ func (g *TypedCodeGenerator) generateAssignStmt(stmt *semantic.TypedAssignStmt, 
 	return builder.String(), nil
 }
 
+// generateNullableAssign handles assignment to nullable primitive variables.
+// Updates both the tag and value slots appropriately.
+func (g *TypedCodeGenerator) generateNullableAssign(stmt *semantic.TypedAssignStmt, slot VariableInfo, builder *strings.Builder, ctx *BaseContext) (string, error) {
+	tagOffset := slot.Offset - 8
+	valueOffset := slot.Offset
+
+	// Check if assigning null
+	if litExpr, ok := stmt.Value.(*semantic.TypedLiteralExpr); ok {
+		if litExpr.LitType == ast.LiteralTypeNull {
+			// Assigning null: set tag = 0
+			builder.WriteString(fmt.Sprintf("    str xzr, [x29, #-%d]\n", tagOffset))
+			return builder.String(), nil
+		}
+	}
+
+	// Check if value is a nullable expression that already has tag in x3
+	hasTagInX3 := expressionHasNullableTag(stmt.Value)
+
+	// Generate expression
+	code, err := g.generateExpr(stmt.Value, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(code)
+
+	if hasTagInX3 {
+		// Tag is already in x3 from the expression
+		builder.WriteString(fmt.Sprintf("    str x3, [x29, #-%d]\n", tagOffset))
+	} else {
+		// Non-null value: set tag = 1
+		EmitMoveImm(builder, "x3", "1")
+		builder.WriteString(fmt.Sprintf("    str x3, [x29, #-%d]\n", tagOffset))
+	}
+
+	// Store value
+	EmitStoreToStack(builder, "x2", valueOffset)
+
+	return builder.String(), nil
+}
+
 // generateFieldAssignStmt generates code for a field assignment (e.g., p.y = 25)
 func (g *TypedCodeGenerator) generateFieldAssignStmt(stmt *semantic.TypedFieldAssignStmt, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
+
+	// Determine field type from the object's struct type
+	fieldType := g.getFieldType(stmt.Object, stmt.Field)
+
+	// Get the field offset
+	fieldOffset, err := g.getFieldOffset(stmt.Object, stmt.Field, ctx)
+	if err != nil {
+		return "", err
+	}
+
+	// Handle nullable fields specially
+	if semantic.IsNullable(fieldType) {
+		return g.generateNullableFieldAssign(stmt, fieldOffset, &builder, ctx)
+	}
 
 	// Generate the value expression (result in x2 or d0)
 	valueCode, err := g.generateExpr(stmt.Value, ctx)
@@ -556,20 +944,55 @@ func (g *TypedCodeGenerator) generateFieldAssignStmt(stmt *semantic.TypedFieldAs
 	}
 	builder.WriteString(valueCode)
 
-	// Get the field offset
-	fieldOffset, err := g.getFieldOffset(stmt.Object, stmt.Field, ctx)
-	if err != nil {
-		return "", err
-	}
-
 	// Store the value at the computed offset
-	// Determine field type from the object's struct type
-	fieldType := g.getFieldType(stmt.Object, stmt.Field)
 	if semantic.IsFloatType(fieldType) {
 		builder.WriteString(fmt.Sprintf("    str d0, [x29, #-%d]\n", fieldOffset))
 	} else {
 		EmitStoreToStack(&builder, "x2", fieldOffset)
 	}
+
+	return builder.String(), nil
+}
+
+// generateNullableFieldAssign handles assignment to nullable struct fields.
+func (g *TypedCodeGenerator) generateNullableFieldAssign(stmt *semantic.TypedFieldAssignStmt, fieldOffset int, builder *strings.Builder, ctx *BaseContext) (string, error) {
+	// Nullable field layout: [tag (8 bytes)][value (8 bytes)]
+	// fieldOffset points to the start of the field, so:
+	// - tag is at fieldOffset
+	// - value is at fieldOffset + 8
+	tagOffset := fieldOffset
+	valueOffset := fieldOffset + 8
+
+	// Check if assigning null
+	if litExpr, ok := stmt.Value.(*semantic.TypedLiteralExpr); ok {
+		if litExpr.LitType == ast.LiteralTypeNull {
+			// Assigning null: set tag = 0
+			builder.WriteString(fmt.Sprintf("    str xzr, [x29, #-%d]\n", tagOffset))
+			return builder.String(), nil
+		}
+	}
+
+	// Check if value is a nullable expression that already has tag in x3
+	hasTagInX3 := expressionHasNullableTag(stmt.Value)
+
+	// Generate expression
+	code, err := g.generateExpr(stmt.Value, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(code)
+
+	if hasTagInX3 {
+		// Tag is already in x3 from the expression
+		builder.WriteString(fmt.Sprintf("    str x3, [x29, #-%d]\n", tagOffset))
+	} else {
+		// Non-null value: set tag = 1
+		EmitMoveImm(builder, "x3", "1")
+		builder.WriteString(fmt.Sprintf("    str x3, [x29, #-%d]\n", tagOffset))
+	}
+
+	// Store value
+	EmitStoreToStack(builder, "x2", valueOffset)
 
 	return builder.String(), nil
 }
@@ -618,7 +1041,7 @@ func (g *TypedCodeGenerator) getFieldOffset(object semantic.TypedExpression, fie
 }
 
 // getFieldByteOffset returns the byte offset of a field within a struct,
-// accounting for nested struct sizes. Returns -1 if field not found.
+// accounting for nested struct sizes and nullable primitives. Returns -1 if field not found.
 func (g *TypedCodeGenerator) getFieldByteOffset(structType semantic.StructType, fieldName string) int {
 	offset := 0
 	for _, field := range structType.Fields {
@@ -628,6 +1051,13 @@ func (g *TypedCodeGenerator) getFieldByteOffset(structType semantic.StructType, 
 		// Add the size of this field
 		if nestedStruct, ok := field.Type.(semantic.StructType); ok {
 			offset += g.countStructSlots(nestedStruct) * StackAlignment
+		} else if nullableType, ok := field.Type.(semantic.NullableType); ok {
+			// Nullable primitives need 2 slots: tag + value
+			if !semantic.IsReferenceType(nullableType.InnerType) {
+				offset += 2 * StackAlignment
+			} else {
+				offset += StackAlignment
+			}
 		} else {
 			offset += StackAlignment
 		}
@@ -652,14 +1082,58 @@ func (g *TypedCodeGenerator) getFieldType(object semantic.TypedExpression, field
 func (g *TypedCodeGenerator) generateReturnStmt(stmt *semantic.TypedReturnStmt, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
+	// Check if we're returning a nullable type
+	isNullableReturn := semantic.IsNullable(stmt.ExpectedType)
+
 	if stmt.Value != nil {
+		// Check if returning null literal for nullable return type
+		if isNullableReturn {
+			if litExpr, ok := stmt.Value.(*semantic.TypedLiteralExpr); ok && litExpr.LitType == ast.LiteralTypeNull {
+				// Returning null: set tag=0, value=0
+				EmitMoveImm(&builder, "x0", "0") // tag = 0 (null)
+				EmitMoveImm(&builder, "x1", "0") // value = 0
+				EmitReturnEpilogue(&builder)
+				return builder.String(), nil
+			}
+		}
+
+		// Check if the value expression is itself nullable (e.g., returning a nullable variable)
+		valueIsNullable := semantic.IsNullable(stmt.Value.GetType())
+
+		// Special case: returning a nullable variable - need to load both tag and value
+		if isNullableReturn && valueIsNullable {
+			if ident, ok := stmt.Value.(*semantic.TypedIdentifierExpr); ok {
+				slot, found := ctx.GetVariable(ident.Name)
+				if found {
+					// Load tag and value from nullable variable
+					tagOffset := slot.Offset - 8
+					valueOffset := slot.Offset
+					builder.WriteString(fmt.Sprintf("    ldr x0, [x29, #-%d]\n", tagOffset))  // tag
+					builder.WriteString(fmt.Sprintf("    ldr x1, [x29, #-%d]\n", valueOffset)) // value
+					EmitReturnEpilogue(&builder)
+					return builder.String(), nil
+				}
+			}
+		}
+
 		code, err := g.generateExpr(stmt.Value, ctx)
 		if err != nil {
 			return "", err
 		}
 		builder.WriteString(code)
 
-		if semantic.IsFloatType(stmt.Value.GetType()) {
+		if isNullableReturn {
+			// Check if value came from a nullable function call (tag in x3, value in x2)
+			if callExpr, ok := stmt.Value.(*semantic.TypedCallExpr); ok && semantic.IsNullable(callExpr.Type) {
+				// Pass through the tag from the call
+				EmitMoveReg(&builder, "x0", "x3") // tag from call
+				EmitMoveReg(&builder, "x1", "x2") // value
+			} else {
+				// Non-null value: tag = 1
+				EmitMoveImm(&builder, "x0", "1")  // tag = 1 (has value)
+				EmitMoveReg(&builder, "x1", "x2") // value in x1
+			}
+		} else if semantic.IsFloatType(stmt.Value.GetType()) {
 			builder.WriteString("    fmov x0, d0\n")
 		} else {
 			EmitMoveReg(&builder, "x0", "x2")
@@ -874,7 +1348,13 @@ func (g *TypedCodeGenerator) generateExpr(expr semantic.TypedExpression, ctx *Ba
 		if !ok {
 			return "", fmt.Errorf("undefined variable: %s", e.Name)
 		}
-		if semantic.IsFloatType(slot.Type) {
+		// Handle nullable primitives specially - load both tag and value
+		if nullableType, isNullable := slot.Type.(semantic.NullableType); isNullable && !semantic.IsReferenceType(nullableType.InnerType) {
+			// Nullable primitive: tag at offset-8, value at offset
+			tagOffset := slot.Offset - 8
+			builder.WriteString(fmt.Sprintf("    ldr x3, [x29, #-%d]\n", tagOffset))
+			EmitLoadFromStack(&builder, "x2", slot.Offset)
+		} else if semantic.IsFloatType(slot.Type) {
 			builder.WriteString(fmt.Sprintf("    ldr d0, [x29, #-%d]\n", slot.Offset))
 		} else {
 			EmitLoadFromStack(&builder, "x2", slot.Offset)
@@ -889,6 +1369,9 @@ func (g *TypedCodeGenerator) generateExpr(expr semantic.TypedExpression, ctx *Ba
 
 	case *semantic.TypedFieldAccessExpr:
 		return g.generateFieldAccess(e, ctx)
+
+	case *semantic.TypedSafeCallExpr:
+		return g.generateSafeCallExpr(e, ctx)
 
 	case *semantic.TypedArrayLiteralExpr:
 		return g.generateArrayLiteral(e, ctx)
@@ -950,6 +1433,13 @@ func (g *TypedCodeGenerator) generateLiteral(lit *semantic.TypedLiteralExpr) (st
 		} else {
 			EmitMoveImm(&builder, "x2", "0")
 		}
+		return builder.String(), nil
+	}
+
+	if lit.LitType == ast.LiteralTypeNull {
+		// Null literal: represented as 0 (null pointer for references, tag=0 for primitives)
+		// For standalone null expression, just load 0 into x2
+		EmitMoveImm(&builder, "x2", "0")
 		return builder.String(), nil
 	}
 
@@ -1133,6 +1623,13 @@ func (g *TypedCodeGenerator) generateIntBinaryExpr(expr *semantic.TypedBinaryExp
 		return g.generateLogicalOr(expr, ctx)
 	}
 
+	// Handle null comparison specially (x == null, x != null)
+	if expr.Op == "==" || expr.Op == "!=" {
+		if g.isNullComparison(expr) {
+			return g.generateNullComparison(expr, ctx)
+		}
+	}
+
 	builder := strings.Builder{}
 
 	// Check if operands are complex (need register preservation)
@@ -1238,6 +1735,100 @@ func (g *TypedCodeGenerator) generateLogicalOr(expr *semantic.TypedBinaryExpr, c
 
 	// End label
 	builder.WriteString(fmt.Sprintf("%s:\n", endLabel))
+
+	return builder.String(), nil
+}
+
+// isNullComparison checks if a binary expression is comparing against null
+func (g *TypedCodeGenerator) isNullComparison(expr *semantic.TypedBinaryExpr) bool {
+	// Check if either operand is a null literal
+	if litExpr, ok := expr.Left.(*semantic.TypedLiteralExpr); ok {
+		if litExpr.LitType == ast.LiteralTypeNull {
+			return true
+		}
+	}
+	if litExpr, ok := expr.Right.(*semantic.TypedLiteralExpr); ok {
+		if litExpr.LitType == ast.LiteralTypeNull {
+			return true
+		}
+	}
+	return false
+}
+
+// generateNullComparison generates code for comparing a nullable value against null
+// For nullable primitives (tagged union): checks the tag (0 = null, 1 = has value)
+// For nullable references: checks if pointer is 0
+func (g *TypedCodeGenerator) generateNullComparison(expr *semantic.TypedBinaryExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Find the non-null operand
+	var nullableExpr semantic.TypedExpression
+	if _, ok := expr.Left.(*semantic.TypedLiteralExpr); ok {
+		nullableExpr = expr.Right
+	} else {
+		nullableExpr = expr.Left
+	}
+
+	// Get the nullable's type
+	nullableType := nullableExpr.GetType()
+	innerType, isNullable := semantic.UnwrapNullable(nullableType)
+	if !isNullable {
+		// This shouldn't happen if semantic analysis is correct
+		return "", fmt.Errorf("expected nullable type in null comparison")
+	}
+
+	isRef := semantic.IsReferenceType(innerType)
+
+	// Handle identifier expression (the common case)
+	if ident, ok := nullableExpr.(*semantic.TypedIdentifierExpr); ok {
+		slot, found := ctx.GetVariable(ident.Name)
+		if !found {
+			return "", fmt.Errorf("undefined variable: %s", ident.Name)
+		}
+
+		if isRef {
+			// Reference type: check if pointer is 0
+			EmitLoadFromStack(&builder, "x2", slot.Offset)
+			builder.WriteString("    cmp x2, #0\n")
+		} else {
+			// Primitive type: check tag (at offset - 8 from end of allocation)
+			// The offset stored is the END of the allocation, tag is at offset - 8
+			tagOffset := slot.Offset - 8
+			builder.WriteString(fmt.Sprintf("    ldr x2, [x29, #-%d]\n", tagOffset))
+			builder.WriteString("    cmp x2, #0\n")
+		}
+
+		// Set result based on comparison (== null means tag==0, != null means tag!=0)
+		if expr.Op == "==" {
+			builder.WriteString("    cset x2, eq\n")
+		} else { // !=
+			builder.WriteString("    cset x2, ne\n")
+		}
+
+		return builder.String(), nil
+	}
+
+	// For non-identifier expressions with primitive nullable types, we cannot
+	// easily access the tag since generateExpr returns the value.
+	// For now, only reference types are supported for complex expressions.
+	if !isRef {
+		return "", fmt.Errorf("null comparison on complex expressions is only supported for reference types, not primitive nullables; assign to a variable first")
+	}
+
+	// For reference types, generate the expression and compare pointer to 0
+	code, err := g.generateExpr(nullableExpr, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(code)
+
+	// x2 contains the pointer value (0 = null)
+	builder.WriteString("    cmp x2, #0\n")
+	if expr.Op == "==" {
+		builder.WriteString("    cset x2, eq\n")
+	} else { // !=
+		builder.WriteString("    cset x2, ne\n")
+	}
 
 	return builder.String(), nil
 }
@@ -1442,11 +2033,89 @@ func (g *TypedCodeGenerator) generateFieldAccess(expr *semantic.TypedFieldAccess
 		return "", err
 	}
 
+	// Handle nullable primitive fields specially - load both tag and value
+	if nullableType, ok := expr.Type.(semantic.NullableType); ok && !semantic.IsReferenceType(nullableType.InnerType) {
+		// Nullable primitive field: tag at fieldOffset, value at fieldOffset+8
+		tagOffset := fieldOffset
+		valueOffset := fieldOffset + 8
+		builder.WriteString(fmt.Sprintf("    ldr x3, [x29, #-%d]\n", tagOffset))
+		EmitLoadFromStack(&builder, "x2", valueOffset)
+		return builder.String(), nil
+	}
+
 	// Load the value from the computed offset
 	if semantic.IsFloatType(expr.Type) {
 		builder.WriteString(fmt.Sprintf("    ldr d0, [x29, #-%d]\n", fieldOffset))
 	} else {
 		EmitLoadFromStack(&builder, "x2", fieldOffset)
+	}
+
+	return builder.String(), nil
+}
+
+// generateSafeCallExpr generates code for safe call expression (e.g., person?.address)
+// If object is null, returns null; otherwise returns the field value
+func (g *TypedCodeGenerator) generateSafeCallExpr(expr *semantic.TypedSafeCallExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Generate unique labels for branching
+	nullLabel := ctx.NextLabel("safe_null")
+	doneLabel := ctx.NextLabel("safe_done")
+
+	// Check if the inner type is a reference type (uses null pointer) or primitive (uses tagged union)
+	isRef := semantic.IsReferenceType(expr.InnerType)
+
+	// Generate the object expression
+	objCode, err := g.generateExpr(expr.Object, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(objCode)
+
+	if isRef {
+		// Reference type: object is a pointer, null = 0
+		// x2 contains the pointer (or 0 for null)
+		builder.WriteString(fmt.Sprintf("    cbz x2, %s\n", nullLabel))
+
+		// Not null: load the field from the struct
+		builder.WriteString(fmt.Sprintf("    ldr x2, [x2, #%d]\n", expr.FieldOffset))
+		builder.WriteString(fmt.Sprintf("    b %s\n", doneLabel))
+
+		// Null path: x2 is already 0
+		builder.WriteString(fmt.Sprintf("%s:\n", nullLabel))
+		// x2 already contains 0 (null)
+
+		builder.WriteString(fmt.Sprintf("%s:\n", doneLabel))
+	} else {
+		// Primitive nullable: tagged union layout (from stack end):
+		//   - tag at offset - 8 (8 bytes before value)
+		//   - value at offset (the slot.Offset points here)
+		// For simplicity, we only handle the common case where object is an identifier
+		if ident, ok := expr.Object.(*semantic.TypedIdentifierExpr); ok {
+			slot, found := ctx.GetVariable(ident.Name)
+			if !found {
+				return "", fmt.Errorf("undefined variable: %s", ident.Name)
+			}
+
+			// Load tag from stack (tag is at offset - 8)
+			tagOffset := slot.Offset - 8
+			builder.WriteString(fmt.Sprintf("    ldr x3, [x29, #-%d]\n", tagOffset))
+			builder.WriteString(fmt.Sprintf("    cbz x3, %s\n", nullLabel))
+
+			// Not null: load the struct pointer from value slot
+			builder.WriteString(fmt.Sprintf("    ldr x2, [x29, #-%d]\n", slot.Offset))
+			// Load the field from the struct
+			builder.WriteString(fmt.Sprintf("    ldr x2, [x2, #%d]\n", expr.FieldOffset))
+			builder.WriteString(fmt.Sprintf("    b %s\n", doneLabel))
+
+			// Null path
+			builder.WriteString(fmt.Sprintf("%s:\n", nullLabel))
+			EmitMoveImm(&builder, "x2", "0")
+
+			builder.WriteString(fmt.Sprintf("%s:\n", doneLabel))
+		} else {
+			return "", fmt.Errorf("safe call on complex expressions is only supported for reference types, not primitive nullables; assign to a variable first")
+		}
 	}
 
 	return builder.String(), nil
@@ -1481,10 +2150,17 @@ func (g *TypedCodeGenerator) generateIndexExpr(expr *semantic.TypedIndexExpr, ct
 		offset := baseOffset + litIndex*elementSizeBytes
 
 		// For struct elements, compute address into x4 for field access
-		// For primitive elements, load directly
+		// For nullable primitives, load both tag and value
+		// For other primitives, load directly
 		if _, isStruct := expr.Type.(semantic.StructType); isStruct {
 			// Struct access: put element address in x4 for subsequent field access
 			builder.WriteString(fmt.Sprintf("    sub x4, x29, #%d\n", offset))
+		} else if nullableType, ok := expr.Type.(semantic.NullableType); ok && !semantic.IsReferenceType(nullableType.InnerType) {
+			// Nullable primitive element: tag at offset, value at offset+8
+			tagOffset := offset
+			valueOffset := offset + 8
+			builder.WriteString(fmt.Sprintf("    ldr x3, [x29, #-%d]\n", tagOffset))
+			EmitLoadFromStack(&builder, "x2", valueOffset)
 		} else if semantic.IsFloatType(expr.Type) {
 			builder.WriteString(fmt.Sprintf("    ldr d0, [x29, #-%d]\n", offset))
 		} else {
@@ -1508,10 +2184,16 @@ func (g *TypedCodeGenerator) generateIndexExpr(expr *semantic.TypedIndexExpr, ct
 	emitArrayElementAddress(&builder, baseOffset, elementSizeBytes)
 
 	// For struct elements, we don't load - the address in x4 is used by field access
-	// For primitive elements, load the value
+	// For nullable primitives, load both tag and value
+	// For other primitives, load the value
 	if _, isStruct := expr.Type.(semantic.StructType); isStruct {
 		// Struct access: leave address in x4 for subsequent field access
 		// This case is handled specially when accessed via TypedFieldAccessExpr
+	} else if nullableType, ok := expr.Type.(semantic.NullableType); ok && !semantic.IsReferenceType(nullableType.InnerType) {
+		// Nullable primitive element: tag at [x4], value at [x4, #-8] (x4 points to tag)
+		// Since x4 = base - (elementOffset), we load tag from [x4] and value from [x4, #-8]
+		builder.WriteString("    ldr x3, [x4]\n")
+		builder.WriteString("    ldr x2, [x4, #-8]\n")
 	} else if semantic.IsFloatType(expr.Type) {
 		builder.WriteString("    ldr d0, [x4]\n")
 	} else {
@@ -1538,18 +2220,103 @@ func (g *TypedCodeGenerator) generateCallExpr(call *semantic.TypedCallExpr, ctx 
 
 	argCount := len(call.Arguments)
 	if argCount > 0 {
-		code, err := EmitCallSetup(argCount, func(i int) (string, error) {
-			return g.generateExpr(call.Arguments[i], ctx)
-		})
-		if err != nil {
-			return "", err
+		// Calculate total register slots needed (nullable args need 2 slots: tag + value)
+		totalSlots := 0
+		for _, arg := range call.Arguments {
+			if semantic.IsNullable(arg.GetType()) {
+				totalSlots += 2 // tag + value
+			} else {
+				totalSlots += 1
+			}
 		}
-		builder.WriteString(code)
+
+		// Allocate space for arguments on stack
+		stackSpace := totalSlots * 16
+		builder.WriteString(fmt.Sprintf("    sub sp, sp, #%d\n", stackSpace))
+
+		// Evaluate each argument and store on stack
+		slotIdx := 0
+		for i, arg := range call.Arguments {
+			argType := arg.GetType()
+			isNullable := semantic.IsNullable(argType)
+
+			if isNullable {
+				// Nullable argument: need to load both tag and value
+				if ident, ok := arg.(*semantic.TypedIdentifierExpr); ok {
+					slot, found := ctx.GetVariable(ident.Name)
+					if found {
+						// Load tag and value from nullable variable
+						tagOffset := slot.Offset - 8
+						valueOffset := slot.Offset
+						// Store tag at slotIdx
+						builder.WriteString(fmt.Sprintf("    ldr x2, [x29, #-%d]\n", tagOffset))
+						builder.WriteString(fmt.Sprintf("    str x2, [sp, #%d]\n", slotIdx*16))
+						// Store value at slotIdx+1
+						builder.WriteString(fmt.Sprintf("    ldr x2, [x29, #-%d]\n", valueOffset))
+						builder.WriteString(fmt.Sprintf("    str x2, [sp, #%d]\n", (slotIdx+1)*16))
+						slotIdx += 2
+						continue
+					}
+				}
+				// For other nullable expressions (e.g., function calls), generate normally
+				// The expression should put tag in x3, value in x2
+				code, err := g.generateExpr(arg, ctx)
+				if err != nil {
+					return "", err
+				}
+				builder.WriteString(code)
+				// Check if it was a nullable call (tag in x3)
+				if callExpr, ok := arg.(*semantic.TypedCallExpr); ok && semantic.IsNullable(callExpr.Type) {
+					builder.WriteString(fmt.Sprintf("    str x3, [sp, #%d]\n", slotIdx*16))     // tag
+					builder.WriteString(fmt.Sprintf("    str x2, [sp, #%d]\n", (slotIdx+1)*16)) // value
+				} else {
+					// Null literal or other - tag = 0 or 1 based on context
+					if litExpr, ok := arg.(*semantic.TypedLiteralExpr); ok && litExpr.LitType == ast.LiteralTypeNull {
+						builder.WriteString(fmt.Sprintf("    str xzr, [sp, #%d]\n", slotIdx*16))    // tag = 0
+						builder.WriteString(fmt.Sprintf("    str xzr, [sp, #%d]\n", (slotIdx+1)*16)) // value = 0
+					} else {
+						// Non-null value being passed as nullable
+						EmitMoveImm(&builder, "x3", "1")
+						builder.WriteString(fmt.Sprintf("    str x3, [sp, #%d]\n", slotIdx*16))    // tag = 1
+						builder.WriteString(fmt.Sprintf("    str x2, [sp, #%d]\n", (slotIdx+1)*16)) // value
+					}
+				}
+				slotIdx += 2
+			} else {
+				// Non-nullable argument: single slot
+				code, err := g.generateExpr(call.Arguments[i], ctx)
+				if err != nil {
+					return "", err
+				}
+				builder.WriteString(code)
+				builder.WriteString(fmt.Sprintf("    str x2, [sp, #%d]\n", slotIdx*16))
+				slotIdx++
+			}
+		}
+
+		// Load arguments from stack into registers x0-x7
+		for i := 0; i < totalSlots && i < 8; i++ {
+			builder.WriteString(fmt.Sprintf("    ldr x%d, [sp, #%d]\n", i, i*16))
+		}
+
+		// Restore stack pointer
+		builder.WriteString(fmt.Sprintf("    add sp, sp, #%d\n", stackSpace))
 	}
 
 	// Use GenerateCallWithLine to emit bl with a label for line number tracking
 	builder.WriteString(g.symtab.GenerateCallWithLine(call.Name, call.NamePos.Line))
-	EmitMoveReg(&builder, "x2", "x0")
+
+	// Handle nullable return types: x0 = tag, x1 = value
+	// For nullable returns, we keep x0 as tag and move x1 to x2 (standard result register)
+	// The caller (VarDecl/Assign) will detect nullable type and store both appropriately
+	if semantic.IsNullable(call.Type) {
+		// x0 stays as tag, move value from x1 to x2
+		EmitMoveReg(&builder, "x2", "x1")
+		// Also preserve tag in x3 for the caller to use when storing
+		EmitMoveReg(&builder, "x3", "x0")
+	} else {
+		EmitMoveReg(&builder, "x2", "x0")
+	}
 
 	return builder.String(), nil
 }

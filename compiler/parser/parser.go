@@ -944,6 +944,18 @@ func (p *parser) ParseLiteral() ast.Expression {
 		return literal
 	}
 
+	if p.CurrentToken().Type == lexer.TokenTypeNull {
+		token := p.CurrentToken()
+		literal := &ast.LiteralExpr{
+			Kind:     ast.LiteralTypeNull,
+			Value:    "null",
+			StartPos: token.Pos,
+			EndPos:   ast.Position{Line: token.Pos.Line, Column: token.Pos.Column + 4, Offset: token.Pos.Offset + 4},
+		}
+		p.Index++
+		return literal
+	}
+
 	return nil
 }
 
@@ -957,13 +969,13 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 
 	// Parse postfix and infix operators
 	for !p.isAtEnd() {
-		// Handle newlines - but check if next non-newline token is '.' for chained access
+		// Handle newlines - but check if next non-newline token is '.' or '?.' for chained access
 		if p.CurrentToken().Type == lexer.TokenTypeNewline {
-			// Look ahead past newlines to see if there's a '.' (chained field access)
-			if !p.peekPastNewlinesIs(lexer.TokenTypeDot) {
+			// Look ahead past newlines to see if there's a '.' or '?.' (chained field access)
+			if !p.peekPastNewlinesIs(lexer.TokenTypeDot) && !p.peekPastNewlinesIs(lexer.TokenTypeSafeCall) {
 				break
 			}
-			// Skip the newlines and continue to parse the '.'
+			// Skip the newlines and continue to parse the '.' or '?.'
 			p.skipNewlines()
 		}
 
@@ -987,6 +999,30 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 				Dot:      dotPos,
 				Field:    fieldName,
 				FieldPos: fieldPos,
+			}
+			continue
+		}
+
+		// Handle safe call operator (?.) - same precedence as dot, for nullable field access
+		if p.CurrentToken().Type == lexer.TokenTypeSafeCall {
+			safeCallPos := p.CurrentToken().Pos
+			p.advance() // consume '?.'
+
+			// Expect field name
+			if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+				p.addError(fmt.Sprintf("expected field name after '?.', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+				return nil
+			}
+
+			fieldName := p.CurrentToken().Value
+			fieldPos := p.CurrentToken().Pos
+			p.advance() // consume field name
+
+			left = &ast.SafeCallExpr{
+				Object:      left,
+				SafeCallPos: safeCallPos,
+				Field:       fieldName,
+				FieldPos:    fieldPos,
 			}
 			continue
 		}
@@ -1599,6 +1635,12 @@ func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 		returnType = p.CurrentToken().Value
 		returnPos = p.CurrentToken().Pos
 		p.advance() // consume return type
+
+		// Check for nullable type suffix '?'
+		if p.CurrentToken().Type == lexer.TokenTypeQuestion {
+			returnType = returnType + "?"
+			p.advance() // consume '?'
+		}
 	} else {
 		// No return type specified - default to void
 		returnType = "void"
@@ -1691,7 +1733,7 @@ func (p *parser) parseParameter() *ast.Parameter {
 	}
 }
 
-// parseTypeName parses a type name, including generic types like Array<i64>
+// parseTypeName parses a type name, including generic types like Array<i64> and nullable types like i64?
 func (p *parser) parseTypeName() (string, ast.Position) {
 	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
 		p.addError(fmt.Sprintf("expected type name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
@@ -1706,13 +1748,11 @@ func (p *parser) parseTypeName() (string, ast.Position) {
 	if typeName == "Array" && p.CurrentToken().Type == lexer.TokenTypeLessThan {
 		p.advance() // consume '<'
 
-		if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-			p.addError(fmt.Sprintf("expected element type in Array<T>, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		// Parse element type (which may itself be nullable, e.g., Array<i64?>)
+		elementType, _ := p.parseTypeName()
+		if elementType == "" {
 			return "", typePos
 		}
-
-		elementType := p.CurrentToken().Value
-		p.advance() // consume element type
 
 		if p.CurrentToken().Type != lexer.TokenTypeGreaterThan {
 			p.addError(fmt.Sprintf("expected '>' after element type, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
@@ -1722,6 +1762,18 @@ func (p *parser) parseTypeName() (string, ast.Position) {
 
 		// Encode as "Array<elementType>" for the semantic analyzer
 		typeName = fmt.Sprintf("Array<%s>", elementType)
+	}
+
+	// Check for nullable type: T?
+	if p.CurrentToken().Type == lexer.TokenTypeQuestion {
+		p.advance() // consume '?'
+		typeName = typeName + "?"
+
+		// Check for nested nullable type: T?? (error)
+		if p.CurrentToken().Type == lexer.TokenTypeQuestion {
+			p.addError("nested nullable types are not allowed", p.CurrentToken().Pos)
+			p.advance() // consume the extra '?' to recover
+		}
 	}
 
 	return typeName, typePos
@@ -1846,15 +1898,11 @@ func (p *parser) parseStructField() *ast.StructField {
 	colonPos := p.CurrentToken().Pos
 	p.advance() // consume ':'
 
-	// Expect type name
-	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-		p.addError(fmt.Sprintf("expected type name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+	// Parse type name (may include nullable types like i64? or generics like Array<i64>)
+	typeName, typePos := p.parseTypeName()
+	if typeName == "" {
 		return nil
 	}
-
-	typeName := p.CurrentToken().Value
-	typePos := p.CurrentToken().Pos
-	p.advance() // consume type
 
 	// Skip newlines after field
 	p.skipNewlines()

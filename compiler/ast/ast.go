@@ -57,6 +57,7 @@ const (
 	LiteralTypeFloat
 	LiteralTypeString
 	LiteralTypeBoolean
+	LiteralTypeNull // null literal
 )
 
 // UnaryExpr represents a unary operation (e.g., -5, !true)
@@ -165,6 +166,20 @@ func (f *FieldAccessExpr) End() Position {
 	return Position{Line: f.FieldPos.Line, Column: f.FieldPos.Column + len(f.Field), Offset: f.FieldPos.Offset + len(f.Field)}
 }
 func (f *FieldAccessExpr) exprNode() {}
+
+// SafeCallExpr represents safe field access on nullable (e.g., person?.address, obj?.field)
+type SafeCallExpr struct {
+	Object      Expression // the nullable struct expression
+	SafeCallPos Position   // position of '?.'
+	Field       string     // field name
+	FieldPos    Position   // position of field name
+}
+
+func (s *SafeCallExpr) Pos() Position { return s.Object.Pos() }
+func (s *SafeCallExpr) End() Position {
+	return Position{Line: s.FieldPos.Line, Column: s.FieldPos.Column + len(s.Field), Offset: s.FieldPos.Offset + len(s.Field)}
+}
+func (s *SafeCallExpr) exprNode() {}
 
 // ArrayLiteralExpr represents an array literal (e.g., [1, 2, 3])
 type ArrayLiteralExpr struct {

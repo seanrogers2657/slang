@@ -15,6 +15,14 @@ Add classes to Slang, extending structs with methods (functions bound to a type)
 - [goal] Field declarations with `val`/`var` (like structs)
 - [goal] Direct field construction via struct-literal syntax (`ClassName{ ... }`)
 - [goal] Static methods via `static` modifier
+
+## Ownership Integration (SEP 1)
+- [goal] Method receiver types: `self: Ref<T>` (immutable borrow), `var self: Ref<T>` (mutable borrow), `self: Own<T>` (takes ownership)
+- [goal] Static factory methods returning `Own<ClassName>` for heap allocation
+- [goal] Class fields can be owned pointers (`Own<T>`)
+- [goal] Class instances work with `Ref<T>` and `Own<T>` parameter types
+
+## Non-Goals
 - [non-goal] Inheritance (single or multiple)
 - [non-goal] Visibility modifiers (`public`, `private`, `protected`)
 - [non-goal] Abstract classes or interfaces
@@ -30,6 +38,12 @@ Add classes to Slang, extending structs with methods (functions bound to a type)
 - `static` - Modifier for methods that don't operate on an instance.
 - `.method()` - Dot notation for calling methods on instances.
 - `ClassName{ ... }` - Direct field construction (same as struct syntax).
+
+## Method Receiver Types (SEP 1)
+
+- `self: Ref<T>` - Immutable borrow; read-only access, caller keeps ownership.
+- `var self: Ref<T>` - Mutable borrow; can modify `var` fields, caller keeps ownership.
+- `self: Own<T>` - Takes ownership; instance is consumed after the method call.
 
 # Description
 
@@ -85,12 +99,18 @@ type ClassDecl struct {
 type MethodDecl struct {
     Name       string
     NamePos    Position
-    Params     []ParamDecl      // Does NOT include 'self' (implicit)
+    Params     []ParamDecl      // Includes 'self' as first param if not static (SEP 1)
     ReturnType string           // Empty for void
     ReturnPos  Position
     Body       *BlockStatement
     IsStatic   bool
 }
+
+// For methods, the first parameter is 'self' with an explicit type:
+//   self: Ref<T>       - immutable borrow
+//   var self: Ref<T>   - mutable borrow
+//   self: Own<T>       - takes ownership
+// The receiver type is parsed as a regular ParamDecl with name "self"
 
 // SelfExpr represents the 'self' keyword in method bodies
 type SelfExpr struct {
@@ -252,10 +272,15 @@ type ClassType struct {
 // MethodInfo contains method signature information
 type MethodInfo struct {
     Name       string
-    ParamTypes []Type
+    ParamTypes []Type        // Includes self type as first element if not static
     ReturnType Type
     IsStatic   bool
 }
+
+// For non-static methods, ParamTypes[0] is the self type:
+//   RefPointerType{Inner: ClassType}     - self: Ref<T> (immutable borrow)
+//   RefPointerType{Inner: ClassType}     - var self: Ref<T> (mutable borrow, tracked separately)
+//   OwnedPointerType{Inner: ClassType}   - self: Own<T> (takes ownership)
 
 func (t ClassType) String() string {
     return t.Name
@@ -337,19 +362,25 @@ func (a *Analyzer) analyzeMethodDecl(classType ClassType, method *ast.MethodDecl
     a.pushScope()
     defer a.popScope()
 
-    // Add 'self' to scope (immutable reference to class instance)
-    if !method.IsStatic {
-        a.currentScope.Define("self", VariableInfo{
-            Type:    classType,
-            Mutable: false,  // self is immutable
-        })
-    }
-
-    // Add parameters to scope
+    // Add parameters to scope (including 'self' for non-static methods)
     for _, param := range method.Params {
+        paramType := a.resolveTypeName(param.TypeName, param.TypePos)
+
+        // For 'self' parameter, determine mutability from type and var modifier
+        isSelf := param.Name == "self"
+        mutable := param.Mutable  // 'var' modifier on parameter
+
+        // Track ownership for 'self' (SEP 1)
+        if isSelf {
+            // self: Own<T> means method takes ownership
+            if _, isOwned := paramType.(OwnedPointerType); isOwned {
+                a.currentMethodTakesOwnership = true
+            }
+        }
+
         a.currentScope.Define(param.Name, VariableInfo{
-            Type:    a.resolveTypeName(param.TypeName, param.TypePos),
-            Mutable: false,
+            Type:    paramType,
+            Mutable: mutable,
         })
     }
 
@@ -371,11 +402,19 @@ func (a *Analyzer) analyzeMethodCallExpr(expr *ast.MethodCallExpr) TypedExpressi
     typedObject := a.analyzeExpression(expr.Object)
     objectType := typedObject.ExprType()
 
-    // Check object is a class type
+    // Check object is a class type (or pointer to class)
     classType, ok := objectType.(ClassType)
     if !ok {
-        a.addError("cannot call method on non-class type %s", objectType)
-        return errorExpr(expr)
+        // Also check for Own<Class> or Ref<Class> (SEP 1)
+        if ptrType, ok := objectType.(OwnedPointerType); ok {
+            classType, ok = ptrType.Inner.(ClassType)
+        } else if refType, ok := objectType.(RefPointerType); ok {
+            classType, ok = refType.Inner.(ClassType)
+        }
+        if !ok {
+            a.addError("cannot call method on non-class type %s", objectType)
+            return errorExpr(expr)
+        }
     }
 
     // Look up method
@@ -385,8 +424,17 @@ func (a *Analyzer) analyzeMethodCallExpr(expr *ast.MethodCallExpr) TypedExpressi
         return errorExpr(expr)
     }
 
-    // Type check arguments
-    typedArgs := a.analyzeArguments(expr.Args, methodInfo.ParamTypes)
+    // Check self parameter type for ownership (SEP 1)
+    if len(methodInfo.ParamTypes) > 0 {
+        selfType := methodInfo.ParamTypes[0]
+        if _, isOwned := selfType.(OwnedPointerType); isOwned {
+            // Method takes ownership - mark receiver as moved
+            a.markAsMoved(expr.Object)
+        }
+    }
+
+    // Type check arguments (skip self, it's the receiver)
+    typedArgs := a.analyzeArguments(expr.Args, methodInfo.ParamTypes[1:])
 
     return &TypedMethodCallExpr{
         Type:   methodInfo.ReturnType,
@@ -687,6 +735,170 @@ An `init` method would add complexity without significant benefit:
 
 This approach mirrors Rust, where `Type { field: value }` is raw construction and `Type::new(...)` handles any logic.
 
+## Ownership and Classes (SEP 1 Integration)
+
+When pointers and ownership (SEP 1) are implemented, classes integrate with the ownership model through explicit receiver types.
+
+### Method Receiver Types
+
+Methods declare their relationship to `self` using explicit ownership types:
+
+```slang
+Point = class {
+    var x: i64
+    var y: i64
+
+    // Immutable borrow - cannot modify self
+    magnitude = (self: Ref<Point>) -> i64 {
+        sqrt(self.x * self.x + self.y * self.y)
+    }
+
+    // Mutable borrow - can modify self, caller keeps ownership
+    scale = (var self: Ref<Point>, factor: i64) {
+        self.x = self.x * factor
+        self.y = self.y * factor
+    }
+
+    // Takes ownership - self is consumed after call
+    intoArray = (self: Own<Point>) -> Array<i64> {
+        [self.x, self.y]
+    }   // self freed here
+}
+
+main = () {
+    var p = Heap.new(Point{ 3, 4 })
+
+    print(p.magnitude())              // borrows p (immutable)
+    p.scale(2)                        // borrows p (mutable)
+    print(p.x)                        // prints: 6
+
+    val arr = p.intoArray()           // p moved, consumed
+    // print(p.x)                     // Error: p was moved
+}
+```
+
+### Receiver Type Summary
+
+| Receiver | Syntax | Effect | Caller Ownership |
+|----------|--------|--------|------------------|
+| Immutable borrow | `self: Ref<T>` | Read-only access | Keeps ownership |
+| Mutable borrow | `var self: Ref<T>` | Can modify fields | Keeps ownership |
+| Takes ownership | `self: Own<T>` | Consumes instance | Loses access |
+
+### Heap-Allocated Class Instances
+
+Class instances can be allocated on the heap using `Heap.new()`:
+
+```slang
+Point = class {
+    var x: i64
+    var y: i64
+
+    // Static factory returning heap-allocated instance
+    static new = (x: i64, y: i64) -> Own<Point> {
+        Heap.new(Point{ x, y })
+    }
+
+    // Static factory for origin
+    static origin = () -> Own<Point> {
+        Point.new(0, 0)
+    }
+
+    translate = (var self: Ref<Point>, dx: i64, dy: i64) {
+        self.x = self.x + dx
+        self.y = self.y + dy
+    }
+}
+
+main = () {
+    // Stack-allocated (direct construction)
+    val stackPoint = Point{ 1, 2 }
+
+    // Heap-allocated (via factory)
+    val heapPoint = Point.new(10, 20)     // heapPoint: Own<Point>
+    heapPoint.translate(5, 5)
+    print(heapPoint.x)                     // prints: 15
+}                                          // heapPoint freed here
+```
+
+### Classes Containing Pointers
+
+Class fields can be owned pointers:
+
+```slang
+Node = class {
+    val value: i64
+    var next: Own<Node>?
+
+    static new = (value: i64) -> Own<Node> {
+        Heap.new(Node{ value, null })
+    }
+
+    // Takes ownership of next node
+    setNext = (var self: Ref<Node>, next: Own<Node>) {
+        self.next = next                   // ownership transferred to field
+    }
+
+    // Borrows to traverse
+    printAll = (self: Ref<Node>) {
+        print(self.value)
+        if (self.next != null) {
+            self.next?.printAll()
+        }
+    }
+}
+
+main = () {
+    var n1 = Node.new(10)
+    var n2 = Node.new(20)
+    var n3 = Node.new(30)
+
+    n2.setNext(n3)                         // n3 moved into n2.next
+    n1.setNext(n2)                         // n2 moved into n1.next
+
+    n1.printAll()                          // prints: 10, 20, 30
+}                                          // n1 freed, recursively frees chain
+```
+
+### Passing Class Instances to Functions
+
+Functions accepting class instances use ownership types:
+
+```slang
+Point = class {
+    var x: i64
+    var y: i64
+}
+
+// Immutable borrow - read only
+printPoint = (p: Ref<Point>) {
+    print(p.x)
+    print(p.y)
+}
+
+// Mutable borrow - can modify
+scalePoint = (var p: Ref<Point>, factor: i64) {
+    p.x = p.x * factor
+    p.y = p.y * factor
+}
+
+// Takes ownership - consumes the instance
+consume = (p: Own<Point>) {
+    print(p.x)
+}                                          // p freed here
+
+main = () {
+    var p = Heap.new(Point{ 10, 20 })
+
+    printPoint(p)                          // borrows
+    scalePoint(p, 2)                       // mutably borrows
+    print(p.x)                             // prints: 20
+
+    consume(p)                             // ownership transferred
+    // print(p.x)                          // Error: p was moved
+}
+```
+
 ## Error Handling
 
 ```slang
@@ -756,10 +968,11 @@ main = () {
 - **Lexer tests**: Token recognition for `class`, `self`, `static`
 - **Parser tests**:
   - Class declaration parsing
-  - Method declaration parsing
+  - Method declaration parsing with explicit `self` parameter
   - Method call expression parsing
   - Self expression parsing
   - Mixed fields and methods
+  - Self parameter type parsing (`self: Ref<T>`, `var self: Ref<T>`, `self: Own<T>`)
 - **Semantic tests**:
   - Class type registration
   - Method lookup and validation
@@ -767,11 +980,22 @@ main = () {
   - Method argument validation
   - Static vs instance method enforcement
   - Error detection for invalid method calls
+  - Self parameter validation (SEP 1):
+    - `self: Ref<T>` prevents field mutation
+    - `var self: Ref<T>` allows field mutation
+    - `self: Own<T>` marks instance as moved after call
+- **Ownership tests** (SEP 1 integration):
+  - `self: Own<T>` methods consume the instance
+  - Use-after-move detection for consumed instances
+  - Class fields with `Own<T>` types
+  - Static factories returning `Own<ClassName>`
+  - Passing class instances to `Ref<T>` and `Own<T>` parameters
 - **Codegen tests**:
   - Method code generation
   - Method call code generation
   - Self access code generation
   - Constructor code generation
+  - Ownership transfer in method calls
 - **E2E tests** in `_examples/slang/classes/`:
   - Basic class with methods
   - Direct field construction
@@ -780,6 +1004,9 @@ main = () {
   - Self field access and modification
   - Static methods
   - Classes with multiple methods
+  - Heap-allocated class instances (SEP 1)
+  - Methods with `self: Ref<T>`, `var self: Ref<T>`, `self: Own<T>` (SEP 1)
+  - Classes containing owned pointers (SEP 1)
 
 # Code Examples
 
@@ -1157,16 +1384,142 @@ Math = class {
 // }
 ```
 
+## Example 12: Heap-Allocated Class with Receiver Modes (SEP 1)
+
+Shows method receiver types for ownership control.
+
+```slang
+Point = class {
+    var x: i64
+    var y: i64
+
+    // Static factory returning owned pointer
+    static new = (x: i64, y: i64) -> Own<Point> {
+        Heap.new(Point{ x, y })
+    }
+
+    // Immutable borrow - read only
+    magnitude = (self: Ref<Point>) -> i64 {
+        self.x * self.x + self.y * self.y
+    }
+
+    // Mutable borrow - can modify fields
+    scale = (var self: Ref<Point>, factor: i64) {
+        self.x = self.x * factor
+        self.y = self.y * factor
+    }
+
+    // Takes ownership - consumes the instance
+    intoTuple = (self: Own<Point>) -> (i64, i64) {
+        (self.x, self.y)
+    }   // self freed here
+}
+
+main = () {
+    var p = Point.new(3, 4)
+
+    print(p.magnitude())              // prints: 25 (borrows immutably)
+    p.scale(2)                        // borrows mutably
+    print(p.x)                        // prints: 6
+
+    val tuple = p.intoTuple()         // p consumed
+    // print(p.x)                     // Error: p was moved
+}
+```
+
+## Example 13: Class with Owned Pointer Fields (SEP 1)
+
+Shows classes containing owned pointers.
+
+```slang
+Node = class {
+    val value: i64
+    var next: Own<Node>?
+
+    static new = (value: i64) -> Own<Node> {
+        Heap.new(Node{ value, null })
+    }
+
+    // Mutable borrow to modify next
+    setNext = (var self: Ref<Node>, node: Own<Node>) {
+        self.next = node              // ownership transferred to field
+    }
+
+    // Immutable borrow to traverse
+    sum = (self: Ref<Node>) -> i64 {
+        when {
+            self.next == null -> self.value
+            else -> self.value + self.next?.sum()
+        }
+    }
+}
+
+main = () {
+    var n1 = Node.new(10)
+    var n2 = Node.new(20)
+    var n3 = Node.new(30)
+
+    n2.setNext(n3)                    // n3 moved into n2
+    n1.setNext(n2)                    // n2 moved into n1
+
+    print(n1.sum())                   // prints: 60
+}                                     // n1 freed, recursively frees chain
+```
+
+## Example 14: Passing Classes to Functions (SEP 1)
+
+Shows class instances with function ownership types.
+
+```slang
+Point = class {
+    var x: i64
+    var y: i64
+
+    static new = (x: i64, y: i64) -> Own<Point> {
+        Heap.new(Point{ x, y })
+    }
+}
+
+// Immutable borrow
+printPoint = (p: Ref<Point>) {
+    print(p.x)
+    print(p.y)
+}
+
+// Mutable borrow
+doublePoint = (var p: Ref<Point>) {
+    p.x = p.x * 2
+    p.y = p.y * 2
+}
+
+// Takes ownership
+consumePoint = (p: Own<Point>) {
+    print(p.x + p.y)
+}   // p freed here
+
+main = () {
+    var p = Point.new(5, 10)
+
+    printPoint(p)                     // borrows immutably
+    doublePoint(p)                    // borrows mutably
+    print(p.x)                        // prints: 10
+
+    consumePoint(p)                   // ownership transferred
+    // printPoint(p)                  // Error: p was moved
+}
+```
+
 # Implementation Order
 
 1. **Lexer** - Add `class`, `self`, `static` tokens
 2. **AST** - Add `ClassDecl`, `MethodDecl`, `MethodCallExpr`, `SelfExpr`
-3. **Parser** - Parse class declarations, methods, method calls
+3. **Parser** - Parse class declarations, methods with explicit `self` parameter, method calls
 4. **Types** - Add `ClassType`, `MethodInfo`
 5. **Semantic** - Class registration, method analysis, self handling
-6. **Typed AST** - Add typed class nodes
-7. **Codegen** - Method generation, method call generation
-8. **E2E Tests** - Integration tests
+6. **Ownership** (SEP 1) - Self parameter type validation, move tracking for `self: Own<T>`
+7. **Typed AST** - Add typed class nodes
+8. **Codegen** - Method generation, method call generation, ownership transfer
+9. **E2E Tests** - Integration tests including ownership scenarios
 
 # Files to Modify
 
@@ -1174,11 +1527,11 @@ Math = class {
 |------|---------|
 | `compiler/lexer/lexer.go` | Add `TokenTypeClass`, `TokenTypeSelf`, `TokenTypeStatic` |
 | `compiler/ast/ast.go` | Add `ClassDecl`, `MethodDecl`, `MethodCallExpr`, `SelfExpr` |
-| `compiler/parser/parser.go` | Parse class declarations, methods, method calls |
+| `compiler/parser/parser.go` | Parse class declarations, methods with `self` parameter, method calls |
 | `compiler/semantic/types.go` | Add `ClassType`, `MethodInfo` |
 | `compiler/semantic/typed_ast.go` | Add typed class nodes |
-| `compiler/semantic/analyzer.go` | Class registration, method analysis |
-| `compiler/codegen/typed_codegen.go` | Method and method call codegen |
+| `compiler/semantic/analyzer.go` | Class registration, method analysis, ownership tracking |
+| `compiler/codegen/typed_codegen.go` | Method and method call codegen with ownership transfer |
 
 # Risks and Limitations
 

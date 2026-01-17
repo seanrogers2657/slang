@@ -14,6 +14,14 @@ type VariableInfo struct {
 	Type   semantic.Type
 }
 
+// OwnedVarInfo tracks an owned pointer variable for cleanup.
+type OwnedVarInfo struct {
+	Name      string        // variable name
+	Offset    int           // stack offset where pointer is stored
+	AllocSize int           // size of heap allocation (for munmap)
+	ElemType  semantic.Type // the element type (T in Own<T>)
+}
+
 // loopLabels holds the labels for break and continue statements within a loop.
 type loopLabels struct {
 	continueLabel string // label to jump to for continue (before update)
@@ -28,6 +36,7 @@ type BaseContext struct {
 	sourceLines  []string
 	labelCounter int          // counter for generating unique labels
 	loopStack    []loopLabels // stack of active loop labels for break/continue
+	ownedVars    []OwnedVarInfo // owned pointers that need cleanup (in declaration order)
 }
 
 // NewBaseContext creates a new code generation context.
@@ -111,4 +120,37 @@ func (ctx *BaseContext) CurrentLoop() (continueLabel, breakLabel string, ok bool
 	}
 	loop := ctx.loopStack[len(ctx.loopStack)-1]
 	return loop.continueLabel, loop.breakLabel, true
+}
+
+// RegisterOwnedVar registers an owned pointer variable for cleanup at scope exit.
+// allocSize is the size of the heap allocation (for munmap).
+func (ctx *BaseContext) RegisterOwnedVar(name string, offset int, allocSize int, elemType semantic.Type) {
+	ctx.ownedVars = append(ctx.ownedVars, OwnedVarInfo{
+		Name:      name,
+		Offset:    offset,
+		AllocSize: allocSize,
+		ElemType:  elemType,
+	})
+}
+
+// GetOwnedVars returns all owned pointer variables in declaration order.
+func (ctx *BaseContext) GetOwnedVars() []OwnedVarInfo {
+	return ctx.ownedVars
+}
+
+// HasOwnedVars returns true if there are any owned pointer variables to clean up.
+func (ctx *BaseContext) HasOwnedVars() bool {
+	return len(ctx.ownedVars) > 0
+}
+
+// MarkOwnedVarMoved marks an owned variable as moved, so it won't be deallocated.
+// This is used when ownership is transferred (e.g., returned from function).
+func (ctx *BaseContext) MarkOwnedVarMoved(name string) {
+	for i := range ctx.ownedVars {
+		if ctx.ownedVars[i].Name == name {
+			// Remove from list by marking with empty name (or we could remove it)
+			ctx.ownedVars[i].Name = ""
+			return
+		}
+	}
 }

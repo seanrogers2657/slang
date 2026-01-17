@@ -320,6 +320,78 @@ func (t NothingType) Equals(other Type) bool {
 	return ok
 }
 
+// OwnedPointerType represents an owned pointer type Own<T>
+// Owned pointers provide unique ownership of heap-allocated values.
+// When an owned pointer goes out of scope, its memory is automatically freed.
+type OwnedPointerType struct {
+	ElementType Type // the type being pointed to (e.g., Point for *Point)
+}
+
+func (t OwnedPointerType) String() string {
+	return "*" + t.ElementType.String()
+}
+
+func (t OwnedPointerType) Equals(other Type) bool {
+	o, ok := other.(OwnedPointerType)
+	if !ok {
+		return false
+	}
+	return t.ElementType.Equals(o.ElementType)
+}
+
+// IsCopyable returns false for owned pointers (they are move-only)
+func (t OwnedPointerType) IsCopyable() bool {
+	return false
+}
+
+// RefPointerType represents an immutable borrowed reference type Ref<T>
+// References provide temporary read-only access to a value without taking ownership.
+// References can only appear in function parameter position.
+type RefPointerType struct {
+	ElementType Type // the type being pointed to (e.g., Point for &Point)
+}
+
+func (t RefPointerType) String() string {
+	return "&" + t.ElementType.String()
+}
+
+func (t RefPointerType) Equals(other Type) bool {
+	o, ok := other.(RefPointerType)
+	if !ok {
+		return false
+	}
+	return t.ElementType.Equals(o.ElementType)
+}
+
+// IsCopyable returns true for references (they are copyable within their scope)
+func (t RefPointerType) IsCopyable() bool {
+	return true
+}
+
+// MutRefPointerType represents a mutable borrowed reference type MutRef<T>
+// Mutable references allow mutation of var fields in the referenced value.
+// Mutable references can only appear in function parameter position.
+type MutRefPointerType struct {
+	ElementType Type // the type being pointed to (e.g., Point for &&Point)
+}
+
+func (t MutRefPointerType) String() string {
+	return "&&" + t.ElementType.String()
+}
+
+func (t MutRefPointerType) Equals(other Type) bool {
+	o, ok := other.(MutRefPointerType)
+	if !ok {
+		return false
+	}
+	return t.ElementType.Equals(o.ElementType)
+}
+
+// IsCopyable returns true for mutable references (they are copyable within their scope)
+func (t MutRefPointerType) IsCopyable() bool {
+	return true
+}
+
 // IsNullable checks if a type is nullable (T?)
 func IsNullable(t Type) bool {
 	_, ok := t.(NullableType)
@@ -343,15 +415,111 @@ func UnwrapNullable(t Type) (Type, bool) {
 	return t, false
 }
 
-// IsReferenceType checks if a type is a reference type (struct, string).
+// IsReferenceType checks if a type is a reference type (struct, string, pointer).
 // Reference types use 8-byte nullable pointers; primitives use 16-byte tagged unions.
 func IsReferenceType(t Type) bool {
 	switch t.(type) {
-	case StructType, StringType:
+	case StructType, StringType, OwnedPointerType, RefPointerType, MutRefPointerType:
 		return true
 	default:
 		return false
 	}
+}
+
+// IsOwnedPointer checks if a type is an owned pointer type Own<T>
+func IsOwnedPointer(t Type) bool {
+	_, ok := t.(OwnedPointerType)
+	return ok
+}
+
+// IsNullableOwnedPointer checks if a type is a nullable owned pointer type Own<T>?
+func IsNullableOwnedPointer(t Type) bool {
+	if nullable, ok := t.(NullableType); ok {
+		_, isOwned := nullable.InnerType.(OwnedPointerType)
+		return isOwned
+	}
+	return false
+}
+
+// UnwrapOwnedPointer extracts the inner type from an OwnedPointerType.
+// Returns (innerType, true) if t is an owned pointer, (t, false) otherwise.
+func UnwrapOwnedPointer(t Type) (Type, bool) {
+	if o, ok := t.(OwnedPointerType); ok {
+		return o.ElementType, true
+	}
+	return t, false
+}
+
+// IsRefPointer checks if a type is an immutable reference pointer type Ref<T>
+func IsRefPointer(t Type) bool {
+	_, ok := t.(RefPointerType)
+	return ok
+}
+
+// UnwrapRefPointer extracts the inner type from a RefPointerType.
+// Returns (innerType, true) if t is a ref pointer, (t, false) otherwise.
+func UnwrapRefPointer(t Type) (Type, bool) {
+	if r, ok := t.(RefPointerType); ok {
+		return r.ElementType, true
+	}
+	return t, false
+}
+
+// IsMutRefPointer checks if a type is a mutable reference pointer type MutRef<T>
+func IsMutRefPointer(t Type) bool {
+	_, ok := t.(MutRefPointerType)
+	return ok
+}
+
+// UnwrapMutRefPointer extracts the inner type from a MutRefPointerType.
+// Returns (innerType, true) if t is a mutable ref pointer, (t, false) otherwise.
+func UnwrapMutRefPointer(t Type) (Type, bool) {
+	if r, ok := t.(MutRefPointerType); ok {
+		return r.ElementType, true
+	}
+	return t, false
+}
+
+// IsAnyRefPointer checks if a type is any reference pointer type (Ref<T> or MutRef<T>)
+func IsAnyRefPointer(t Type) bool {
+	return IsRefPointer(t) || IsMutRefPointer(t)
+}
+
+// UnwrapAnyRefPointer extracts the inner type from any reference pointer type.
+// Returns (innerType, isMutable, true) if t is a ref pointer, (t, false, false) otherwise.
+func UnwrapAnyRefPointer(t Type) (Type, bool, bool) {
+	if r, ok := t.(RefPointerType); ok {
+		return r.ElementType, false, true
+	}
+	if r, ok := t.(MutRefPointerType); ok {
+		return r.ElementType, true, true
+	}
+	return t, false, false
+}
+
+// IsAssignableTo checks if the source type can be assigned to the target type.
+// This includes exact equality plus:
+// - T -> T? coercion (non-nullable to nullable)
+// - NothingType (null) -> T? coercion
+func IsAssignableTo(source, target Type) bool {
+	// Exact equality
+	if source.Equals(target) {
+		return true
+	}
+
+	// T -> T? coercion: source T can be assigned to target T?
+	if targetNullable, ok := target.(NullableType); ok {
+		// null -> T?
+		if _, isNothing := source.(NothingType); isNothing {
+			return true
+		}
+		// T -> T?
+		if source.Equals(targetNullable.InnerType) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // NullableSize returns the byte size of a nullable value.
@@ -392,6 +560,10 @@ func TypeByteSize(t Type) int {
 		return tt.Size()
 	case ArrayType:
 		return tt.TotalSize()
+	case OwnedPointerType:
+		return 8 // pointers are 8 bytes on 64-bit systems
+	case RefPointerType, MutRefPointerType:
+		return 8 // references are pointers, 8 bytes on 64-bit systems
 	default:
 		return 8 // default to 8 bytes for unknown types
 	}

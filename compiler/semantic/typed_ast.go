@@ -111,13 +111,14 @@ func (e *TypedFieldAccessExpr) typedExprNode() {}
 // TypedSafeCallExpr represents a typed safe call expression (e.g., person?.address)
 // Result is always nullable: if object is null, returns null; otherwise returns field value
 type TypedSafeCallExpr struct {
-	Type        Type            // the result type (always nullable)
-	Object      TypedExpression // the nullable struct expression
-	SafeCallPos ast.Position    // position of '?.'
-	Field       string          // field name
-	FieldPos    ast.Position    // position of field name
-	FieldOffset int             // byte offset of field in struct (for codegen)
-	InnerType   Type            // the unwrapped inner type of the nullable object
+	Type           Type            // the result type (always nullable)
+	Object         TypedExpression // the nullable struct expression
+	SafeCallPos    ast.Position    // position of '?.'
+	Field          string          // field name
+	FieldPos       ast.Position    // position of field name
+	FieldOffset    int             // byte offset of field in struct (for codegen)
+	InnerType      Type            // the unwrapped inner type of the nullable object
+	ThroughPointer bool            // true if accessing through Own<T> or Ref<T> (needs deref in codegen)
 }
 
 func (e *TypedSafeCallExpr) Pos() ast.Position { return e.Object.Pos() }
@@ -183,6 +184,23 @@ func (e *TypedLenExpr) Pos() ast.Position { return e.NamePos }
 func (e *TypedLenExpr) End() ast.Position { return e.RightParen }
 func (e *TypedLenExpr) GetType() Type     { return e.Type }
 func (e *TypedLenExpr) typedExprNode()    {}
+
+// TypedMethodCallExpr represents a typed method call (e.g., Heap.new(x), p.copy())
+type TypedMethodCallExpr struct {
+	Type       Type              // the return type of the method
+	Object     TypedExpression   // the receiver expression (e.g., Heap, p)
+	Dot        ast.Position      // position of '.'
+	Method     string            // method name (e.g., "new", "copy")
+	MethodPos  ast.Position      // position of method name
+	LeftParen  ast.Position      // position of '('
+	Arguments  []TypedExpression // typed argument expressions
+	RightParen ast.Position      // position of ')'
+}
+
+func (e *TypedMethodCallExpr) Pos() ast.Position { return e.Object.Pos() }
+func (e *TypedMethodCallExpr) End() ast.Position { return e.RightParen }
+func (e *TypedMethodCallExpr) GetType() Type     { return e.Type }
+func (e *TypedMethodCallExpr) typedExprNode()    {}
 
 // ============================================================================
 // Typed Statements

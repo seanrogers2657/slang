@@ -347,11 +347,6 @@ func TestLexerErrors(t *testing.T) {
 			expectedContain: "unexpected character: '@'",
 		},
 		{
-			name:            "single ampersand",
-			input:           "a & b",
-			expectedContain: "unexpected character: '&' (bitwise & not supported, use && for logical AND)",
-		},
-		{
 			name:            "single pipe",
 			input:           "a | b",
 			expectedContain: "unexpected character: '|' (bitwise | not supported, use || for logical OR)",
@@ -398,8 +393,8 @@ func TestLexerErrorRecovery(t *testing.T) {
 		{
 			name:           "mixed bitwise and valid operators",
 			input:          "a & b | c && d",
-			expectedErrors: 2, // single & and single |
-			expectedTokens: 5, // IDENTIFIER(a), IDENTIFIER(b), IDENTIFIER(c), AND, IDENTIFIER(d)
+			expectedErrors: 1, // single | (& is now valid for &T borrow syntax)
+			expectedTokens: 6, // IDENTIFIER(a), AMPERSAND, IDENTIFIER(b), IDENTIFIER(c), AND, IDENTIFIER(d)
 		},
 		{
 			name:           "continues after error on different lines",
@@ -1023,6 +1018,29 @@ func TestLexerBooleanTokens(t *testing.T) {
 			input: "&&",
 			expected: []Token{
 				{Type: TokenTypeAnd, Value: "&&"},
+			},
+		},
+		{
+			name:  "single ampersand for borrow syntax",
+			input: "&",
+			expected: []Token{
+				{Type: TokenTypeAmpersand, Value: "&"},
+			},
+		},
+		{
+			name:  "ampersand in type context",
+			input: "&Point",
+			expected: []Token{
+				{Type: TokenTypeAmpersand, Value: "&"},
+				{Type: TokenTypeIdentifier, Value: "Point"},
+			},
+		},
+		{
+			name:  "double ampersand for mutable borrow",
+			input: "&&Point",
+			expected: []Token{
+				{Type: TokenTypeAnd, Value: "&&"},
+				{Type: TokenTypeIdentifier, Value: "Point"},
 			},
 		},
 		{

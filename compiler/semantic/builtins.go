@@ -33,4 +33,9 @@ var Builtins = map[string]BuiltinFunc{
 		NoReturn:   false,
 		IsArrayLen: true,
 	},
+	"sleep": {
+		ParamTypes: []Type{TypeI64}, // nanoseconds to sleep
+		ReturnType: TypeVoid,
+		NoReturn:   false,
+	},
 }

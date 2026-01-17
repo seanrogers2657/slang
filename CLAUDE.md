@@ -488,6 +488,97 @@ main = () {
 - Struct literals use braces: `Point{ 1, 2 }` (no space between name and `{`)
 - Anonymous struct literals require type annotation: `val p: Point = { x: 1, y: 2 }`
 
+### Pointer Syntax (Own<T>, Ref<T>, MutRef<T>)
+
+Slang uses an ownership-based memory model with three pointer types:
+
+- `Own<T>` - Owned pointer with unique ownership (move semantics)
+- `Ref<T>` - Immutable borrowed reference (read-only access)
+- `MutRef<T>` - Mutable borrowed reference (can mutate var fields)
+
+**Key principle**: `val`/`var` controls **reassignability** only. `Ref<T>` vs `MutRef<T>` controls **borrow mutability**.
+
+```slang
+Point = struct {
+    var x: i64
+    var y: i64
+}
+
+// Allocate on the heap with Heap.new()
+main = () {
+    val p = Heap.new(Point{ 10, 20 })  // p: Own<Point>
+    print(p.x)  // Auto-dereference: prints 10
+    print(p.y)  // prints 20
+
+    // val binding can still mutate var fields (val only prevents reassignment)
+    p.x = 100
+    print(p.x)  // prints 100
+}
+```
+
+**Ownership transfer (move semantics):**
+```slang
+// Passing Own<T> to a function transfers ownership
+consumePoint = (p: Own<Point>) -> i64 {
+    return p.x + p.y
+}
+
+// Returning Own<T> transfers ownership to caller
+createPoint = (x: i64, y: i64) -> Own<Point> {
+    return Heap.new(Point{ x, y })
+}
+
+main = () {
+    val p = createPoint(10, 20)
+    val sum = consumePoint(p)  // p is moved
+    // print(p.x)  // Error: p was moved
+}
+```
+
+**Borrowing with Ref<T> and MutRef<T>:**
+```slang
+// Ref<T> borrows without taking ownership (read-only)
+printPoint = (p: Ref<Point>) {
+    print(p.x)
+    print(p.y)
+}
+
+// MutRef<T> allows mutation through the reference
+doubleX = (p: MutRef<Point>) {
+    p.x = p.x * 2
+}
+
+main = () {
+    val p = Heap.new(Point{ 10, 20 })
+    printPoint(p)  // Auto-borrow: Own<Point> -> Ref<Point>
+    print(p.x)     // p still usable: prints 10
+
+    doubleX(p)     // Mutable borrow (val binding can still borrow as MutRef)
+    print(p.x)     // prints 20
+}
+```
+
+**Deep copy with .copy():**
+```slang
+main = () {
+    val p = Heap.new(Point{ 10, 20 })
+    val q = p.copy()  // Creates independent deep copy
+
+    p.x = 100
+    print(q.x)  // prints 10 (unchanged)
+}
+```
+
+**Pointer rules:**
+- `Own<T>` values are move-only (assignment moves, not copies)
+- Use `.copy()` to create an explicit deep copy
+- `Ref<T>` and `MutRef<T>` can only appear in function parameter position
+- `Ref<T>` is read-only; `MutRef<T>` can mutate var fields
+- Auto-borrow: `Own<T>` automatically converts to `Ref<T>` or `MutRef<T>` when passed to functions
+- `val`/`var` only controls reassignability, not mutation through the pointer
+- Multiple immutable borrows are allowed; multiple mutable borrows are not
+- Memory is automatically freed when owned pointers go out of scope
+
 ### Variable Syntax
 
 Variables are declared using `val` (immutable) or `var` (mutable) keywords (Kotlin-style):

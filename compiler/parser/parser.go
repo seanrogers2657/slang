@@ -980,25 +980,37 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 		}
 
 		// Handle field access (dot operator) - highest precedence, left-associative
+		// This also handles method calls: expr.method(args)
 		if p.CurrentToken().Type == lexer.TokenTypeDot {
 			dotPos := p.CurrentToken().Pos
 			p.advance() // consume '.'
 
-			// Expect field name
+			// Expect field/method name
 			if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
 				p.addError(fmt.Sprintf("expected field name after '.', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 				return nil
 			}
 
-			fieldName := p.CurrentToken().Value
-			fieldPos := p.CurrentToken().Pos
-			p.advance() // consume field name
+			memberName := p.CurrentToken().Value
+			memberPos := p.CurrentToken().Pos
+			p.advance() // consume field/method name
 
+			// Check if this is a method call (identifier followed by '(')
+			if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeLParen {
+				methodCall := p.parseMethodCall(left, dotPos, memberName, memberPos)
+				if methodCall == nil {
+					return nil
+				}
+				left = methodCall
+				continue
+			}
+
+			// Otherwise it's a field access
 			left = &ast.FieldAccessExpr{
 				Object:   left,
 				Dot:      dotPos,
-				Field:    fieldName,
-				FieldPos: fieldPos,
+				Field:    memberName,
+				FieldPos: memberPos,
 			}
 			continue
 		}
@@ -1283,6 +1295,59 @@ func (p *parser) parseCallExpr(name string, namePos ast.Position) ast.Expression
 		Arguments:      arguments,
 		NamedArguments: namedArguments,
 		RightParen:     rightParen,
+	}
+}
+
+// parseMethodCall parses a method call after the object, dot, and method name have been consumed
+// Syntax: object.method(args...)
+// Used for patterns like Heap.new(expr), p.copy(), etc.
+func (p *parser) parseMethodCall(object ast.Expression, dotPos ast.Position, methodName string, methodPos ast.Position) ast.Expression {
+	leftParen := p.CurrentToken().Pos
+	p.advance() // consume '('
+
+	// Skip newlines after '(' for multi-line argument lists
+	p.skipNewlines()
+
+	arguments := []ast.Expression{}
+
+	// Parse arguments (similar to parseCallExpr but without named arguments for now)
+	for !p.isAtEnd() && p.CurrentToken().Type != lexer.TokenTypeRParen {
+		arg := p.parseExpression(precedenceLowest)
+		if arg == nil {
+			return nil
+		}
+		arguments = append(arguments, arg)
+
+		// Skip newlines after argument
+		p.skipNewlines()
+
+		// Check for comma (more arguments) or closing paren
+		if p.CurrentToken().Type == lexer.TokenTypeComma {
+			p.advance() // consume ','
+			p.skipNewlines()
+		} else if p.CurrentToken().Type != lexer.TokenTypeRParen {
+			p.addError(fmt.Sprintf("expected ',' or ')' in method call, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+			return nil
+		}
+	}
+
+	// Expect ')'
+	if p.isAtEnd() || p.CurrentToken().Type != lexer.TokenTypeRParen {
+		p.addError("expected ')' to close method call", p.PreviousToken().Pos)
+		return nil
+	}
+
+	rightParen := p.CurrentToken().Pos
+	p.advance() // consume ')'
+
+	return &ast.MethodCallExpr{
+		Object:     object,
+		Dot:        dotPos,
+		Method:     methodName,
+		MethodPos:  methodPos,
+		LeftParen:  leftParen,
+		Arguments:  arguments,
+		RightParen: rightParen,
 	}
 }
 
@@ -1626,20 +1691,10 @@ func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 		arrowPos = p.CurrentToken().Pos
 		p.advance() // consume '->'
 
-		// Expect return type identifier
-		if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-			p.addError(fmt.Sprintf("expected return type after '->', got '%s'", p.CurrentToken().Value), arrowPos)
+		// Parse return type (may include generics like Own<Point>, Array<i64>)
+		returnType, returnPos = p.parseTypeName()
+		if returnType == "" {
 			return nil
-		}
-
-		returnType = p.CurrentToken().Value
-		returnPos = p.CurrentToken().Pos
-		p.advance() // consume return type
-
-		// Check for nullable type suffix '?'
-		if p.CurrentToken().Type == lexer.TokenTypeQuestion {
-			returnType = returnType + "?"
-			p.advance() // consume '?'
 		}
 	} else {
 		// No return type specified - default to void
@@ -1697,8 +1752,18 @@ func (p *parser) parseParameterList() []ast.Parameter {
 	return parameters
 }
 
-// parseParameter parses a single parameter: name: type
+// parseParameter parses a single parameter: [var] name: type
+// The 'var' prefix indicates a mutable reference parameter.
 func (p *parser) parseParameter() *ast.Parameter {
+	// Check for optional 'var' prefix (for mutable reference parameters)
+	var mutable bool
+	var varPos ast.Position
+	if p.CurrentToken().Type == lexer.TokenTypeVar {
+		mutable = true
+		varPos = p.CurrentToken().Pos
+		p.advance() // consume 'var'
+	}
+
 	// Expect identifier (parameter name)
 	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
 		p.addError(fmt.Sprintf("expected parameter name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
@@ -1718,13 +1783,15 @@ func (p *parser) parseParameter() *ast.Parameter {
 	colonPos := p.CurrentToken().Pos
 	p.advance() // consume ':'
 
-	// Parse type name (may include generic like Array<i64>)
+	// Parse type name (may include generic like Array<i64>, Own<T>, Ref<T>)
 	typeName, typePos := p.parseTypeName()
 	if typeName == "" {
 		return nil
 	}
 
 	return &ast.Parameter{
+		Mutable:  mutable,
+		VarPos:   varPos,
 		Name:     name,
 		NamePos:  namePos,
 		Colon:    colonPos,
@@ -1733,35 +1800,67 @@ func (p *parser) parseParameter() *ast.Parameter {
 	}
 }
 
-// parseTypeName parses a type name, including generic types like Array<i64> and nullable types like i64?
+// parseTypeName parses a type name, including:
+// - Symbol pointer types: *T, &T, &&T
+// - Generic types: Array<i64>, Own<Point>, Ref<Point>
+// - Nullable types: i64?, *Point?
 func (p *parser) parseTypeName() (string, ast.Position) {
+	typePos := p.CurrentToken().Pos
+
+	// Check for pointer type prefixes: *T, &T, &&T
+	switch p.CurrentToken().Type {
+	case lexer.TokenTypeMultiply: // *T - owned pointer
+		p.advance() // consume '*'
+		innerType, _ := p.parseTypeName()
+		if innerType == "" {
+			return "", typePos
+		}
+		return "*" + innerType, typePos
+
+	case lexer.TokenTypeAnd: // &&T - mutable borrow
+		p.advance() // consume '&&'
+		innerType, _ := p.parseTypeName()
+		if innerType == "" {
+			return "", typePos
+		}
+		return "&&" + innerType, typePos
+
+	case lexer.TokenTypeAmpersand: // &T - immutable borrow
+		p.advance() // consume '&'
+		innerType, _ := p.parseTypeName()
+		if innerType == "" {
+			return "", typePos
+		}
+		return "&" + innerType, typePos
+	}
+
+	// Standard identifier-based type
 	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
 		p.addError(fmt.Sprintf("expected type name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 		return "", ast.Position{}
 	}
 
 	typeName := p.CurrentToken().Value
-	typePos := p.CurrentToken().Pos
 	p.advance() // consume type identifier
 
-	// Check for generic type: Array<T>
-	if typeName == "Array" && p.CurrentToken().Type == lexer.TokenTypeLessThan {
+	// Check for generic type: Name<T> (e.g., Array<i64>, Own<Point>, Ref<Point>)
+	if p.CurrentToken().Type == lexer.TokenTypeLessThan {
 		p.advance() // consume '<'
 
-		// Parse element type (which may itself be nullable, e.g., Array<i64?>)
-		elementType, _ := p.parseTypeName()
-		if elementType == "" {
+		// Parse type argument (which may itself be nullable or generic, e.g., Own<Array<i64>>)
+		typeArg, _ := p.parseTypeName()
+		if typeArg == "" {
 			return "", typePos
 		}
 
 		if p.CurrentToken().Type != lexer.TokenTypeGreaterThan {
-			p.addError(fmt.Sprintf("expected '>' after element type, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+			p.addError(fmt.Sprintf("expected '>' after type argument, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 			return "", typePos
 		}
 		p.advance() // consume '>'
 
-		// Encode as "Array<elementType>" for the semantic analyzer
-		typeName = fmt.Sprintf("Array<%s>", elementType)
+		// Encode as "Name<typeArg>" for the semantic analyzer
+		typeName = fmt.Sprintf("%s<%s>", typeName, typeArg)
 	}
 
 	// Check for nullable type: T?

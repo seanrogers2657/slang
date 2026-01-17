@@ -59,7 +59,8 @@ const (
 	TokenTypeReturn
 	TokenTypeTrue
 	TokenTypeFalse
-	TokenTypeAnd
+	TokenTypeAnd       // && logical AND
+	TokenTypeAmpersand // & for &T borrow syntax
 	TokenTypeOr
 	TokenTypeNot
 	TokenTypeIf
@@ -143,6 +144,8 @@ func (t TokenType) String() string {
 		return "FALSE"
 	case TokenTypeAnd:
 		return "AND"
+	case TokenTypeAmpersand:
+		return "AMPERSAND"
 	case TokenTypeOr:
 		return "OR"
 	case TokenTypeNot:
@@ -565,8 +568,9 @@ func (p *lexer) Parse() {
 				p.advance()
 				p.advance()
 			} else {
-				p.addError(fmt.Sprintf("unexpected character: %q (bitwise & not supported, use && for logical AND)", b))
-				p.advance() // skip invalid character and continue lexing
+				// Single & for &T borrow type syntax
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeAmpersand, Value: "&", Pos: pos})
+				p.advance()
 			}
 		} else if b == '|' {
 			// Check for ||

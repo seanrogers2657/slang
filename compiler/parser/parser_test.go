@@ -1267,6 +1267,27 @@ func TestParserOptionalReturnType(t *testing.T) {
 			expectedReturnType: "void",
 			expectedBody:       0,
 		},
+		{
+			name:               "function with generic return type Own<Point>",
+			source:             "create = () -> Own<Point> {\n    return null\n}",
+			expectedName:       "create",
+			expectedReturnType: "Own<Point>",
+			expectedBody:       1,
+		},
+		{
+			name:               "function with generic return type Array<i64>",
+			source:             "getArray = () -> Array<i64> {\n    return [1, 2, 3]\n}",
+			expectedName:       "getArray",
+			expectedReturnType: "Array<i64>",
+			expectedBody:       1,
+		},
+		{
+			name:               "function with nullable generic return type Own<Point>?",
+			source:             "maybeCreate = () -> Own<Point>? {\n    return null\n}",
+			expectedName:       "maybeCreate",
+			expectedReturnType: "Own<Point>?",
+			expectedBody:       1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2679,5 +2700,222 @@ func TestParserNestedNullableError(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected error containing 'nested nullable', got: %v", p.Errors)
+	}
+}
+
+// Tests for SEP-1: Pointer Type Parsing
+
+func TestParserGenericTypes(t *testing.T) {
+	tests := []struct {
+		name         string
+		source       string
+		expectedType string
+	}{
+		{
+			name:         "Own<Point>",
+			source:       "main = () { val p: Own<Point> = null }",
+			expectedType: "Own<Point>",
+		},
+		{
+			name:         "Ref<Point>",
+			source:       "main = () { val p: Ref<Point> = null }",
+			expectedType: "Ref<Point>",
+		},
+		{
+			name:         "Own<Point>? nullable",
+			source:       "main = () { val p: Own<Point>? = null }",
+			expectedType: "Own<Point>?",
+		},
+		{
+			name:         "nested generic Own<Array<i64>>",
+			source:       "main = () { val p: Own<Array<i64>> = null }",
+			expectedType: "Own<Array<i64>>",
+		},
+		{
+			name:         "Own with nullable inner type",
+			source:       "main = () { val p: Own<i64?> = null }",
+			expectedType: "Own<i64?>",
+		},
+		{
+			name:         "Ref<Point>? nullable ref",
+			source:       "main = () { val p: Ref<Point>? = null }",
+			expectedType: "Ref<Point>?",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("unexpected parser errors: %v", p.Errors)
+			}
+
+			if len(program.Declarations) != 1 {
+				t.Fatalf("expected 1 declaration, got %d", len(program.Declarations))
+			}
+
+			funcDecl, ok := program.Declarations[0].(*ast.FunctionDecl)
+			if !ok {
+				t.Fatal("expected FunctionDecl")
+			}
+
+			if len(funcDecl.Body.Statements) != 1 {
+				t.Fatalf("expected 1 statement, got %d", len(funcDecl.Body.Statements))
+			}
+
+			varDecl, ok := funcDecl.Body.Statements[0].(*ast.VarDeclStmt)
+			if !ok {
+				t.Fatal("expected VarDeclStmt")
+			}
+
+			if varDecl.TypeName != tt.expectedType {
+				t.Errorf("expected type %q, got %q", tt.expectedType, varDecl.TypeName)
+			}
+		})
+	}
+}
+
+func TestParserVarParameter(t *testing.T) {
+	tests := []struct {
+		name            string
+		source          string
+		expectedMutable []bool
+	}{
+		{
+			name:            "immutable ref parameter",
+			source:          "foo = (p: Ref<Point>) { }",
+			expectedMutable: []bool{false},
+		},
+		{
+			name:            "mutable ref parameter with var",
+			source:          "foo = (var p: Ref<Point>) { }",
+			expectedMutable: []bool{true},
+		},
+		{
+			name:            "mixed mutable and immutable",
+			source:          "foo = (a: i64, var b: Ref<Point>, c: bool) { }",
+			expectedMutable: []bool{false, true, false},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("unexpected parser errors: %v", p.Errors)
+			}
+
+			funcDecl, ok := program.Declarations[0].(*ast.FunctionDecl)
+			if !ok {
+				t.Fatal("expected FunctionDecl")
+			}
+
+			if len(funcDecl.Parameters) != len(tt.expectedMutable) {
+				t.Fatalf("expected %d parameters, got %d", len(tt.expectedMutable), len(funcDecl.Parameters))
+			}
+
+			for i, param := range funcDecl.Parameters {
+				if param.Mutable != tt.expectedMutable[i] {
+					t.Errorf("parameter %d: expected mutable=%v, got %v", i, tt.expectedMutable[i], param.Mutable)
+				}
+			}
+		})
+	}
+}
+
+func TestParserMethodCall(t *testing.T) {
+	tests := []struct {
+		name           string
+		source         string
+		expectedObject string
+		expectedMethod string
+		expectedArgs   int
+	}{
+		{
+			name:           "Heap.new with struct literal",
+			source:         "main = () { Heap.new(Point{ 1, 2 }) }",
+			expectedObject: "Heap",
+			expectedMethod: "new",
+			expectedArgs:   1,
+		},
+		{
+			name:           "p.copy() no args",
+			source:         "main = () { p.copy() }",
+			expectedObject: "p",
+			expectedMethod: "copy",
+			expectedArgs:   0,
+		},
+		{
+			name:           "method with multiple args",
+			source:         "main = () { obj.method(a, b, c) }",
+			expectedObject: "obj",
+			expectedMethod: "method",
+			expectedArgs:   3,
+		},
+		{
+			name:           "chained field then method",
+			source:         "main = () { a.b.method() }",
+			expectedObject: "a.b", // a.b is the object
+			expectedMethod: "method",
+			expectedArgs:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("unexpected parser errors: %v", p.Errors)
+			}
+
+			funcDecl, ok := program.Declarations[0].(*ast.FunctionDecl)
+			if !ok {
+				t.Fatal("expected FunctionDecl")
+			}
+
+			exprStmt, ok := funcDecl.Body.Statements[0].(*ast.ExprStmt)
+			if !ok {
+				t.Fatal("expected ExprStmt")
+			}
+
+			methodCall, ok := exprStmt.Expr.(*ast.MethodCallExpr)
+			if !ok {
+				t.Fatalf("expected MethodCallExpr, got %T", exprStmt.Expr)
+			}
+
+			if methodCall.Method != tt.expectedMethod {
+				t.Errorf("expected method %q, got %q", tt.expectedMethod, methodCall.Method)
+			}
+
+			if len(methodCall.Arguments) != tt.expectedArgs {
+				t.Errorf("expected %d arguments, got %d", tt.expectedArgs, len(methodCall.Arguments))
+			}
+
+			// Check object (simplified - just check if it's an identifier for simple cases)
+			if tt.expectedObject != "a.b" {
+				ident, ok := methodCall.Object.(*ast.IdentifierExpr)
+				if !ok {
+					t.Fatalf("expected IdentifierExpr as object, got %T", methodCall.Object)
+				}
+				if ident.Name != tt.expectedObject {
+					t.Errorf("expected object %q, got %q", tt.expectedObject, ident.Name)
+				}
+			}
+		})
 	}
 }

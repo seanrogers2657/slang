@@ -56,6 +56,9 @@ func expressionHasNullableTag(expr semantic.TypedExpression) bool {
 		return semantic.IsNullable(e.Type)
 	case *semantic.TypedIndexExpr:
 		return semantic.IsNullable(e.Type)
+	case *semantic.TypedSafeCallExpr:
+		// Safe call always returns nullable, and sets tag in x3
+		return true
 	default:
 		return false
 	}
@@ -144,7 +147,8 @@ func (g *TypedCodeGenerator) generateFunctionBasedProgram(builder *strings.Build
 	// Generate symbol table for stack traces
 	builder.WriteString(g.symtab.GenerateDataSection())
 
-	// Include runtime panic handler
+	// Include runtime: heap allocator and panic handler
+	builder.WriteString(RuntimeHeapCode())
 	builder.WriteString(RuntimePanicCode())
 
 	return builder.String(), nil
@@ -214,6 +218,10 @@ func (g *TypedCodeGenerator) generateFunction(fn *semantic.TypedFunctionDecl) (s
 		builder.WriteString(code)
 	}
 
+	// Cleanup owned pointers before function exit
+	// (only for functions without explicit return, as return statements handle their own cleanup)
+	builder.WriteString(g.generateOwnedVarCleanup(ctx, ""))
+
 	// Default return for void main
 	if fn.Name == "main" {
 		if _, isVoid := fn.ReturnType.(semantic.VoidType); isVoid {
@@ -278,6 +286,11 @@ func (g *TypedCodeGenerator) generateVarDecl(stmt *semantic.TypedVarDeclStmt, ct
 		return g.generateNullableVarDecl(stmt, nullableType, ctx)
 	}
 
+	// Check if this is an owned pointer type
+	if ownedType, isOwned := stmt.DeclaredType.(semantic.OwnedPointerType); isOwned {
+		return g.generateOwnedPointerVarDecl(stmt, ownedType, ctx)
+	}
+
 	code, err := g.generateExpr(stmt.Initializer, ctx)
 	if err != nil {
 		return "", err
@@ -291,6 +304,31 @@ func (g *TypedCodeGenerator) generateVarDecl(stmt *semantic.TypedVarDeclStmt, ct
 	} else {
 		EmitStoreToStack(&builder, "x2", offset)
 	}
+
+	return builder.String(), nil
+}
+
+// generateOwnedPointerVarDecl generates code for declaring an owned pointer variable.
+// Registers the variable for cleanup at scope exit.
+func (g *TypedCodeGenerator) generateOwnedPointerVarDecl(stmt *semantic.TypedVarDeclStmt, ownedType semantic.OwnedPointerType, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Generate the initializer (Heap.new() call) - result pointer in x2
+	code, err := g.generateExpr(stmt.Initializer, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(code)
+
+	// Declare the variable and store the pointer
+	offset := ctx.DeclareVariable(stmt.Name, stmt.DeclaredType)
+	EmitStoreToStack(&builder, "x2", offset)
+
+	// Calculate allocation size for cleanup
+	allocSize := g.calculateHeapAllocSize(ownedType.ElementType)
+
+	// Register for cleanup at scope exit
+	ctx.RegisterOwnedVar(stmt.Name, offset, allocSize, ownedType.ElementType)
 
 	return builder.String(), nil
 }
@@ -863,6 +901,11 @@ func (g *TypedCodeGenerator) generateAssignStmt(stmt *semantic.TypedAssignStmt, 
 		}
 	}
 
+	// Check if this is an owned pointer type - need to free old value first
+	if ownedType, isOwned := slot.Type.(semantic.OwnedPointerType); isOwned {
+		return g.generateOwnedPointerAssign(stmt, slot, ownedType, ctx)
+	}
+
 	// Non-nullable or nullable reference: generate value and store
 	code, err := g.generateExpr(stmt.Value, ctx)
 	if err != nil {
@@ -875,6 +918,31 @@ func (g *TypedCodeGenerator) generateAssignStmt(stmt *semantic.TypedAssignStmt, 
 	} else {
 		EmitStoreToStack(&builder, "x2", slot.Offset)
 	}
+
+	return builder.String(), nil
+}
+
+// generateOwnedPointerAssign handles assignment to owned pointer variables.
+// Frees the old value before storing the new one.
+func (g *TypedCodeGenerator) generateOwnedPointerAssign(stmt *semantic.TypedAssignStmt, slot VariableInfo, ownedType semantic.OwnedPointerType, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Calculate allocation size for munmap
+	allocSize := g.calculateHeapAllocSize(ownedType.ElementType)
+
+	// Free the old value first
+	builder.WriteString("    // free old owned pointer before reassignment\n")
+	builder.WriteString(g.emitMunmap(slot.Offset, allocSize))
+
+	// Generate the new value (result pointer in x2)
+	code, err := g.generateExpr(stmt.Value, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(code)
+
+	// Store the new pointer
+	EmitStoreToStack(&builder, "x2", slot.Offset)
 
 	return builder.String(), nil
 }
@@ -923,6 +991,16 @@ func (g *TypedCodeGenerator) generateNullableAssign(stmt *semantic.TypedAssignSt
 func (g *TypedCodeGenerator) generateFieldAssignStmt(stmt *semantic.TypedFieldAssignStmt, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
+	// Check if the object is an owned pointer (Own<T>) - requires heap dereference
+	if semantic.IsOwnedPointer(stmt.Object.GetType()) {
+		return g.generateFieldAssignThroughOwnedPointer(stmt, ctx)
+	}
+
+	// Check if the object is a reference pointer (Ref<T> or MutRef<T>) - requires heap dereference
+	if semantic.IsAnyRefPointer(stmt.Object.GetType()) {
+		return g.generateFieldAssignThroughRefPointer(stmt, ctx)
+	}
+
 	// Determine field type from the object's struct type
 	fieldType := g.getFieldType(stmt.Object, stmt.Field)
 
@@ -949,6 +1027,154 @@ func (g *TypedCodeGenerator) generateFieldAssignStmt(stmt *semantic.TypedFieldAs
 		builder.WriteString(fmt.Sprintf("    str d0, [x29, #-%d]\n", fieldOffset))
 	} else {
 		EmitStoreToStack(&builder, "x2", fieldOffset)
+	}
+
+	return builder.String(), nil
+}
+
+// generateFieldAssignThroughOwnedPointer generates code for field assignment through Own<T>.
+// Loads the pointer from stack, then stores the value to the heap.
+func (g *TypedCodeGenerator) generateFieldAssignThroughOwnedPointer(stmt *semantic.TypedFieldAssignStmt, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Get the struct type from the owned pointer
+	ownedType := stmt.Object.GetType().(semantic.OwnedPointerType)
+	structType, ok := ownedType.ElementType.(semantic.StructType)
+	if !ok {
+		return "", fmt.Errorf("field assignment through owned pointer requires struct type, got %s", ownedType.ElementType.String())
+	}
+
+	// Calculate the field byte offset within the struct (on heap, each field is 8 bytes)
+	fieldByteOffset := 0
+	var fieldType semantic.Type
+	for _, field := range structType.Fields {
+		if field.Name == stmt.Field {
+			fieldType = field.Type
+			break
+		}
+		fieldByteOffset += 8 // Each field is 8-byte aligned on heap
+	}
+
+	// Step 1: Generate the value expression (result in x2 or d0)
+	valueCode, err := g.generateExpr(stmt.Value, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(valueCode)
+
+	// Step 2: Save the value temporarily (we need x2 for loading the pointer)
+	if semantic.IsFloatType(fieldType) {
+		builder.WriteString("    str d0, [sp, #-16]!\n")
+	} else {
+		builder.WriteString("    str x2, [sp, #-16]!\n")
+	}
+
+	// Step 3: Generate the object expression (loads the pointer into x2)
+	objCode, err := g.generateExpr(stmt.Object, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(objCode)
+
+	// x2 now contains the heap pointer, move it to x4
+	builder.WriteString("    mov x4, x2\n")
+
+	// Step 4: Restore the value
+	if semantic.IsFloatType(fieldType) {
+		builder.WriteString("    ldr d0, [sp], #16\n")
+		// Store the value at [x4 + fieldByteOffset]
+		if fieldByteOffset == 0 {
+			builder.WriteString("    str d0, [x4]\n")
+		} else {
+			builder.WriteString(fmt.Sprintf("    str d0, [x4, #%d]\n", fieldByteOffset))
+		}
+	} else {
+		builder.WriteString("    ldr x2, [sp], #16\n")
+		// Store the value at [x4 + fieldByteOffset]
+		if fieldByteOffset == 0 {
+			builder.WriteString("    str x2, [x4]\n")
+		} else {
+			builder.WriteString(fmt.Sprintf("    str x2, [x4, #%d]\n", fieldByteOffset))
+		}
+	}
+
+	return builder.String(), nil
+}
+
+// generateFieldAssignThroughRefPointer generates code for field assignment through Ref<T>/MutRef<T>.
+// Loads the pointer from stack, then stores the value to the heap.
+// Very similar to generateFieldAssignThroughOwnedPointer since both are heap pointers.
+func (g *TypedCodeGenerator) generateFieldAssignThroughRefPointer(stmt *semantic.TypedFieldAssignStmt, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Get the struct type from the ref pointer (either Ref<T> or MutRef<T>)
+	objectType := stmt.Object.GetType()
+	var elementType semantic.Type
+	if refType, ok := objectType.(semantic.RefPointerType); ok {
+		elementType = refType.ElementType
+	} else if mutRefType, ok := objectType.(semantic.MutRefPointerType); ok {
+		elementType = mutRefType.ElementType
+	} else {
+		return "", fmt.Errorf("expected Ref<T> or MutRef<T>, got %s", objectType.String())
+	}
+
+	structType, ok := elementType.(semantic.StructType)
+	if !ok {
+		return "", fmt.Errorf("field assignment through ref pointer requires struct type, got %s", elementType.String())
+	}
+
+	// Calculate the field byte offset within the struct (on heap, each field is 8 bytes)
+	fieldByteOffset := 0
+	var fieldType semantic.Type
+	for _, field := range structType.Fields {
+		if field.Name == stmt.Field {
+			fieldType = field.Type
+			break
+		}
+		fieldByteOffset += 8 // Each field is 8-byte aligned on heap
+	}
+
+	// Step 1: Generate the value expression (result in x2 or d0)
+	valueCode, err := g.generateExpr(stmt.Value, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(valueCode)
+
+	// Step 2: Save the value temporarily (we need x2 for loading the pointer)
+	if semantic.IsFloatType(fieldType) {
+		builder.WriteString("    str d0, [sp, #-16]!\n")
+	} else {
+		builder.WriteString("    str x2, [sp, #-16]!\n")
+	}
+
+	// Step 3: Generate the object expression (loads the pointer into x2)
+	objCode, err := g.generateExpr(stmt.Object, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(objCode)
+
+	// x2 now contains the heap pointer, move it to x4
+	builder.WriteString("    mov x4, x2\n")
+
+	// Step 4: Restore the value
+	if semantic.IsFloatType(fieldType) {
+		builder.WriteString("    ldr d0, [sp], #16\n")
+		// Store the value at [x4 + fieldByteOffset]
+		if fieldByteOffset == 0 {
+			builder.WriteString("    str d0, [x4]\n")
+		} else {
+			builder.WriteString(fmt.Sprintf("    str d0, [x4, #%d]\n", fieldByteOffset))
+		}
+	} else {
+		builder.WriteString("    ldr x2, [sp], #16\n")
+		// Store the value at [x4 + fieldByteOffset]
+		if fieldByteOffset == 0 {
+			builder.WriteString("    str x2, [x4]\n")
+		} else {
+			builder.WriteString(fmt.Sprintf("    str x2, [x4, #%d]\n", fieldByteOffset))
+		}
 	}
 
 	return builder.String(), nil
@@ -1082,6 +1308,17 @@ func (g *TypedCodeGenerator) getFieldType(object semantic.TypedExpression, field
 func (g *TypedCodeGenerator) generateReturnStmt(stmt *semantic.TypedReturnStmt, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
+	// Determine if we're returning an owned pointer variable (ownership transfer)
+	// In that case, we skip cleanup for that variable
+	skipVar := ""
+	if stmt.Value != nil {
+		if ident, ok := stmt.Value.(*semantic.TypedIdentifierExpr); ok {
+			if semantic.IsOwnedPointer(ident.Type) {
+				skipVar = ident.Name
+			}
+		}
+	}
+
 	// Check if we're returning a nullable type
 	isNullableReturn := semantic.IsNullable(stmt.ExpectedType)
 
@@ -1092,6 +1329,8 @@ func (g *TypedCodeGenerator) generateReturnStmt(stmt *semantic.TypedReturnStmt, 
 				// Returning null: set tag=0, value=0
 				EmitMoveImm(&builder, "x0", "0") // tag = 0 (null)
 				EmitMoveImm(&builder, "x1", "0") // value = 0
+				// Cleanup owned pointers before return
+				builder.WriteString(g.generateOwnedVarCleanup(ctx, skipVar))
 				EmitReturnEpilogue(&builder)
 				return builder.String(), nil
 			}
@@ -1110,6 +1349,8 @@ func (g *TypedCodeGenerator) generateReturnStmt(stmt *semantic.TypedReturnStmt, 
 					valueOffset := slot.Offset
 					builder.WriteString(fmt.Sprintf("    ldr x0, [x29, #-%d]\n", tagOffset))  // tag
 					builder.WriteString(fmt.Sprintf("    ldr x1, [x29, #-%d]\n", valueOffset)) // value
+					// Cleanup owned pointers before return
+					builder.WriteString(g.generateOwnedVarCleanup(ctx, skipVar))
 					EmitReturnEpilogue(&builder)
 					return builder.String(), nil
 				}
@@ -1139,6 +1380,9 @@ func (g *TypedCodeGenerator) generateReturnStmt(stmt *semantic.TypedReturnStmt, 
 			EmitMoveReg(&builder, "x0", "x2")
 		}
 	}
+
+	// Cleanup owned pointers before return
+	builder.WriteString(g.generateOwnedVarCleanup(ctx, skipVar))
 
 	EmitReturnEpilogue(&builder)
 	return builder.String(), nil
@@ -1395,6 +1639,9 @@ func (g *TypedCodeGenerator) generateExpr(expr semantic.TypedExpression, ctx *Ba
 	case *semantic.TypedWhenExpr:
 		// When expression: generate like a statement, result will be in x2
 		return g.generateWhenStmt(e, ctx)
+
+	case *semantic.TypedMethodCallExpr:
+		return g.generateMethodCallExpr(e, ctx)
 
 	default:
 		return "", fmt.Errorf("unsupported expression type: %T", expr)
@@ -2027,6 +2274,16 @@ func (g *TypedCodeGenerator) generateFieldAccess(expr *semantic.TypedFieldAccess
 		return builder.String(), nil
 	}
 
+	// Check if the object is an owned pointer (Own<T>) - requires heap dereference
+	if semantic.IsOwnedPointer(expr.Object.GetType()) {
+		return g.generateFieldAccessThroughOwnedPointer(expr, ctx)
+	}
+
+	// Check if the object is a reference pointer (Ref<T> or MutRef<T>) - requires heap dereference
+	if semantic.IsAnyRefPointer(expr.Object.GetType()) {
+		return g.generateFieldAccessThroughRefPointer(expr, ctx)
+	}
+
 	// Static case: struct at known stack location
 	fieldOffset, err := g.getFieldOffset(expr.Object, expr.Field, ctx)
 	if err != nil {
@@ -2053,8 +2310,113 @@ func (g *TypedCodeGenerator) generateFieldAccess(expr *semantic.TypedFieldAccess
 	return builder.String(), nil
 }
 
+// generateFieldAccessThroughOwnedPointer generates code for field access through Own<T>.
+// Loads the pointer from stack, then loads the field from the heap.
+func (g *TypedCodeGenerator) generateFieldAccessThroughOwnedPointer(expr *semantic.TypedFieldAccessExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Get the struct type from the owned pointer
+	ownedType := expr.Object.GetType().(semantic.OwnedPointerType)
+	structType, ok := ownedType.ElementType.(semantic.StructType)
+	if !ok {
+		return "", fmt.Errorf("field access through owned pointer requires struct type, got %s", ownedType.ElementType.String())
+	}
+
+	// Calculate the field byte offset within the struct (on heap, each field is 8 bytes)
+	fieldByteOffset := 0
+	for _, field := range structType.Fields {
+		if field.Name == expr.Field {
+			break
+		}
+		fieldByteOffset += 8 // Each field is 8-byte aligned on heap
+	}
+
+	// Generate the object expression (loads the pointer into x2)
+	objCode, err := g.generateExpr(expr.Object, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(objCode)
+
+	// x2 now contains the heap pointer
+	// Load the field value from [x2 + fieldByteOffset]
+	if semantic.IsFloatType(expr.Type) {
+		if fieldByteOffset == 0 {
+			builder.WriteString("    ldr d0, [x2]\n")
+		} else {
+			builder.WriteString(fmt.Sprintf("    ldr d0, [x2, #%d]\n", fieldByteOffset))
+		}
+	} else {
+		if fieldByteOffset == 0 {
+			builder.WriteString("    ldr x2, [x2]\n")
+		} else {
+			builder.WriteString(fmt.Sprintf("    ldr x2, [x2, #%d]\n", fieldByteOffset))
+		}
+	}
+
+	return builder.String(), nil
+}
+
+// generateFieldAccessThroughRefPointer generates code for field access through Ref<T>/MutRef<T>.
+// Loads the pointer from stack, then loads the field from the heap.
+// Very similar to generateFieldAccessThroughOwnedPointer since both are heap pointers.
+func (g *TypedCodeGenerator) generateFieldAccessThroughRefPointer(expr *semantic.TypedFieldAccessExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Get the struct type from the ref pointer (either Ref<T> or MutRef<T>)
+	objectType := expr.Object.GetType()
+	var elementType semantic.Type
+	if refType, ok := objectType.(semantic.RefPointerType); ok {
+		elementType = refType.ElementType
+	} else if mutRefType, ok := objectType.(semantic.MutRefPointerType); ok {
+		elementType = mutRefType.ElementType
+	} else {
+		return "", fmt.Errorf("expected Ref<T> or MutRef<T>, got %s", objectType.String())
+	}
+
+	structType, ok := elementType.(semantic.StructType)
+	if !ok {
+		return "", fmt.Errorf("field access through ref pointer requires struct type, got %s", elementType.String())
+	}
+
+	// Calculate the field byte offset within the struct (on heap, each field is 8 bytes)
+	fieldByteOffset := 0
+	for _, field := range structType.Fields {
+		if field.Name == expr.Field {
+			break
+		}
+		fieldByteOffset += 8 // Each field is 8-byte aligned on heap
+	}
+
+	// Generate the object expression (loads the pointer into x2)
+	objCode, err := g.generateExpr(expr.Object, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(objCode)
+
+	// x2 now contains the heap pointer
+	// Load the field value from [x2 + fieldByteOffset]
+	if semantic.IsFloatType(expr.Type) {
+		if fieldByteOffset == 0 {
+			builder.WriteString("    ldr d0, [x2]\n")
+		} else {
+			builder.WriteString(fmt.Sprintf("    ldr d0, [x2, #%d]\n", fieldByteOffset))
+		}
+	} else {
+		if fieldByteOffset == 0 {
+			builder.WriteString("    ldr x2, [x2]\n")
+		} else {
+			builder.WriteString(fmt.Sprintf("    ldr x2, [x2, #%d]\n", fieldByteOffset))
+		}
+	}
+
+	return builder.String(), nil
+}
+
 // generateSafeCallExpr generates code for safe call expression (e.g., person?.address)
 // If object is null, returns null; otherwise returns the field value
+// Result: x2 = value, x3 = tag (1 = not null, 0 = null) for primitive nullable results
 func (g *TypedCodeGenerator) generateSafeCallExpr(expr *semantic.TypedSafeCallExpr, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
@@ -2064,6 +2426,12 @@ func (g *TypedCodeGenerator) generateSafeCallExpr(expr *semantic.TypedSafeCallEx
 
 	// Check if the inner type is a reference type (uses null pointer) or primitive (uses tagged union)
 	isRef := semantic.IsReferenceType(expr.InnerType)
+
+	// Check if the RESULT type is a primitive nullable (needs tag in x3)
+	resultIsRefNullable := false
+	if nullableResult, ok := expr.Type.(semantic.NullableType); ok {
+		resultIsRefNullable = semantic.IsReferenceType(nullableResult.InnerType)
+	}
 
 	// Generate the object expression
 	objCode, err := g.generateExpr(expr.Object, ctx)
@@ -2079,11 +2447,19 @@ func (g *TypedCodeGenerator) generateSafeCallExpr(expr *semantic.TypedSafeCallEx
 
 		// Not null: load the field from the struct
 		builder.WriteString(fmt.Sprintf("    ldr x2, [x2, #%d]\n", expr.FieldOffset))
+		if !resultIsRefNullable {
+			// Result is primitive nullable - set tag = 1 (not null)
+			EmitMoveImm(&builder, "x3", "1")
+		}
 		builder.WriteString(fmt.Sprintf("    b %s\n", doneLabel))
 
 		// Null path: x2 is already 0
 		builder.WriteString(fmt.Sprintf("%s:\n", nullLabel))
 		// x2 already contains 0 (null)
+		if !resultIsRefNullable {
+			// Result is primitive nullable - set tag = 0 (null)
+			EmitMoveImm(&builder, "x3", "0")
+		}
 
 		builder.WriteString(fmt.Sprintf("%s:\n", doneLabel))
 	} else {
@@ -2106,11 +2482,13 @@ func (g *TypedCodeGenerator) generateSafeCallExpr(expr *semantic.TypedSafeCallEx
 			builder.WriteString(fmt.Sprintf("    ldr x2, [x29, #-%d]\n", slot.Offset))
 			// Load the field from the struct
 			builder.WriteString(fmt.Sprintf("    ldr x2, [x2, #%d]\n", expr.FieldOffset))
+			// x3 already has tag = 1 from loading above
 			builder.WriteString(fmt.Sprintf("    b %s\n", doneLabel))
 
 			// Null path
 			builder.WriteString(fmt.Sprintf("%s:\n", nullLabel))
 			EmitMoveImm(&builder, "x2", "0")
+			// x3 already has tag = 0 from loading above
 
 			builder.WriteString(fmt.Sprintf("%s:\n", doneLabel))
 		} else {
@@ -2327,6 +2705,8 @@ func (g *TypedCodeGenerator) generateBuiltinCall(call *semantic.TypedCallExpr, c
 		return g.generateExitBuiltin(call, ctx)
 	case "print":
 		return g.generatePrintBuiltin(call, ctx)
+	case "sleep":
+		return g.generateSleepBuiltin(call, ctx)
 	default:
 		return "", fmt.Errorf("unknown built-in function: %s", call.Name)
 	}
@@ -2423,6 +2803,58 @@ func (g *TypedCodeGenerator) generatePrintBuiltin(call *semantic.TypedCallExpr, 
 	return builder.String(), nil
 }
 
+func (g *TypedCodeGenerator) generateSleepBuiltin(call *semantic.TypedCallExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Generate the nanoseconds argument - result in x2
+	if len(call.Arguments) > 0 {
+		code, err := g.generateExpr(call.Arguments[0], ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+	}
+
+	builder.WriteString("    // sleep builtin - x2 has nanoseconds\n")
+
+	// Allocate timeval struct on stack (16 bytes: tv_sec + tv_usec)
+	builder.WriteString("    sub sp, sp, #16\n")
+
+	// Save nanoseconds to a safe register
+	builder.WriteString("    mov x10, x2\n")
+
+	// Load 1,000,000,000 for division to get seconds
+	// 1,000,000,000 = 0x3B9ACA00
+	builder.WriteString("    mov x11, #0xCA00\n")
+	builder.WriteString("    movk x11, #0x3B9A, lsl #16\n")
+
+	// tv_sec = ns / 1,000,000,000
+	builder.WriteString("    sdiv x12, x10, x11\n")
+	builder.WriteString("    str x12, [sp]\n")
+
+	// remainder = ns % 1,000,000,000 (ns - sec * 1B)
+	builder.WriteString("    msub x13, x12, x11, x10\n")
+
+	// tv_usec = remainder / 1000 (convert ns remainder to microseconds)
+	builder.WriteString("    mov x11, #1000\n")
+	builder.WriteString("    sdiv x13, x13, x11\n")
+	builder.WriteString("    str x13, [sp, #8]\n")
+
+	// Call select(0, NULL, NULL, NULL, &timeval)
+	builder.WriteString("    mov x0, #0\n")
+	builder.WriteString("    mov x1, #0\n")
+	builder.WriteString("    mov x2, #0\n")
+	builder.WriteString("    mov x3, #0\n")
+	builder.WriteString("    mov x4, sp\n")
+	builder.WriteString("    mov x16, #93\n") // SYS_select
+	builder.WriteString("    svc #0x80\n")
+
+	// Clean up stack
+	builder.WriteString("    add sp, sp, #16\n")
+
+	return builder.String(), nil
+}
+
 // generateWhenStmt generates ARM64 code for a when expression/statement
 // Form: when { cond -> body, ... }
 func (g *TypedCodeGenerator) generateWhenStmt(when *semantic.TypedWhenExpr, ctx *BaseContext) (string, error) {
@@ -2488,4 +2920,492 @@ func (g *TypedCodeGenerator) generateWhenCaseBody(body semantic.TypedStatement, 
 	default:
 		return g.generateStmt(body, ctx)
 	}
+}
+
+// ============================================================================
+// Heap Allocation (Own<T> pointers)
+// ============================================================================
+
+// generateMethodCallExpr generates code for method call expressions.
+// Currently supports:
+// - Heap.new(expr) - allocates memory on the heap and returns Own<T>
+// - p.copy() - creates a deep copy of an owned pointer (Phase 9)
+func (g *TypedCodeGenerator) generateMethodCallExpr(expr *semantic.TypedMethodCallExpr, ctx *BaseContext) (string, error) {
+	// Check if this is a Heap.new() call
+	if ident, ok := expr.Object.(*semantic.TypedIdentifierExpr); ok {
+		if ident.Name == "Heap" && expr.Method == "new" {
+			return g.generateHeapNew(expr, ctx)
+		}
+	}
+
+	// Check if this is a .copy() call on an owned pointer
+	if expr.Method == "copy" {
+		return g.generateCopy(expr, ctx)
+	}
+
+	return "", fmt.Errorf("unsupported method call: %s.%s", expr.Object.GetType().String(), expr.Method)
+}
+
+// generateHeapNew generates code for Heap.new(expr).
+// This allocates memory using mmap and stores the value at the allocated address.
+// Result: pointer in x2
+func (g *TypedCodeGenerator) generateHeapNew(expr *semantic.TypedMethodCallExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	if len(expr.Arguments) != 1 {
+		return "", fmt.Errorf("Heap.new() expects exactly 1 argument, got %d", len(expr.Arguments))
+	}
+
+	arg := expr.Arguments[0]
+	argType := arg.GetType()
+
+	// Calculate allocation size based on the type
+	allocSize := g.calculateHeapAllocSize(argType)
+
+	// For struct types, we need to handle them specially
+	if structType, isStruct := argType.(semantic.StructType); isStruct {
+		return g.generateHeapNewStruct(expr, structType, allocSize, ctx)
+	}
+
+	// For primitive types: generate value, allocate, store, return pointer
+
+	// Step 1: Generate the value expression (result in x2 or d0)
+	valueCode, err := g.generateExpr(arg, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(valueCode)
+
+	// Step 2: Save the value to stack temporarily (we need x0-x5 for mmap)
+	if semantic.IsFloatType(argType) {
+		builder.WriteString("    str d0, [sp, #-16]!\n")
+	} else {
+		builder.WriteString("    str x2, [sp, #-16]!\n")
+	}
+
+	// Step 3: Call mmap to allocate memory
+	builder.WriteString(g.emitMmapAlloc(allocSize))
+
+	// x0 now contains the allocated pointer (or error if negative)
+	// Move pointer to x4 for safekeeping
+	builder.WriteString("    mov x4, x0\n")
+
+	// Step 4: Restore the value from stack
+	if semantic.IsFloatType(argType) {
+		builder.WriteString("    ldr d0, [sp], #16\n")
+		// Store float value at allocated address
+		builder.WriteString("    str d0, [x4]\n")
+	} else {
+		builder.WriteString("    ldr x2, [sp], #16\n")
+		// Store value at allocated address
+		builder.WriteString("    str x2, [x4]\n")
+	}
+
+	// Step 5: Return the pointer in x2
+	builder.WriteString("    mov x2, x4\n")
+
+	return builder.String(), nil
+}
+
+// generateHeapNewStruct generates code for Heap.new(StructLiteral).
+// Allocates memory for the struct and stores all fields.
+func (g *TypedCodeGenerator) generateHeapNewStruct(expr *semantic.TypedMethodCallExpr, structType semantic.StructType, allocSize int, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	arg := expr.Arguments[0]
+	structLit, ok := arg.(*semantic.TypedStructLiteralExpr)
+	if !ok {
+		return "", fmt.Errorf("Heap.new() with struct type requires struct literal, got %T", arg)
+	}
+
+	// Step 1: Call mmap to allocate memory first
+	builder.WriteString(g.emitMmapAlloc(allocSize))
+
+	// x0 now contains the allocated pointer
+	// Save it to a callee-saved register or stack
+	builder.WriteString("    str x0, [sp, #-16]!\n") // save pointer
+
+	// Step 2: Generate and store each field
+	currentOffset := 0
+	for i, fieldArg := range structLit.Args {
+		fieldType := structType.Fields[i].Type
+
+		// Check if this field is an owned pointer being moved into the struct
+		// If so, mark it as moved so it won't be freed at scope exit
+		if ident, isIdent := fieldArg.(*semantic.TypedIdentifierExpr); isIdent {
+			if semantic.IsOwnedPointer(ident.Type) || semantic.IsNullableOwnedPointer(ident.Type) {
+				ctx.MarkOwnedVarMoved(ident.Name)
+			}
+		}
+
+		// Generate the field value
+		fieldCode, err := g.generateExpr(fieldArg, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(fieldCode)
+
+		// Load the base pointer back (it might have been clobbered)
+		builder.WriteString("    ldr x4, [sp]\n")
+
+		// Store the field value at the correct offset
+		if semantic.IsFloatType(fieldType) {
+			builder.WriteString(fmt.Sprintf("    str d0, [x4, #%d]\n", currentOffset))
+			currentOffset += 8
+		} else {
+			builder.WriteString(fmt.Sprintf("    str x2, [x4, #%d]\n", currentOffset))
+			currentOffset += 8 // All fields are 8-byte aligned on heap
+		}
+	}
+
+	// Step 3: Restore the pointer and return it in x2
+	builder.WriteString("    ldr x2, [sp], #16\n")
+
+	return builder.String(), nil
+}
+
+// calculateHeapAllocSize returns the number of bytes to allocate for a type on the heap.
+// For structs, each field uses 8 bytes (pointer-aligned).
+// Minimum allocation is 16 bytes for page alignment purposes.
+func (g *TypedCodeGenerator) calculateHeapAllocSize(t semantic.Type) int {
+	switch tt := t.(type) {
+	case semantic.StructType:
+		// Each field is 8 bytes on heap (pointer-aligned)
+		size := len(tt.Fields) * 8
+		// Minimum allocation size
+		if size < 16 {
+			return 16
+		}
+		// Round up to 16-byte alignment
+		return (size + 15) & ^15
+	default:
+		// Primitives: allocate 16 bytes (minimum for alignment)
+		return 16
+	}
+}
+
+// emitMmapAlloc generates ARM64 code to allocate memory using the bump allocator.
+// Returns the assembly code as a string.
+// After execution, x0 contains the allocated pointer.
+func (g *TypedCodeGenerator) emitMmapAlloc(size int) string {
+	var builder strings.Builder
+
+	// Call the bump allocator runtime function
+	// Input: x0 = size
+	// Output: x0 = allocated pointer
+	builder.WriteString(fmt.Sprintf("    // allocate %d bytes\n", size))
+	builder.WriteString(fmt.Sprintf("    mov x0, #%d\n", size))
+	builder.WriteString("    bl _sl_alloc\n")
+	builder.WriteString("    // x0 now contains allocated pointer\n")
+
+	return builder.String()
+}
+
+// emitMunmap generates ARM64 code to deallocate memory using the bump allocator free list.
+// ptrOffset is the stack offset where the pointer is stored.
+// size is the allocation size to free.
+func (g *TypedCodeGenerator) emitMunmap(ptrOffset int, size int) string {
+	var builder strings.Builder
+
+	// Call the bump allocator free function
+	// Input: x0 = pointer, x1 = size
+	builder.WriteString(fmt.Sprintf("    // free %d bytes\n", size))
+	builder.WriteString(fmt.Sprintf("    ldr x0, [x29, #-%d]\n", ptrOffset)) // load pointer
+	builder.WriteString(fmt.Sprintf("    mov x1, #%d\n", size))               // size
+	builder.WriteString("    bl _sl_free\n")
+
+	return builder.String()
+}
+
+// generateOwnedVarCleanup generates munmap calls for all owned pointer variables.
+// Variables are freed in reverse declaration order (LIFO).
+// skipVar is the name of a variable to skip (e.g., when returning it).
+func (g *TypedCodeGenerator) generateOwnedVarCleanup(ctx *BaseContext, skipVar string) string {
+	var builder strings.Builder
+
+	ownedVars := ctx.GetOwnedVars()
+	if len(ownedVars) == 0 {
+		return ""
+	}
+
+	// Count how many variables we'll actually clean up
+	cleanupCount := 0
+	for _, v := range ownedVars {
+		if v.Name != "" && v.Name != skipVar {
+			cleanupCount++
+		}
+	}
+	if cleanupCount == 0 {
+		return ""
+	}
+
+	builder.WriteString("    // cleanup owned pointers\n")
+	// Save x0 (return value) before cleanup - munmap uses x0 for address
+	builder.WriteString("    mov x9, x0\n")
+
+	// Free in reverse order (LIFO)
+	for i := len(ownedVars) - 1; i >= 0; i-- {
+		v := ownedVars[i]
+		// Skip empty names (moved variables) and the skip variable
+		if v.Name == "" || v.Name == skipVar {
+			continue
+		}
+		builder.WriteString(g.emitMunmap(v.Offset, v.AllocSize))
+	}
+
+	// Restore x0 (return value) after cleanup
+	builder.WriteString("    mov x0, x9\n")
+
+	return builder.String()
+}
+
+// ============================================================================
+// Deep Copy (Own<T>.copy())
+// ============================================================================
+
+// generateCopy generates code for p.copy() on an owned pointer.
+// This creates a new allocation and deep copies the value.
+// Result: new pointer in x2
+func (g *TypedCodeGenerator) generateCopy(expr *semantic.TypedMethodCallExpr, ctx *BaseContext) (string, error) {
+	var builder strings.Builder
+
+	// Get the owned pointer type
+	ownedType, ok := expr.Object.GetType().(semantic.OwnedPointerType)
+	if !ok {
+		return "", fmt.Errorf(".copy() called on non-owned type: %s", expr.Object.GetType().String())
+	}
+
+	elementType := ownedType.ElementType
+
+	// Step 1: Generate the source pointer expression (result in x2)
+	sourceCode, err := g.generateExpr(expr.Object, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(sourceCode)
+
+	// Step 2: Save source pointer to stack (we need registers for mmap)
+	builder.WriteString("    // copy: save source pointer\n")
+	builder.WriteString("    str x2, [sp, #-16]!\n")
+
+	// Step 3: Calculate allocation size and allocate new memory
+	allocSize := g.calculateHeapAllocSize(elementType)
+	builder.WriteString(g.emitMmapAlloc(allocSize))
+
+	// x0 now contains the new pointer
+	// Save new pointer to x4
+	builder.WriteString("    mov x4, x0\n")
+
+	// Step 4: Restore source pointer to x5
+	builder.WriteString("    ldr x5, [sp], #16\n")
+
+	// Step 5: Copy the data based on element type
+	if structType, isStruct := elementType.(semantic.StructType); isStruct {
+		// Copy struct fields
+		copyCode, err := g.generateCopyStructFields(structType, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(copyCode)
+	} else {
+		// Copy primitive value (single 8-byte value)
+		builder.WriteString("    // copy: copy primitive value\n")
+		if semantic.IsFloatType(elementType) {
+			builder.WriteString("    ldr d0, [x5]\n")
+			builder.WriteString("    str d0, [x4]\n")
+		} else {
+			builder.WriteString("    ldr x6, [x5]\n")
+			builder.WriteString("    str x6, [x4]\n")
+		}
+	}
+
+	// Step 6: Return new pointer in x2
+	builder.WriteString("    mov x2, x4\n")
+
+	return builder.String(), nil
+}
+
+// generateCopyStructFields generates code to copy struct fields from x5 (source) to x4 (dest).
+// For fields containing Own<T>, it recursively deep copies them.
+func (g *TypedCodeGenerator) generateCopyStructFields(structType semantic.StructType, ctx *BaseContext) (string, error) {
+	var builder strings.Builder
+
+	builder.WriteString("    // copy: copy struct fields\n")
+
+	currentOffset := 0
+	for _, field := range structType.Fields {
+		// Check if this field contains an owned pointer that needs deep copy
+		if ownedField, isOwned := field.Type.(semantic.OwnedPointerType); isOwned {
+			// Deep copy: recursively copy the owned pointer
+			deepCopyCode, err := g.generateDeepCopyOwnedField(ownedField, currentOffset, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(deepCopyCode)
+		} else if nullableType, isNullable := field.Type.(semantic.NullableType); isNullable {
+			// Check if nullable wraps an owned pointer: Own<T>?
+			if ownedField, isOwned := nullableType.InnerType.(semantic.OwnedPointerType); isOwned {
+				// Deep copy nullable owned pointer (null-safe)
+				deepCopyCode, err := g.generateDeepCopyNullableOwnedField(ownedField, currentOffset, ctx)
+				if err != nil {
+					return "", err
+				}
+				builder.WriteString(deepCopyCode)
+			} else {
+				// Shallow copy: other nullable types
+				builder.WriteString(fmt.Sprintf("    ldr x6, [x5, #%d]\n", currentOffset))
+				builder.WriteString(fmt.Sprintf("    str x6, [x4, #%d]\n", currentOffset))
+			}
+		} else if semantic.IsFloatType(field.Type) {
+			// Shallow copy: copy float value directly
+			builder.WriteString(fmt.Sprintf("    ldr d0, [x5, #%d]\n", currentOffset))
+			builder.WriteString(fmt.Sprintf("    str d0, [x4, #%d]\n", currentOffset))
+		} else {
+			// Shallow copy: copy integer/boolean/pointer value directly
+			builder.WriteString(fmt.Sprintf("    ldr x6, [x5, #%d]\n", currentOffset))
+			builder.WriteString(fmt.Sprintf("    str x6, [x4, #%d]\n", currentOffset))
+		}
+		currentOffset += 8 // all fields are 8-byte aligned
+	}
+
+	return builder.String(), nil
+}
+
+// generateDeepCopyOwnedField generates code to deep copy an Own<T> field.
+// Source struct is at x5, dest struct is at x4.
+// The field is at the given offset in both structs.
+func (g *TypedCodeGenerator) generateDeepCopyOwnedField(ownedType semantic.OwnedPointerType, fieldOffset int, ctx *BaseContext) (string, error) {
+	var builder strings.Builder
+
+	elementType := ownedType.ElementType
+	allocSize := g.calculateHeapAllocSize(elementType)
+
+	builder.WriteString(fmt.Sprintf("    // deep copy: Own<%s> field at offset %d\n", elementType.String(), fieldOffset))
+
+	// Save x4 (dest struct ptr) and x5 (source struct ptr) to stack
+	builder.WriteString("    stp x4, x5, [sp, #-16]!\n")
+
+	// Load the source owned pointer (the pointer stored in the source struct field)
+	builder.WriteString(fmt.Sprintf("    ldr x5, [x5, #%d]\n", fieldOffset))
+	// Save source inner pointer to stack
+	builder.WriteString("    str x5, [sp, #-16]!\n")
+
+	// Allocate new memory for the nested value
+	builder.WriteString(g.emitMmapAlloc(allocSize))
+
+	// x0 = new nested pointer
+	builder.WriteString("    mov x4, x0\n")
+
+	// Restore source inner pointer to x5
+	builder.WriteString("    ldr x5, [sp], #16\n")
+
+	// Copy the nested value
+	if nestedStruct, isStruct := elementType.(semantic.StructType); isStruct {
+		copyCode, err := g.generateCopyStructFields(nestedStruct, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(copyCode)
+	} else {
+		// Copy primitive
+		if semantic.IsFloatType(elementType) {
+			builder.WriteString("    ldr d0, [x5]\n")
+			builder.WriteString("    str d0, [x4]\n")
+		} else {
+			builder.WriteString("    ldr x6, [x5]\n")
+			builder.WriteString("    str x6, [x4]\n")
+		}
+	}
+
+	// x4 now contains the new nested pointer
+	// Save it temporarily
+	builder.WriteString("    mov x6, x4\n")
+
+	// Restore dest struct ptr (x4) and source struct ptr (x5)
+	builder.WriteString("    ldp x4, x5, [sp], #16\n")
+
+	// Store the new nested pointer into the dest struct field
+	builder.WriteString(fmt.Sprintf("    str x6, [x4, #%d]\n", fieldOffset))
+
+	return builder.String(), nil
+}
+
+// generateDeepCopyNullableOwnedField generates code to deep copy an Own<T>? field.
+// Source struct is at x5, dest struct is at x4.
+// If the source field is null, copies null. Otherwise deep copies the owned pointer.
+func (g *TypedCodeGenerator) generateDeepCopyNullableOwnedField(ownedType semantic.OwnedPointerType, fieldOffset int, ctx *BaseContext) (string, error) {
+	var builder strings.Builder
+
+	elementType := ownedType.ElementType
+	allocSize := g.calculateHeapAllocSize(elementType)
+
+	// Generate unique labels for this copy operation
+	labelID := ctx.NextLabelID()
+	nullLabel := fmt.Sprintf("_copy_null_%d", labelID)
+	doneLabel := fmt.Sprintf("_copy_done_%d", labelID)
+
+	builder.WriteString(fmt.Sprintf("    // deep copy: Own<%s>? field at offset %d\n", elementType.String(), fieldOffset))
+
+	// Load source field value
+	builder.WriteString(fmt.Sprintf("    ldr x6, [x5, #%d]\n", fieldOffset))
+
+	// Check if null
+	builder.WriteString(fmt.Sprintf("    cbz x6, %s\n", nullLabel))
+
+	// Not null - deep copy the owned pointer
+	// Save x4 (dest struct ptr) and x5 (source struct ptr) to stack
+	builder.WriteString("    stp x4, x5, [sp, #-16]!\n")
+
+	// x6 contains the source owned pointer, move to x5 for recursive copy
+	builder.WriteString("    mov x5, x6\n")
+	// Save source inner pointer to stack
+	builder.WriteString("    str x5, [sp, #-16]!\n")
+
+	// Allocate new memory for the nested value
+	builder.WriteString(g.emitMmapAlloc(allocSize))
+
+	// x0 = new nested pointer
+	builder.WriteString("    mov x4, x0\n")
+
+	// Restore source inner pointer to x5
+	builder.WriteString("    ldr x5, [sp], #16\n")
+
+	// Copy the nested value
+	if nestedStruct, isStruct := elementType.(semantic.StructType); isStruct {
+		copyCode, err := g.generateCopyStructFields(nestedStruct, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(copyCode)
+	} else {
+		// Copy primitive
+		if semantic.IsFloatType(elementType) {
+			builder.WriteString("    ldr d0, [x5]\n")
+			builder.WriteString("    str d0, [x4]\n")
+		} else {
+			builder.WriteString("    ldr x6, [x5]\n")
+			builder.WriteString("    str x6, [x4]\n")
+		}
+	}
+
+	// x4 now contains the new nested pointer
+	// Save it temporarily
+	builder.WriteString("    mov x6, x4\n")
+
+	// Restore dest struct ptr (x4) and source struct ptr (x5)
+	builder.WriteString("    ldp x4, x5, [sp], #16\n")
+
+	// Store the new nested pointer into the dest struct field
+	builder.WriteString(fmt.Sprintf("    str x6, [x4, #%d]\n", fieldOffset))
+
+	// Jump to done
+	builder.WriteString(fmt.Sprintf("    b %s\n", doneLabel))
+
+	// Null case - just store null
+	builder.WriteString(fmt.Sprintf("%s:\n", nullLabel))
+	builder.WriteString(fmt.Sprintf("    str xzr, [x4, #%d]\n", fieldOffset))
+
+	builder.WriteString(fmt.Sprintf("%s:\n", doneLabel))
+
+	return builder.String(), nil
 }

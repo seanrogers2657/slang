@@ -168,6 +168,10 @@ func (at *analyzerTest) withScope() *analyzerTest {
 
 func (at *analyzerTest) declare(name string, typ Type, mutable bool) *analyzerTest {
 	at.analyzer.currentScope.declare(name, typ, mutable)
+	// Also track ownership for move-only types
+	if IsMoveOnly(typ) {
+		at.analyzer.ownershipScope.declare(name, typ)
+	}
 	return at
 }
 
@@ -232,6 +236,18 @@ func param(name string, typeName string) ast.Parameter {
 		Colon:    pos(1, 2),
 		TypeName: typeName,
 		TypePos:  pos(1, 4),
+	}
+}
+
+func varParam(name string, typeName string) ast.Parameter {
+	return ast.Parameter{
+		Mutable:  true,
+		VarPos:   pos(1, 1),
+		Name:     name,
+		NamePos:  pos(1, 5),
+		Colon:    pos(1, 6),
+		TypeName: typeName,
+		TypePos:  pos(1, 8),
 	}
 }
 
@@ -352,10 +368,109 @@ func whileStmt(cond ast.Expression, stmts ...ast.Statement) *ast.WhileStmt {
 	}
 }
 
+func forStmt(init ast.Statement, cond ast.Expression, update ast.Statement, stmts ...ast.Statement) *ast.ForStmt {
+	return &ast.ForStmt{
+		ForKeyword: pos(1, 1),
+		HasParens:  false,
+		Init:       init,
+		Condition:  cond,
+		Update:     update,
+		Body: &ast.BlockStmt{
+			LeftBrace:  pos(1, 10),
+			Statements: stmts,
+			RightBrace: pos(1, 20),
+		},
+	}
+}
+
 func breakStmt() *ast.BreakStmt {
 	return &ast.BreakStmt{Keyword: pos(1, 1)}
 }
 
 func continueStmt() *ast.ContinueStmt {
 	return &ast.ContinueStmt{Keyword: pos(1, 1)}
+}
+
+func methodCallExpr(object ast.Expression, method string, args ...ast.Expression) *ast.MethodCallExpr {
+	return &ast.MethodCallExpr{
+		Object:     object,
+		Dot:        pos(1, 5),
+		Method:     method,
+		MethodPos:  pos(1, 6),
+		LeftParen:  pos(1, 10),
+		Arguments:  args,
+		RightParen: pos(1, 15),
+	}
+}
+
+func structDecl(name string, fields ...ast.StructField) *ast.StructDecl {
+	return &ast.StructDecl{
+		Name:          name,
+		NamePos:       pos(1, 1),
+		EqualsPos:     pos(1, 3),
+		StructKeyword: pos(1, 5),
+		LeftBrace:     pos(1, 12),
+		Fields:        fields,
+		RightBrace:    pos(1, 30),
+	}
+}
+
+func structField(name string, typeName string, mutable bool) ast.StructField {
+	return ast.StructField{
+		Mutable:    mutable,
+		KeywordPos: pos(1, 1),
+		Name:       name,
+		NamePos:    pos(1, 5),
+		Colon:      pos(1, 6),
+		TypeName:   typeName,
+		TypePos:    pos(1, 8),
+	}
+}
+
+func structLiteral(name string, args ...ast.Expression) *ast.StructLiteral {
+	return &ast.StructLiteral{
+		Name:       name,
+		NamePos:    pos(1, 1),
+		LeftBrace:  pos(1, 6),
+		Arguments:  args,
+		RightBrace: pos(1, 15),
+	}
+}
+
+func fieldAccessExpr(object ast.Expression, field string) *ast.FieldAccessExpr {
+	return &ast.FieldAccessExpr{
+		Object:   object,
+		Dot:      pos(1, 3),
+		Field:    field,
+		FieldPos: pos(1, 4),
+	}
+}
+
+func fieldAssignStmt(object ast.Expression, field string, value ast.Expression) *ast.FieldAssignStmt {
+	return &ast.FieldAssignStmt{
+		Object:   object,
+		Dot:      pos(1, 3),
+		Field:    field,
+		FieldPos: pos(1, 4),
+		Equals:   pos(1, 6),
+		Value:    value,
+	}
+}
+
+// withStruct registers a struct type with the analyzer
+func (at *analyzerTest) withStruct(name string, fields ...StructFieldInfo) *analyzerTest {
+	at.analyzer.structs[name] = StructType{
+		Name:   name,
+		Fields: fields,
+	}
+	return at
+}
+
+// programWithDecls creates a program with mixed declarations
+func programWithDecls(decls ...ast.Declaration) *ast.Program {
+	return &ast.Program{
+		Declarations: decls,
+		StartPos:     pos(1, 1),
+		EndPos:       pos(1, 1),
+	}
 }

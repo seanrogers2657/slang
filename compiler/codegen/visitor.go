@@ -213,6 +213,21 @@ func (info *ProgramInfo) collectFromTypedExpr(expr semantic.TypedExpression, flo
 			info.collectFromTypedStatement(wcase.Body, floatIdx, stringIdx)
 		}
 
+	case *semantic.TypedMethodCallExpr:
+		// Method call: collect from object and arguments
+		if e.Object != nil {
+			info.collectFromTypedExpr(e.Object, floatIdx, stringIdx)
+		}
+		for _, arg := range e.Arguments {
+			info.collectFromTypedExpr(arg, floatIdx, stringIdx)
+		}
+
+	case *semantic.TypedSafeCallExpr:
+		// Safe call: collect from object
+		if e.Object != nil {
+			info.collectFromTypedExpr(e.Object, floatIdx, stringIdx)
+		}
+
 	default:
 		// Unknown expression type - panic to catch missing cases during development
 		panic(fmt.Sprintf("collectFromTypedExpr: unhandled expression type %T", expr))

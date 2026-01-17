@@ -73,6 +73,7 @@ type Analyzer struct {
 	filename          string
 	errors            []*errors.CompilerError
 	currentScope      *Scope
+	ownershipScope    *OwnershipScope         // tracks ownership state for move semantics
 	functions         map[string]FunctionInfo // function registry
 	structs           map[string]StructType   // struct registry
 	currentReturnType Type                    // return type of current function being analyzed
@@ -84,7 +85,8 @@ func NewAnalyzer(filename string) *Analyzer {
 	return &Analyzer{
 		filename:          filename,
 		errors:            make([]*errors.CompilerError, 0),
-		currentScope:      newScope(nil), // global scope
+		currentScope:      newScope(nil),           // global scope
+		ownershipScope:    newOwnershipScope(nil),  // global ownership scope
 		functions:         make(map[string]FunctionInfo),
 		structs:           make(map[string]StructType),
 		currentReturnType: nil,
@@ -94,12 +96,78 @@ func NewAnalyzer(filename string) *Analyzer {
 // enterScope creates a new nested scope
 func (a *Analyzer) enterScope() {
 	a.currentScope = newScope(a.currentScope)
+	a.ownershipScope = newOwnershipScope(a.ownershipScope)
 }
 
 // exitScope returns to the parent scope
 func (a *Analyzer) exitScope() {
 	if a.currentScope.parent != nil {
 		a.currentScope = a.currentScope.parent
+	}
+	if a.ownershipScope.parent != nil {
+		a.ownershipScope = a.ownershipScope.parent
+	}
+}
+
+// moveRecord tracks a variable that was moved in a branch
+type moveRecord struct {
+	name     string
+	moveInfo MoveInfo
+}
+
+// snapshotOwnershipState captures the current ownership state of all tracked variables
+func (a *Analyzer) snapshotOwnershipState() map[string]OwnershipInfo {
+	snapshot := make(map[string]OwnershipInfo)
+	for scope := a.ownershipScope; scope != nil; scope = scope.parent {
+		for name, info := range scope.ownership {
+			// Don't overwrite - inner scope takes precedence
+			if _, exists := snapshot[name]; !exists {
+				snapshot[name] = info
+			}
+		}
+	}
+	return snapshot
+}
+
+// collectBranchMoves returns variables that were moved since the snapshot was taken
+func (a *Analyzer) collectBranchMoves(beforeSnapshot map[string]OwnershipInfo) []moveRecord {
+	var moves []moveRecord
+
+	// Check all scopes for moved variables
+	for scope := a.ownershipScope; scope != nil; scope = scope.parent {
+		for name, info := range scope.ownership {
+			if info.State == StateMoved {
+				// Was it owned before?
+				if before, existed := beforeSnapshot[name]; existed && before.State == StateOwned {
+					moves = append(moves, moveRecord{
+						name:     name,
+						moveInfo: info.MoveInfo,
+					})
+				}
+			}
+		}
+	}
+
+	return moves
+}
+
+// mergeConditionalMoves marks variables as moved if they were moved in any branch
+func (a *Analyzer) mergeConditionalMoves(thenMoves, elseMoves []moveRecord) {
+	// Combine all moves from both branches
+	allMoves := make(map[string]MoveInfo)
+	for _, m := range thenMoves {
+		allMoves[m.name] = m.moveInfo
+	}
+	for _, m := range elseMoves {
+		// If already moved in then branch, keep that info
+		if _, exists := allMoves[m.name]; !exists {
+			allMoves[m.name] = m.moveInfo
+		}
+	}
+
+	// Mark each variable as moved in the current ownership scope
+	for name, moveInfo := range allMoves {
+		a.ownershipScope.markMoved(name, moveInfo.MovedTo, moveInfo.Location)
 	}
 }
 
@@ -114,14 +182,21 @@ func (a *Analyzer) Analyze(program *ast.Program) ([]*errors.CompilerError, *Type
 
 	// Handle declaration-based programs
 	if len(program.Declarations) > 0 {
-		// First pass: register all struct types (needed for function signatures)
+		// First pass: register all struct names (so forward references work)
 		for _, decl := range program.Declarations {
 			if structDecl, ok := decl.(*ast.StructDecl); ok {
-				a.registerStruct(structDecl)
+				a.registerStructName(structDecl)
 			}
 		}
 
-		// Second pass: collect all function signatures
+		// Second pass: resolve struct field types (now all struct names are known)
+		for _, decl := range program.Declarations {
+			if structDecl, ok := decl.(*ast.StructDecl); ok {
+				a.resolveStructFields(structDecl)
+			}
+		}
+
+		// Third pass: collect all function signatures
 		hasMain := false
 		for _, decl := range program.Declarations {
 			if fnDecl, ok := decl.(*ast.FunctionDecl); ok {
@@ -173,11 +248,28 @@ func (a *Analyzer) registerFunction(fn *ast.FunctionDecl) {
 	// Convert parameter types (supports both primitive and struct types)
 	paramTypes := make([]Type, len(fn.Parameters))
 	for i, param := range fn.Parameters {
-		paramTypes[i] = a.resolveTypeName(param.TypeName, param.TypePos)
+		paramType := a.resolveTypeName(param.TypeName, param.TypePos)
+
+		// var modifier on parameters is no longer supported
+		// Use MutRef<T> instead of var &T
+		if param.Mutable {
+			if IsRefPointer(paramType) {
+				a.addError("use &&T instead of 'var &T'", param.VarPos, param.TypePos)
+			} else {
+				a.addError("'var' modifier is not supported on parameters; use &&T for mutable references", param.VarPos, param.VarPos)
+			}
+		}
+
+		paramTypes[i] = paramType
 	}
 
 	// Convert return type (supports both primitive and struct types)
 	returnType := a.resolveTypeName(fn.ReturnType, fn.ReturnPos)
+
+	// References cannot be used as return type
+	if IsAnyRefPointer(returnType) {
+		a.addError("references cannot be used as return types; use *T instead", fn.ReturnPos, fn.ReturnPos)
+	}
 
 	a.functions[fn.Name] = FunctionInfo{
 		ParamTypes: paramTypes,
@@ -185,7 +277,49 @@ func (a *Analyzer) registerFunction(fn *ast.FunctionDecl) {
 	}
 }
 
-// registerStruct registers a struct type in the struct registry
+// registerStructName registers only the struct name (first pass for forward references)
+func (a *Analyzer) registerStructName(s *ast.StructDecl) {
+	// Check for duplicate struct
+	if _, exists := a.structs[s.Name]; exists {
+		a.addError(fmt.Sprintf("struct '%s' is already declared", s.Name), s.NamePos, s.NamePos)
+		return
+	}
+
+	// Register the struct with empty fields (will be resolved in second pass)
+	a.structs[s.Name] = StructType{
+		Name:   s.Name,
+		Fields: nil, // Placeholder until resolveStructFields is called
+	}
+}
+
+// resolveStructFields resolves field types for a registered struct (second pass)
+func (a *Analyzer) resolveStructFields(s *ast.StructDecl) {
+	// Convert field types (now all struct names are known, so forward references work)
+	fields := make([]StructFieldInfo, len(s.Fields))
+	for i, field := range s.Fields {
+		fieldType := a.resolveTypeName(field.TypeName, field.TypePos)
+
+		// Ref<T> cannot be used as struct field type
+		if IsRefPointer(fieldType) {
+			a.addError("&T cannot be used as a struct field type; use *T instead", field.TypePos, field.TypePos)
+		}
+
+		fields[i] = StructFieldInfo{
+			Name:    field.Name,
+			Type:    fieldType,
+			Mutable: field.Mutable,
+			Index:   i,
+		}
+	}
+
+	// Update the struct with resolved fields
+	a.structs[s.Name] = StructType{
+		Name:   s.Name,
+		Fields: fields,
+	}
+}
+
+// registerStruct registers a struct type in the struct registry (legacy - for testing)
 func (a *Analyzer) registerStruct(s *ast.StructDecl) {
 	// Check for duplicate struct
 	if _, exists := a.structs[s.Name]; exists {
@@ -197,6 +331,12 @@ func (a *Analyzer) registerStruct(s *ast.StructDecl) {
 	fields := make([]StructFieldInfo, len(s.Fields))
 	for i, field := range s.Fields {
 		fieldType := a.resolveTypeName(field.TypeName, field.TypePos)
+
+		// Ref<T> cannot be used as struct field type
+		if IsRefPointer(fieldType) {
+			a.addError("&T cannot be used as a struct field type; use *T instead", field.TypePos, field.TypePos)
+		}
+
 		fields[i] = StructFieldInfo{
 			Name:    field.Name,
 			Type:    fieldType,
@@ -228,6 +368,54 @@ func (a *Analyzer) resolveTypeName(name string, pos ast.Position) Type {
 			return TypeError
 		}
 		return NullableType{InnerType: innerType}
+	}
+
+	// Check for symbol-based pointer syntax: *T, &&T, &T
+	// IMPORTANT: Check "&&" before "&" to avoid wrong prefix match
+
+	// Check for &&T syntax (mutable borrow)
+	if strings.HasPrefix(name, "&&") {
+		elementTypeName := strings.TrimPrefix(name, "&&")
+		elementType := a.resolveTypeName(elementTypeName, pos)
+		if _, isErr := elementType.(ErrorType); isErr {
+			return TypeError
+		}
+		// &&T? is invalid - the element type cannot be nullable
+		if IsNullable(elementType) {
+			a.addError("&&T cannot contain nullable type; use &&T? for nullable mutable references", pos, pos)
+			return TypeError
+		}
+		return MutRefPointerType{ElementType: elementType}
+	}
+
+	// Check for &T syntax (immutable borrow)
+	if strings.HasPrefix(name, "&") {
+		elementTypeName := strings.TrimPrefix(name, "&")
+		elementType := a.resolveTypeName(elementTypeName, pos)
+		if _, isErr := elementType.(ErrorType); isErr {
+			return TypeError
+		}
+		// &T? is invalid - the element type cannot be nullable
+		if IsNullable(elementType) {
+			a.addError("&T cannot contain nullable type; use &T? for nullable references", pos, pos)
+			return TypeError
+		}
+		return RefPointerType{ElementType: elementType}
+	}
+
+	// Check for *T syntax (owned pointer)
+	if strings.HasPrefix(name, "*") {
+		elementTypeName := strings.TrimPrefix(name, "*")
+		elementType := a.resolveTypeName(elementTypeName, pos)
+		if _, isErr := elementType.(ErrorType); isErr {
+			return TypeError
+		}
+		// *T? is invalid - the element type cannot be nullable
+		if IsNullable(elementType) {
+			a.addError("*T cannot contain nullable type; use *T? for nullable owned pointers", pos, pos)
+			return TypeError
+		}
+		return OwnedPointerType{ElementType: elementType}
 	}
 
 	// Check for Array<T> syntax
@@ -272,6 +460,51 @@ func (a *Analyzer) resolveTypeNameNoError(name string) Type {
 			return TypeError
 		}
 		return NullableType{InnerType: innerType}
+	}
+
+	// Check for symbol-based pointer syntax: *T, &&T, &T
+	// IMPORTANT: Check "&&" before "&" to avoid wrong prefix match
+
+	// Check for &&T syntax (mutable borrow)
+	if strings.HasPrefix(name, "&&") {
+		elementTypeName := strings.TrimPrefix(name, "&&")
+		elementType := a.resolveTypeNameNoError(elementTypeName)
+		if _, isErr := elementType.(ErrorType); isErr {
+			return TypeError
+		}
+		// &&T? is invalid - the element type cannot be nullable
+		if IsNullable(elementType) {
+			return TypeError
+		}
+		return MutRefPointerType{ElementType: elementType}
+	}
+
+	// Check for &T syntax (immutable borrow)
+	if strings.HasPrefix(name, "&") {
+		elementTypeName := strings.TrimPrefix(name, "&")
+		elementType := a.resolveTypeNameNoError(elementTypeName)
+		if _, isErr := elementType.(ErrorType); isErr {
+			return TypeError
+		}
+		// &T? is invalid - the element type cannot be nullable
+		if IsNullable(elementType) {
+			return TypeError
+		}
+		return RefPointerType{ElementType: elementType}
+	}
+
+	// Check for *T syntax (owned pointer)
+	if strings.HasPrefix(name, "*") {
+		elementTypeName := strings.TrimPrefix(name, "*")
+		elementType := a.resolveTypeNameNoError(elementTypeName)
+		if _, isErr := elementType.(ErrorType); isErr {
+			return TypeError
+		}
+		// *T? is invalid - the element type cannot be nullable
+		if IsNullable(elementType) {
+			return TypeError
+		}
+		return OwnedPointerType{ElementType: elementType}
 	}
 
 	// Check for Array<T> syntax
@@ -365,6 +598,10 @@ func (a *Analyzer) analyzeFunctionDecl(fn *ast.FunctionDecl) TypedDeclaration {
 		// Declare parameter in scope (immutable)
 		if !a.currentScope.declare(param.Name, paramType, false) {
 			a.addError(fmt.Sprintf("parameter '%s' is already declared", param.Name), param.NamePos, param.NamePos)
+		}
+		// Track ownership for Own<T> parameters
+		if IsMoveOnly(paramType) {
+			a.ownershipScope.declare(param.Name, paramType)
 		}
 	}
 
@@ -569,12 +806,25 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 		}
 	}
 
+	// Ref<T> cannot be used as local variable type
+	if IsRefPointer(declaredType) {
+		a.addError("&T cannot be stored in local variables; references can only be function parameters",
+			stmt.TypePos, stmt.TypePos)
+	}
+
 	// Check for duplicate declaration in the current scope
 	if !a.currentScope.declare(stmt.Name, declaredType, stmt.Mutable) {
 		a.addError(
 			fmt.Sprintf("variable '%s' is already declared in this scope", stmt.Name),
 			stmt.NamePos, stmt.NamePos,
 		)
+	}
+
+	// Track ownership for move-only types and handle moves from initializer
+	if IsMoveOnly(declaredType) {
+		a.ownershipScope.declare(stmt.Name, declaredType)
+		// Check if initializer is a variable being moved
+		a.checkAndRecordMove(stmt.Initializer, stmt.Name, stmt.NamePos)
 	}
 
 	return &TypedVarDeclStmt{
@@ -756,6 +1006,29 @@ func (a *Analyzer) checkLiteralIndexBounds(index TypedExpression, arraySize int,
 	}
 }
 
+// isExpressionMutable checks if an expression refers to a mutable location.
+// Used to determine if a value can be borrowed as a mutable reference.
+func (a *Analyzer) isExpressionMutable(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.IdentifierExpr:
+		// Check if the variable was declared with 'var'
+		info, found := a.currentScope.lookup(e.Name)
+		if found {
+			return info.Mutable
+		}
+		return false
+	case *ast.FieldAccessExpr:
+		// For field access through pointer, check if the root variable is mutable
+		return a.isExpressionMutable(e.Object)
+	case *ast.IndexExpr:
+		// For array index, check if the array is mutable
+		return a.isExpressionMutable(e.Array)
+	default:
+		// Other expressions (like literals, function calls) are not mutable
+		return false
+	}
+}
+
 // analyzeAssignStatement analyzes a variable assignment statement
 func (a *Analyzer) analyzeAssignStatement(stmt *ast.AssignStmt) TypedStatement {
 	// Look up the variable
@@ -784,6 +1057,20 @@ func (a *Analyzer) analyzeAssignStatement(stmt *ast.AssignStmt) TypedStatement {
 		).WithHint("consider using 'var' instead of 'val' if you need to reassign")
 	}
 
+	// Check for direct self-assignment of move-only types: p = p
+	// This would move p and then try to use it, which is invalid
+	// Only check for direct identifier assignment, not field access like p = p.x
+	if IsMoveOnly(info.Type) {
+		if valueIdent, ok := stmt.Value.(*ast.IdentifierExpr); ok {
+			if valueIdent.Name == stmt.Name {
+				a.addError(
+					fmt.Sprintf("cannot assign '%s' to itself", stmt.Name),
+					stmt.NamePos, stmt.Value.End(),
+				).WithHint("self-assignment of move-only types is not allowed")
+			}
+		}
+	}
+
 	// Analyze the value expression
 	typedValue := a.analyzeExpression(stmt.Value)
 	valueType := typedValue.GetType()
@@ -791,6 +1078,12 @@ func (a *Analyzer) analyzeAssignStatement(stmt *ast.AssignStmt) TypedStatement {
 	// Type check using the same rules as variable declaration
 	// This handles: null -> T?, T -> T?, exact match, etc.
 	a.checkTypeCompatibility(info.Type, valueType, typedValue, stmt.Value.Pos())
+
+	// Reassigning to a moved variable restores its ownership
+	// Example: list = prepend(list, 1) - list is moved, then receives new value
+	if IsMoveOnly(info.Type) {
+		a.ownershipScope.restoreOwned(stmt.Name)
+	}
 
 	return &TypedAssignStmt{
 		Name:    stmt.Name,
@@ -806,6 +1099,24 @@ func (a *Analyzer) analyzeFieldAssignStatement(stmt *ast.FieldAssignStmt) TypedS
 	// Analyze the object expression (the struct being accessed)
 	typedObject := a.analyzeExpression(stmt.Object)
 	objectType := typedObject.GetType()
+
+	// Auto-dereference owned pointers: Own<StructType> -> StructType
+	// This allows p.x = 10 where p is Own<Point>
+	if ownedType, isOwned := objectType.(OwnedPointerType); isOwned {
+		objectType = ownedType.ElementType
+	}
+
+	// Auto-dereference reference pointers: Ref<T>/MutRef<T> -> T
+	var accessingThroughImmutableRef bool
+	var accessingThroughMutableRef bool
+	if refType, isRef := objectType.(RefPointerType); isRef {
+		objectType = refType.ElementType
+		accessingThroughImmutableRef = true
+	} else if mutRefType, isMutRef := objectType.(MutRefPointerType); isMutRef {
+		objectType = mutRefType.ElementType
+		accessingThroughMutableRef = true
+	}
+	_ = accessingThroughMutableRef // used for documentation, mutation is allowed
 
 	// Check that the object is a struct type
 	structType, isStruct := objectType.(StructType)
@@ -846,12 +1157,39 @@ func (a *Analyzer) analyzeFieldAssignStatement(stmt *ast.FieldAssignStmt) TypedS
 		}
 	}
 
+	// Check ref mutability (for assignment through Ref<T>)
+	// Ref<T> is immutable - cannot assign through it
+	// MutRef<T> is mutable - can assign through it
+	if accessingThroughImmutableRef {
+		a.addError(
+			"cannot assign through immutable reference",
+			stmt.Dot, stmt.FieldPos,
+		).WithHint("use &&T for mutable references")
+	}
+
+	// Note: val/var on Own<T> bindings only controls reassignability, not mutation.
+	// Mutation through Own<T> is allowed as long as the field is var.
+	// (accessingThroughOwned allows mutation regardless of val/var binding)
+
 	// Check field mutability
 	if !fieldInfo.Mutable {
 		a.addError(
 			fmt.Sprintf("cannot assign to immutable field '%s'", stmt.Field),
 			stmt.FieldPos, stmt.Equals,
 		).WithHint("consider using 'var' instead of 'val' in the struct definition")
+	}
+
+	// Check for self-referential assignment of move-only types: n.next = n
+	// This would create a cycle or cause ownership issues
+	if IsMoveOnly(fieldInfo.Type) {
+		targetRoot := GetRootVarName(stmt.Object)
+		valueRoot := GetRootVarName(stmt.Value)
+		if targetRoot != "" && targetRoot == valueRoot {
+			a.addError(
+				fmt.Sprintf("cannot assign '%s' to a field of itself", valueRoot),
+				stmt.Object.Pos(), stmt.Value.End(),
+			).WithHint("self-referential assignment of move-only types creates ownership cycles")
+		}
 	}
 
 	// Analyze the value expression
@@ -1093,6 +1431,12 @@ func (a *Analyzer) analyzeReturnStatement(stmt *ast.ReturnStmt) TypedStatement {
 		} else {
 			a.checkReturnTypeCompatibility(a.currentReturnType, valueType, typedValue, stmt.Value.Pos())
 		}
+
+		// Record move for return value if it's a move-only type
+		// Returning a variable moves it out of the function
+		if IsMoveOnly(valueType) {
+			a.checkAndRecordMove(stmt.Value, "<return>", stmt.Value.Pos())
+		}
 	} else {
 		// No return value
 		if _, isVoid := a.currentReturnType.(VoidType); !isVoid {
@@ -1134,10 +1478,18 @@ func (a *Analyzer) analyzeIfStatement(stmt *ast.IfStmt) TypedStatement {
 	// Analyze and validate the condition
 	typedCond := a.analyzeIfCondition(stmt.Condition)
 
+	// Snapshot ownership state before branches
+	// We need to track which variables are moved in any branch
+	beforeSnapshot := a.snapshotOwnershipState()
+
 	// Analyze the then branch (with its own scope)
 	a.enterScope()
 	typedThenBranch := a.analyzeBlockStmt(stmt.ThenBranch)
+	thenMoves := a.collectBranchMoves(beforeSnapshot)
 	a.exitScope()
+
+	// Collect moves from else branch
+	var elseMoves []moveRecord
 
 	// Analyze the else branch if present
 	var typedElseBranch TypedStatement
@@ -1146,15 +1498,22 @@ func (a *Analyzer) analyzeIfStatement(stmt *ast.IfStmt) TypedStatement {
 		case *ast.IfStmt:
 			// else if: recursively analyze (no extra scope needed, the if will create its own)
 			typedElseBranch = a.analyzeIfStatement(elseBranch)
+			// The nested if statement handles its own move merging
+			elseMoves = a.collectBranchMoves(beforeSnapshot)
 		case *ast.BlockStmt:
 			// else block: create scope
 			a.enterScope()
 			typedElseBranch = a.analyzeBlockStmt(elseBranch)
+			elseMoves = a.collectBranchMoves(beforeSnapshot)
 			a.exitScope()
 		default:
 			a.addError("unexpected else branch type", stmt.ElseBranch.Pos(), stmt.ElseBranch.End())
 		}
 	}
+
+	// Merge moves from both branches: if a variable was moved in ANY branch,
+	// it must be considered moved after the if statement
+	a.mergeConditionalMoves(thenMoves, elseMoves)
 
 	return &TypedIfStmt{
 		IfKeyword:   stmt.IfKeyword,
@@ -1199,8 +1558,9 @@ func (a *Analyzer) analyzeForStatement(stmt *ast.ForStmt) TypedStatement {
 		typedUpdate = a.analyzeStatement(stmt.Update)
 	}
 
-	// Enter loop context for break/continue validation
+	// Enter loop context for break/continue validation and ownership tracking
 	a.loopDepth++
+	a.ownershipScope.inLoop = true
 
 	// Analyze body
 	typedBody := a.analyzeBlockStmt(stmt.Body)
@@ -1236,8 +1596,9 @@ func (a *Analyzer) analyzeWhileStatement(stmt *ast.WhileStmt) TypedStatement {
 		}
 	}
 
-	// Enter loop context for break/continue validation
+	// Enter loop context for break/continue validation and ownership tracking
 	a.loopDepth++
+	a.ownershipScope.inLoop = true
 
 	// Analyze body
 	typedBody := a.analyzeBlockStmt(stmt.Body)
@@ -1295,11 +1656,18 @@ func (a *Analyzer) analyzeIfExpression(stmt *ast.IfStmt) TypedExpression {
 		}
 	}
 
+	// Snapshot ownership state before branches for conditional move tracking
+	beforeSnapshot := a.snapshotOwnershipState()
+
 	// Analyze the then branch (with its own scope)
 	a.enterScope()
 	typedThenBranch := a.analyzeBlockStmtForExpression(stmt.ThenBranch)
 	thenType := a.getBlockResultType(typedThenBranch)
+	thenMoves := a.collectBranchMoves(beforeSnapshot)
 	a.exitScope()
+
+	// Collect moves from else branch
+	var elseMoves []moveRecord
 
 	// Analyze the else branch
 	var typedElseBranch TypedStatement
@@ -1311,17 +1679,24 @@ func (a *Analyzer) analyzeIfExpression(stmt *ast.IfStmt) TypedExpression {
 		typedElseExpr := a.analyzeIfExpression(elseBranch)
 		typedElseBranch = typedElseExpr.(*TypedIfStmt)
 		elseType = typedElseExpr.GetType()
+		// The nested if expression handles its own move merging
+		elseMoves = a.collectBranchMoves(beforeSnapshot)
 	case *ast.BlockStmt:
 		// else block: create scope
 		a.enterScope()
 		typedBlock := a.analyzeBlockStmtForExpression(elseBranch)
 		typedElseBranch = typedBlock
 		elseType = a.getBlockResultType(typedBlock)
+		elseMoves = a.collectBranchMoves(beforeSnapshot)
 		a.exitScope()
 	default:
 		a.addError("unexpected else branch type", stmt.ElseBranch.Pos(), stmt.ElseBranch.End())
 		elseType = TypeError
 	}
+
+	// Merge moves from both branches: if a variable was moved in ANY branch,
+	// it must be considered moved after the if expression
+	a.mergeConditionalMoves(thenMoves, elseMoves)
 
 	// Check that both branches have the same type
 	var resultType Type = thenType
@@ -1403,6 +1778,8 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 		return &TypedLiteralExpr{Type: ErrorType{}}
 	case *ast.FieldAccessExpr:
 		return a.analyzeFieldAccessExpr(e)
+	case *ast.MethodCallExpr:
+		return a.analyzeMethodCallExpr(e)
 	case *ast.SafeCallExpr:
 		return a.analyzeSafeCallExpr(e)
 	case *ast.ArrayLiteralExpr:
@@ -1483,7 +1860,10 @@ func (a *Analyzer) analyzeCallExpr(call *ast.CallExpr) TypedExpression {
 	}
 
 	// Analyze arguments and check types
+	// Also track borrows for exclusivity checking
 	typedArgs := make([]TypedExpression, len(call.Arguments))
+	var borrows []BorrowInfo
+
 	for i, arg := range call.Arguments {
 		typedArgs[i] = a.analyzeExpression(arg)
 
@@ -1491,14 +1871,66 @@ func (a *Analyzer) analyzeCallExpr(call *ast.CallExpr) TypedExpression {
 		if i < len(fnInfo.ParamTypes) {
 			argType := typedArgs[i].GetType()
 			paramType := fnInfo.ParamTypes[i]
-			if _, isErr := argType.(ErrorType); !isErr && !paramType.Equals(argType) {
+
+			// Skip if argument has error type
+			if _, isErr := argType.(ErrorType); isErr {
+				continue
+			}
+
+			// Check for implicit Own<T> to Ref<T> conversion (auto-borrow, immutable)
+			if refType, ok := paramType.(RefPointerType); ok {
+				if ownType, isOwn := argType.(OwnedPointerType); isOwn {
+					// Auto-borrow: Own<T> -> Ref<T> if element types match
+					if refType.ElementType.Equals(ownType.ElementType) {
+						// Track this borrow for exclusivity checking (immutable borrow)
+						borrows = append(borrows, BorrowInfo{
+							VarName:  GetRootVarName(arg),
+							Mutable:  false,
+							Position: arg.Pos(),
+							ArgIndex: i,
+						})
+						// Auto-borrow is valid
+						continue
+					}
+				}
+			}
+
+			// Check for implicit Own<T> to MutRef<T> conversion (auto-borrow, mutable)
+			if mutRefType, ok := paramType.(MutRefPointerType); ok {
+				if ownType, isOwn := argType.(OwnedPointerType); isOwn {
+					// Auto-borrow: Own<T> -> MutRef<T> if element types match
+					if mutRefType.ElementType.Equals(ownType.ElementType) {
+						// Track this borrow for exclusivity checking (mutable borrow)
+						borrows = append(borrows, BorrowInfo{
+							VarName:  GetRootVarName(arg),
+							Mutable:  true,
+							Position: arg.Pos(),
+							ArgIndex: i,
+						})
+						// Auto-borrow is valid
+						continue
+					}
+				}
+			}
+
+			if !IsAssignableTo(argType, paramType) {
 				a.addError(
 					fmt.Sprintf("argument %d: expected %s, got %s",
 						i+1, paramType.String(), argType.String()),
 					arg.Pos(), arg.End(),
 				)
+			} else {
+				// If passing an owned pointer (to Own<T> or Own<T>? param), ownership moves
+				if IsOwnedPointer(argType) || IsNullableOwnedPointer(argType) {
+					a.checkAndRecordMove(arg, "<param>", arg.Pos())
+				}
 			}
 		}
+	}
+
+	// Check for borrow exclusivity conflicts
+	if hasConflict, msg, pos1, pos2 := CheckBorrowConflicts(borrows); hasConflict {
+		a.addError(msg, pos1, pos2)
 	}
 
 	return &TypedCallExpr{
@@ -1985,6 +2417,25 @@ func (a *Analyzer) analyzeFieldAccessExpr(expr *ast.FieldAccessExpr) TypedExpres
 	typedObject := a.analyzeExpression(expr.Object)
 	objectType := typedObject.GetType()
 
+	// Auto-dereference owned pointers: Own<StructType> -> StructType
+	// This allows p.x where p is Own<Point> to access the Point's x field
+	if ownedType, isOwned := objectType.(OwnedPointerType); isOwned {
+		objectType = ownedType.ElementType
+	}
+
+	// Auto-dereference reference pointers: Ref<StructType> -> StructType
+	// This allows p.x where p is Ref<Point>/MutRef<Point> to access the Point's x field
+	// Track if we're accessing through a ref for mutability propagation
+	var accessingThroughImmutableRef bool
+	var accessingThroughMutableRef bool
+	if refType, isRef := objectType.(RefPointerType); isRef {
+		objectType = refType.ElementType
+		accessingThroughImmutableRef = true
+	} else if mutRefType, isMutRef := objectType.(MutRefPointerType); isMutRef {
+		objectType = mutRefType.ElementType
+		accessingThroughMutableRef = true
+	}
+
 	// Check that the object is a struct type
 	structType, isStruct := objectType.(StructType)
 	if !isStruct {
@@ -2021,13 +2472,183 @@ func (a *Analyzer) analyzeFieldAccessExpr(expr *ast.FieldAccessExpr) TypedExpres
 		}
 	}
 
+	// Determine the result type and mutability
+	resultType := fieldInfo.Type
+	resultMutable := fieldInfo.Mutable
+
+	// When accessing through an immutable Ref, apply special rules:
+	if accessingThroughImmutableRef {
+		// 1. Own<T> fields become Ref<T> (borrowing doesn't transfer ownership, immutable)
+		if ownedType, isOwned := fieldInfo.Type.(OwnedPointerType); isOwned {
+			resultType = RefPointerType{ElementType: ownedType.ElementType}
+		}
+		// 2. Field is not mutable through immutable ref
+		resultMutable = false
+	}
+
+	// When accessing through a mutable MutRef, apply special rules:
+	if accessingThroughMutableRef {
+		// 1. Own<T> fields become MutRef<T> if field is mutable, else Ref<T>
+		if ownedType, isOwned := fieldInfo.Type.(OwnedPointerType); isOwned {
+			if fieldInfo.Mutable {
+				resultType = MutRefPointerType{ElementType: ownedType.ElementType}
+			} else {
+				resultType = RefPointerType{ElementType: ownedType.ElementType}
+			}
+		}
+		// 2. Mutability is determined by field's mutability
+		resultMutable = fieldInfo.Mutable
+	}
+
 	return &TypedFieldAccessExpr{
-		Type:     fieldInfo.Type,
+		Type:     resultType,
 		Object:   typedObject,
 		Dot:      expr.Dot,
 		Field:    expr.Field,
 		FieldPos: expr.FieldPos,
-		Mutable:  fieldInfo.Mutable,
+		Mutable:  resultMutable,
+	}
+}
+
+// analyzeMethodCallExpr analyzes a method call expression (e.g., Heap.new(x), p.copy())
+func (a *Analyzer) analyzeMethodCallExpr(expr *ast.MethodCallExpr) TypedExpression {
+	// Check if this is a Heap.new() call
+	if ident, ok := expr.Object.(*ast.IdentifierExpr); ok && ident.Name == "Heap" {
+		return a.analyzeHeapMethodCall(expr)
+	}
+
+	// Analyze the object expression
+	typedObject := a.analyzeExpression(expr.Object)
+	objectType := typedObject.GetType()
+
+	// Type arguments
+	typedArgs := make([]TypedExpression, len(expr.Arguments))
+	for i, arg := range expr.Arguments {
+		typedArgs[i] = a.analyzeExpression(arg)
+	}
+
+	// Check if this is a .copy() call on an owned pointer
+	if expr.Method == "copy" {
+		if ownedType, isOwned := objectType.(OwnedPointerType); isOwned {
+			// .copy() on Own<T> returns a new Own<T> (deep copy)
+			if len(expr.Arguments) != 0 {
+				a.addError(
+					fmt.Sprintf("copy() takes no arguments, got %d", len(expr.Arguments)),
+					expr.LeftParen, expr.RightParen,
+				)
+			}
+			return &TypedMethodCallExpr{
+				Type:       ownedType, // returns same type
+				Object:     typedObject,
+				Dot:        expr.Dot,
+				Method:     expr.Method,
+				MethodPos:  expr.MethodPos,
+				LeftParen:  expr.LeftParen,
+				Arguments:  typedArgs,
+				RightParen: expr.RightParen,
+			}
+		}
+	}
+
+	// Unknown method call
+	if _, isErr := objectType.(ErrorType); !isErr {
+		a.addError(
+			fmt.Sprintf("unknown method '%s' on type '%s'", expr.Method, objectType.String()),
+			expr.MethodPos, expr.MethodPos,
+		)
+	}
+
+	return &TypedMethodCallExpr{
+		Type:       TypeError,
+		Object:     typedObject,
+		Dot:        expr.Dot,
+		Method:     expr.Method,
+		MethodPos:  expr.MethodPos,
+		LeftParen:  expr.LeftParen,
+		Arguments:  typedArgs,
+		RightParen: expr.RightParen,
+	}
+}
+
+// analyzeHeapMethodCall analyzes Heap.new() and other Heap methods
+func (a *Analyzer) analyzeHeapMethodCall(expr *ast.MethodCallExpr) TypedExpression {
+	// Type arguments
+	typedArgs := make([]TypedExpression, len(expr.Arguments))
+	for i, arg := range expr.Arguments {
+		typedArgs[i] = a.analyzeExpression(arg)
+	}
+
+	// Create a dummy typed object for Heap (it's a pseudo-singleton)
+	typedObject := &TypedIdentifierExpr{
+		Type:     TypeVoid, // Heap doesn't have a real type
+		Name:     "Heap",
+		StartPos: expr.Object.Pos(),
+		EndPos:   expr.Object.End(),
+	}
+
+	switch expr.Method {
+	case "new":
+		// Heap.new(expr) allocates expr on the heap and returns Own<T>
+		if len(expr.Arguments) != 1 {
+			a.addError(
+				fmt.Sprintf("Heap.new() takes exactly 1 argument, got %d", len(expr.Arguments)),
+				expr.LeftParen, expr.RightParen,
+			)
+			return &TypedMethodCallExpr{
+				Type:       TypeError,
+				Object:     typedObject,
+				Dot:        expr.Dot,
+				Method:     expr.Method,
+				MethodPos:  expr.MethodPos,
+				LeftParen:  expr.LeftParen,
+				Arguments:  typedArgs,
+				RightParen: expr.RightParen,
+			}
+		}
+
+		// Infer the type from the argument
+		argType := typedArgs[0].GetType()
+		if _, isErr := argType.(ErrorType); isErr {
+			return &TypedMethodCallExpr{
+				Type:       TypeError,
+				Object:     typedObject,
+				Dot:        expr.Dot,
+				Method:     expr.Method,
+				MethodPos:  expr.MethodPos,
+				LeftParen:  expr.LeftParen,
+				Arguments:  typedArgs,
+				RightParen: expr.RightParen,
+			}
+		}
+
+		// Return Own<T> where T is the argument type
+		resultType := OwnedPointerType{ElementType: argType}
+		return &TypedMethodCallExpr{
+			Type:       resultType,
+			Object:     typedObject,
+			Dot:        expr.Dot,
+			Method:     expr.Method,
+			MethodPos:  expr.MethodPos,
+			LeftParen:  expr.LeftParen,
+			Arguments:  typedArgs,
+			RightParen: expr.RightParen,
+		}
+
+	default:
+		a.addError(
+			fmt.Sprintf("Heap has no method '%s'", expr.Method),
+			expr.MethodPos, expr.MethodPos,
+		).WithHint("available methods: new()")
+		return &TypedMethodCallExpr{
+			Type:       TypeError,
+			Object:     typedObject,
+			Dot:        expr.Dot,
+			Method:     expr.Method,
+			MethodPos:  expr.MethodPos,
+			LeftParen:  expr.LeftParen,
+			Arguments:  typedArgs,
+			RightParen: expr.RightParen,
+		}
 	}
 }
 
@@ -2047,13 +2668,36 @@ func (a *Analyzer) analyzeSafeCallExpr(expr *ast.SafeCallExpr) TypedExpression {
 			).WithHint("use '.' for non-nullable types")
 		}
 		return &TypedSafeCallExpr{
-			Type:        TypeError,
-			Object:      typedObject,
-			SafeCallPos: expr.SafeCallPos,
-			Field:       expr.Field,
-			FieldPos:    expr.FieldPos,
-			FieldOffset: 0,
-			InnerType:   TypeError,
+			Type:           TypeError,
+			Object:         typedObject,
+			SafeCallPos:    expr.SafeCallPos,
+			Field:          expr.Field,
+			FieldPos:       expr.FieldPos,
+			FieldOffset:    0,
+			InnerType:      TypeError,
+			ThroughPointer: false,
+		}
+	}
+
+	// Auto-dereference owned/ref pointers: Own<T>? or Ref<T>? -> access T's fields
+	// This allows node?.value where node is Own<Node>? to work
+	throughPointer := false
+	if ownedType, isOwned := innerType.(OwnedPointerType); isOwned {
+		innerType = ownedType.ElementType
+		throughPointer = true
+	} else if refType, isRef := innerType.(RefPointerType); isRef {
+		innerType = refType.ElementType
+		throughPointer = true
+	} else if mutRefType, isMutRef := innerType.(MutRefPointerType); isMutRef {
+		innerType = mutRefType.ElementType
+		throughPointer = true
+	}
+
+	// Re-lookup struct from registry to get the version with resolved fields
+	// This is needed because pointer types may store a stale copy from before fields were resolved
+	if st, isStruct := innerType.(StructType); isStruct {
+		if resolved, ok := a.structs[st.Name]; ok {
+			innerType = resolved
 		}
 	}
 
@@ -2067,13 +2711,14 @@ func (a *Analyzer) analyzeSafeCallExpr(expr *ast.SafeCallExpr) TypedExpression {
 			)
 		}
 		return &TypedSafeCallExpr{
-			Type:        TypeError,
-			Object:      typedObject,
-			SafeCallPos: expr.SafeCallPos,
-			Field:       expr.Field,
-			FieldPos:    expr.FieldPos,
-			FieldOffset: 0,
-			InnerType:   innerType,
+			Type:           TypeError,
+			Object:         typedObject,
+			SafeCallPos:    expr.SafeCallPos,
+			Field:          expr.Field,
+			FieldPos:       expr.FieldPos,
+			FieldOffset:    0,
+			InnerType:      innerType,
+			ThroughPointer: throughPointer,
 		}
 	}
 
@@ -2085,13 +2730,14 @@ func (a *Analyzer) analyzeSafeCallExpr(expr *ast.SafeCallExpr) TypedExpression {
 			expr.FieldPos, expr.FieldPos,
 		)
 		return &TypedSafeCallExpr{
-			Type:        TypeError,
-			Object:      typedObject,
-			SafeCallPos: expr.SafeCallPos,
-			Field:       expr.Field,
-			FieldPos:    expr.FieldPos,
-			FieldOffset: 0,
-			InnerType:   innerType,
+			Type:           TypeError,
+			Object:         typedObject,
+			SafeCallPos:    expr.SafeCallPos,
+			Field:          expr.Field,
+			FieldPos:       expr.FieldPos,
+			FieldOffset:    0,
+			InnerType:      innerType,
+			ThroughPointer: throughPointer,
 		}
 	}
 
@@ -2100,13 +2746,14 @@ func (a *Analyzer) analyzeSafeCallExpr(expr *ast.SafeCallExpr) TypedExpression {
 	fieldOffset := structType.FieldOffset(expr.Field)
 
 	return &TypedSafeCallExpr{
-		Type:        resultType,
-		Object:      typedObject,
-		SafeCallPos: expr.SafeCallPos,
-		Field:       expr.Field,
-		FieldPos:    expr.FieldPos,
-		FieldOffset: fieldOffset,
-		InnerType:   innerType,
+		Type:           resultType,
+		Object:         typedObject,
+		SafeCallPos:    expr.SafeCallPos,
+		Field:          expr.Field,
+		FieldPos:       expr.FieldPos,
+		FieldOffset:    fieldOffset,
+		InnerType:      innerType,
+		ThroughPointer: throughPointer,
 	}
 }
 
@@ -2169,6 +2816,22 @@ func (a *Analyzer) analyzeIdentifier(ident *ast.IdentifierExpr) TypedExpression 
 		typ = TypeError
 	} else {
 		typ = info.Type
+		// Check for use-after-move
+		if ownerInfo, tracked := a.ownershipScope.lookup(ident.Name); tracked {
+			if ownerInfo.State == StateMoved {
+				err := a.addError(
+					fmt.Sprintf("use of moved value '%s'", ident.Name),
+					ident.StartPos, ident.EndPos,
+				)
+				if ownerInfo.MoveInfo.MovedTo != "" {
+					if ownerInfo.MoveInfo.MovedTo == "<param>" {
+						err.WithHint("value was moved when passed as function argument")
+					} else {
+						err.WithHint(fmt.Sprintf("value was moved to '%s'", ownerInfo.MoveInfo.MovedTo))
+					}
+				}
+			}
+		}
 	}
 
 	return &TypedIdentifierExpr{
@@ -2177,6 +2840,46 @@ func (a *Analyzer) analyzeIdentifier(ident *ast.IdentifierExpr) TypedExpression 
 		StartPos: ident.StartPos,
 		EndPos:   ident.EndPos,
 	}
+}
+
+// checkAndRecordMove checks if an expression is a variable being moved and records the move
+func (a *Analyzer) checkAndRecordMove(expr ast.Expression, movedTo string, location ast.Position) {
+	if expr == nil {
+		return
+	}
+
+	// Handle identifier expressions - direct variable moves
+	if ident, ok := expr.(*ast.IdentifierExpr); ok {
+		// Look up the variable type to see if it's move-only
+		info, found := a.currentScope.lookup(ident.Name)
+		if found && IsMoveOnly(info.Type) {
+			// Check if already moved
+			if ownerInfo, tracked := a.ownershipScope.lookup(ident.Name); tracked {
+				if ownerInfo.State == StateMoved {
+					// Already reported as use-after-move in analyzeIdentifier
+					return
+				}
+			}
+
+			// Check if we're inside a loop - moves inside loops are not allowed
+			// because the loop might execute multiple times, causing double-move
+			if a.ownershipScope.isInLoop() {
+				a.addError(
+					fmt.Sprintf("cannot move '%s' inside a loop", ident.Name),
+					ident.StartPos, ident.EndPos,
+				).WithHint("moves inside loops would cause double-move on second iteration; consider using .copy() or restructuring")
+				return
+			}
+
+			// Mark as moved
+			a.ownershipScope.markMoved(ident.Name, movedTo, location)
+		}
+		return
+	}
+
+	// Handle field access - moving a field out of a struct
+	// For now, we don't allow moving fields out of structs
+	// (would require more complex tracking)
 }
 
 // analyzeLiteral analyzes a literal expression
@@ -2209,12 +2912,63 @@ func (a *Analyzer) analyzeLiteral(lit *ast.LiteralExpr) TypedExpression {
 
 // analyzeBinaryExpression analyzes a binary expression
 func (a *Analyzer) analyzeBinaryExpression(expr *ast.BinaryExpr) TypedExpression {
+	// Short-circuit operators (&&, ||) need special handling for ownership:
+	// The right operand might not be evaluated, so moves in the right operand
+	// are conditional and should be treated like moves in an if branch.
+	if expr.Op == "&&" || expr.Op == "||" {
+		return a.analyzeShortCircuitExpression(expr)
+	}
+
 	// Analyze left and right operands
 	left := a.analyzeExpression(expr.Left)
 	right := a.analyzeExpression(expr.Right)
 
 	leftType := left.GetType()
 	rightType := right.GetType()
+
+	// Determine the result type and check type compatibility
+	resultType := a.checkBinaryOperation(expr.Op, leftType, rightType, expr.LeftPos, expr.RightPos)
+
+	return &TypedBinaryExpr{
+		Type:     resultType,
+		Left:     left,
+		Op:       expr.Op,
+		Right:    right,
+		LeftPos:  expr.LeftPos,
+		OpPos:    expr.OpPos,
+		RightPos: expr.RightPos,
+	}
+}
+
+// analyzeShortCircuitExpression handles && and || with proper ownership tracking.
+// The right operand of short-circuit operators may not be evaluated:
+// - For &&: right only evaluates if left is true
+// - For ||: right only evaluates if left is false
+// Any moves in the right operand should be treated as conditional moves.
+func (a *Analyzer) analyzeShortCircuitExpression(expr *ast.BinaryExpr) TypedExpression {
+	// Analyze left operand (always evaluated)
+	left := a.analyzeExpression(expr.Left)
+	leftType := left.GetType()
+
+	// Snapshot ownership state before evaluating right operand
+	beforeSnapshot := a.snapshotOwnershipState()
+
+	// Analyze right operand (conditionally evaluated)
+	right := a.analyzeExpression(expr.Right)
+	rightType := right.GetType()
+
+	// Collect any moves that occurred in the right operand
+	rightMoves := a.collectBranchMoves(beforeSnapshot)
+
+	// If there were moves in the right operand, they are conditional.
+	// We treat this like an if statement where one branch has the moves
+	// and the other branch has no moves (short-circuit case).
+	// Result: the variable is considered "possibly moved" after the expression.
+	if len(rightMoves) > 0 {
+		// Merge with empty moves from the "short-circuit" branch
+		var emptyMoves []moveRecord
+		a.mergeConditionalMoves(rightMoves, emptyMoves)
+	}
 
 	// Determine the result type and check type compatibility
 	resultType := a.checkBinaryOperation(expr.Op, leftType, rightType, expr.LeftPos, expr.RightPos)
@@ -2630,15 +3384,23 @@ func (a *Analyzer) analyzeWhenExpression(when *ast.WhenExpr) TypedExpression {
 
 // analyzeWhen is the core when analysis, handling both statement and expression contexts
 func (a *Analyzer) analyzeWhen(when *ast.WhenExpr, isExpression bool) *TypedWhenExpr {
+	// Snapshot ownership state before any cases for conditional move tracking
+	beforeSnapshot := a.snapshotOwnershipState()
+
 	// Analyze cases
 	typedCases := make([]TypedWhenCase, len(when.Cases))
 	var hasElse bool
 	var hasTrueCondition bool
-	var branchTypes []Type // For expression type checking
+	var branchTypes []Type  // For expression type checking
+	var allMoves []moveRecord // Collect moves from all branches
 
 	for i, wcase := range when.Cases {
 		typedCase := a.analyzeWhenCase(wcase, isExpression)
 		typedCases[i] = typedCase
+
+		// Collect moves from this case
+		caseMoves := a.collectBranchMoves(beforeSnapshot)
+		allMoves = append(allMoves, caseMoves...)
 
 		if wcase.IsElse {
 			hasElse = true
@@ -2657,6 +3419,12 @@ func (a *Analyzer) analyzeWhen(when *ast.WhenExpr, isExpression bool) *TypedWhen
 			branchTypes = append(branchTypes, a.getWhenCaseResultType(typedCase.Body))
 		}
 	}
+
+	// Merge moves from all cases: if a variable was moved in ANY case,
+	// it must be considered moved after the when expression
+	// We use empty moves for the "no case matched" scenario (implicit else)
+	var emptyMoves []moveRecord
+	a.mergeConditionalMoves(allMoves, emptyMoves)
 
 	// Exhaustiveness checking
 	a.checkWhenExhaustiveness(when, hasElse, hasTrueCondition)

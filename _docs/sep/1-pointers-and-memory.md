@@ -1,54 +1,78 @@
 # Status
 
-DRAFT, 2026-01-03
+IMPLEMENTED, 2026-01-05
+
+## Implementation Status
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `*T` type | ✅ Done | Ownership tracking, auto-free on scope exit |
+| `&T` type | ✅ Done | Immutable borrow, parameter-only |
+| `&&T` type | ✅ Done | Mutable borrow, parameter-only |
+| `Heap.new(T)` | ✅ Done | Bump allocator with size-class free lists |
+| Move semantics | ✅ Done | Use-after-move detection, conditional moves |
+| Auto-borrowing | ✅ Done | `*T` → `&T`/`&&T` at call sites |
+| Borrow exclusivity | ✅ Done | Multiple `&T` OR one `&&T` per call |
+| `*T?` nullable | ✅ Done | Nullable owned pointers |
+| `?.` safe call | ✅ Done | Works through `*T?`, `&T?`, `&&T?` |
+| T → T? coercion | ✅ Done | `*T` assignable to `*T?` parameters |
+| Ownership restore | ✅ Done | `x = fn(x)` pattern restores ownership |
+| Bump allocator | ✅ Done | 1MB arenas, O(1) alloc/free, ~200x memory savings |
+| `.copy()` | ⏳ Pending | Deep copy not yet implemented |
+| `Heap.shrink()` | ⏳ Future | Return empty arenas to OS |
+| `Weak<T>` | ⏳ Future | Weak references for cycles |
+| `Rc<T>` | ⏳ Future | Reference counting for shared ownership |
+| `Heap.tryNew` | ⏳ Future | Fallible allocation |
 
 # Summary/Motivation
 
-Add heap allocation through pointer types to Slang, enabling dynamic memory allocation and data structures like linked lists and trees. This introduces two pointer types:
+Add heap allocation through pointer types to Slang, enabling dynamic memory allocation and data structures like linked lists and trees. This introduces three pointer types:
 
-- **`Own<T>`** - Owned pointer. You control the lifetime; memory is freed when the owner goes out of scope.
-- **`Ref<T>`** - Borrowed reference. Temporary access to someone else's data; no ownership.
+- **`*T`** - Owned pointer. You control the lifetime; memory is freed when the owner goes out of scope.
+- **`&T`** - Immutable borrowed reference. Read-only access to someone else's data.
+- **`&&T`** - Mutable borrowed reference. Can mutate `var` fields of borrowed data.
 
-Mutability is controlled by `val`/`var`, not by the pointer type:
+**Key principle**: `val`/`var` controls **reassignability** only; `&T` vs `&&T` controls **borrow mutability**:
 
-- **`val`** - Immutable. Cannot reassign or mutate through the pointer.
-- **`var`** - Mutable. Can reassign and mutate `var` fields through the pointer.
+- **`val`** - Cannot reassign the binding. Can still mutate `var` fields through the pointer.
+- **`var`** - Can reassign the binding.
 
 This keeps ownership and mutability as orthogonal concepts, reusing keywords users already understand.
 
-`Heap` is a built-in allocator type with a `new` method that returns `Own<T>`. This design allows for future extensibility - custom allocators can implement the same interface.
+`Heap` is a built-in allocator type with a `new` method that returns `*T`. This design allows for future extensibility - custom allocators can implement the same interface.
 
 The ownership model is simple:
 - **Assignment moves** - `val q = p` transfers ownership, making `p` invalid
-- **Function parameters borrow or take ownership** - `Ref<T>` borrows, `Own<T>` takes ownership
+- **Function parameters borrow or take ownership** - `&T` borrows, `*T` takes ownership
 
-Slang already has nullable types (`T?`) and arrays (`Array<T>`). This SEP builds on those foundations - nullable pointers (`Own<T>?`) provide a natural way to represent optional references (e.g., linked list terminators).
+Slang already has nullable types (`T?`) and arrays (`Array<T>`). This SEP builds on those foundations - nullable pointers (`*T?`) provide a natural way to represent optional references (e.g., linked list terminators).
 
 # Goals/Non-Goals
 
 ## Allocation
 - [goal] `Heap` built-in allocator type with `new(value)` method
-- [goal] `Heap.new(value)` returns `Own<T>` (owned pointer)
+- [goal] `Heap.new(value)` returns `*T` (owned pointer)
 - [goal] Type inference for pointer types
 
 ## Pointer Types
-- [goal] `Own<T>` - owned pointer, controls lifetime of pointed-to memory
-- [goal] `Ref<T>` - borrowed reference, temporary access without ownership
-- [goal] Automatic borrowing from `Own<T>` to `Ref<T>` based on context (no explicit `.borrow()`)
+- [goal] `*T` - owned pointer, controls lifetime of pointed-to memory
+- [goal] `&T` - borrowed reference, temporary access without ownership
+- [goal] Automatic borrowing from `*T` to `&T` based on context (no explicit `.borrow()`)
 - [goal] Auto-dereference for field access (`p.field`) and array indexing (`p[i]`)
-- [goal] Nullable pointers via existing `T?` syntax (`Own<T>?` with `null`)
+- [goal] Nullable pointers via existing `T?` syntax (`*T?` with `null`)
 
 ## Mutability
-- [goal] `val`/`var` controls mutability orthogonally from ownership
-- [goal] `val p: Own<T>` - owned, immutable (can't reassign or mutate through p)
-- [goal] `var p: Own<T>` - owned, mutable (can reassign and mutate var fields)
-- [goal] `p: Ref<T>` - borrowed, immutable (read-only access)
-- [goal] `var p: Ref<T>` - borrowed, mutable (can mutate var fields)
+- [goal] `val`/`var` controls reassignability only (can you point to something else?)
+- [goal] `&T` vs `&&T` controls borrow mutability (can you mutate through the reference?)
+- [goal] `val p: *T` - cannot reassign p, CAN mutate var fields through p
+- [goal] `var p: *T` - can reassign p, can mutate var fields through p
+- [goal] `p: &T` - immutable borrow (read-only access)
+- [goal] `p: &&T` - mutable borrow (can mutate var fields)
 
 ## Ownership & Memory Safety
 - [goal] Single ownership model - each allocation has exactly one owner
-- [goal] `Ref<T>` parameters borrow (caller keeps ownership)
-- [goal] `Own<T>` parameters take ownership (caller loses access)
+- [goal] `&T` parameters borrow (caller keeps ownership)
+- [goal] `*T` parameters take ownership (caller loses access)
 - [goal] Assignment moves ownership (`val q = p` invalidates `p`)
 - [goal] Automatic deallocation when owner goes out of scope
 - [goal] Auto-free on reassignment (`var p = ...; p = ...` frees old value)
@@ -62,7 +86,7 @@ Slang already has nullable types (`T?`) and arrays (`Array<T>`). This SEP builds
 ## Non-Goals
 - [non-goal] Explicit `Heap.free()` - ownership handles deallocation automatically
 - [non-goal] Uninitialized allocation (`Heap.alloc<T>()`) - future work
-- [non-goal] Fallible allocation (`Heap.tryNew() -> Own<T>?`) - future work
+- [non-goal] Fallible allocation (`Heap.tryNew() -> *T?`) - future work
 - [non-goal] Custom allocator interface - future work, but design anticipates it
 - [non-goal] Address-of operator (`&variable`) - can only get pointers via `Heap.new`
 - [non-goal] Pointer arithmetic
@@ -75,18 +99,19 @@ Slang already has nullable types (`T?`) and arrays (`Array<T>`). This SEP builds
 ## Allocator
 
 - `Heap` - Built-in allocator type for heap memory allocation.
-- `Heap.new(value)` - Allocates memory on the heap, stores the value, and returns `Own<T>`. Type T is inferred from the value. The value can be:
+- `Heap.new(value)` - Allocates memory on the heap, stores the value, and returns `*T`. Type T is inferred from the value. The value can be:
   - A literal: `Heap.new(Point{ 1, 2 })`
   - A stack-allocated variable: `Heap.new(p)` (moves `p` to heap)
-  - An owned pointer: `Heap.new(ownedPtr)` (creates `Own<Own<T>>` - a pointer to a pointer)
+  - An owned pointer: `Heap.new(ownedPtr)` (creates `**T` - a pointer to a pointer)
 - **Allocation failure:** `Heap.new()` panics if allocation fails (out of memory). This matches Go, Swift, and Kotlin behavior. For fallible allocation, see Future Work (`Heap.tryNew`).
 
 ## Pointer Types
 
-- `Own<T>` - Owned pointer. You control the lifetime; memory freed when owner goes out of scope.
-- `Ref<T>` - Borrowed reference. Temporary access without ownership.
-- `Own<T>?` - Nullable owned pointer (can be `null` or a valid pointer).
-- `.copy()` - Create a deep copy, returning a new independent `Own<T>`.
+- `*T` - Owned pointer. You control the lifetime; memory freed when owner goes out of scope.
+- `&T` - Immutable borrowed reference. Read-only temporary access without ownership.
+- `&&T` - Mutable borrowed reference. Can mutate `var` fields of borrowed data.
+- `*T?` - Nullable owned pointer (can be `null` or a valid pointer).
+- `.copy()` - Create a deep copy, returning a new independent `*T`.
 
 ## Automatic Borrowing
 
@@ -94,18 +119,18 @@ Borrowing happens automatically based on context - no explicit `.borrow()` metho
 
 | Context | Source | Result |
 |---------|--------|--------|
-| Pass `Own<T>` to param `Ref<T>` | `foo(p)` | Auto-borrow (immutable) |
-| Pass `Own<T>` to param `var Ref<T>` | `bar(p)` | Auto-borrow (mutable) |
-| Method call with `self: Ref<T>` | `p.method()` | Auto-borrow based on receiver |
-| Field access on `Own<T>` | `p.field` | Auto-dereference |
+| Pass `*T` to param `&T` | `foo(p)` | Auto-borrow (immutable) |
+| Pass `*T` to param `&&T` | `bar(p)` | Auto-borrow (mutable) |
+| Method call with `self: &T` | `p.method()` | Auto-borrow based on receiver |
+| Field access on `*T` | `p.field` | Auto-dereference |
 
 ## Array Indexing
 
 Array indexing behavior depends on element type:
 
 - **Primitive elements** (`Array<i64>`, etc.): `arr[i]` returns a copy of the value
-- **Owned pointer elements** (`Array<Own<T>>`): `arr[i]` returns `Ref<T>` (borrows the element)
-- **Mutability inherited**: If the array is `var`, indexing returns `var Ref<T>` for owned elements
+- **Owned pointer elements** (`Array<*T>`): `arr[i]` returns `&T` or `&&T` (borrows the element)
+- **Mutability**: Use explicit `&&T` parameter to get mutable access to elements
 
 ```slang
 // Primitive array - indexing returns copy
@@ -113,59 +138,60 @@ val nums = Heap.new([1, 2, 3])
 val x = nums[0]               // x: i64 (copy)
 
 // Owned pointer array - indexing borrows
-val points: Own<Array<Own<Point>>> = Heap.new([...])
-val p = points[0]             // p: Ref<Point> (immutable borrow)
+val points: *Array<*Point> = Heap.new([...])
+val p = points[0]             // p: &Point (immutable borrow)
 // points[0] still owns the element
 
-// Mutable array - indexing returns mutable borrow
-var mutablePoints: Own<Array<Own<Point>>> = Heap.new([...])
-val q = mutablePoints[0]      // q: var Ref<Point> (mutable borrow)
-q.x = 100                     // OK: can mutate through var Ref
+// Mutable access to array elements
+mutateFirst = (arr: &&Array<*Point>) {
+    val x = arr[0]            // x: &&Point (mutable borrow)
+    x.x = 100                 // OK: can mutate through &&T
+}
 
 // To actually remove/replace elements, use methods:
-val removed = points.remove(0)    // Returns Own<Point>, shifts elements
+val removed = points.remove(0)    // Returns *Point, shifts elements
 val old = points.set(0, newPoint) // Replaces element, returns old one
 ```
 
 **Rationale:** Moving elements out of arrays via indexing would leave "holes" and require complex tracking. Borrowing is always safe.
 
-## Field Access Through Ref
+## Field Access Through &T
 
-When accessing an `Own<T>` field through a `Ref`, the result is automatically borrowed:
+When accessing an `*T` field through a `&T` or `&&T`, the result is automatically borrowed:
 
-- Through `Ref<Container>`: field `Own<T>` becomes `Ref<T>`
-- Through `var Ref<Container>`: field `Own<T>` becomes `var Ref<T>`
+- Through `&Container`: field `*T` becomes `&T`
+- Through `&&Container`: field `*T` becomes `&&T`
 
 ```slang
 Container = struct {
-    val data: Own<Point>
+    val data: *Point
 }
 
 // Immutable access
-readData = (c: Ref<Container>) {
-    val p = c.data            // p: Ref<Point> (auto-borrow)
+readData = (c: &Container) {
+    val p = c.data            // p: &Point (auto-borrow)
     print(p.x)                // OK: read access
-    // p.x = 10               // Error: p is not var
+    // p.x = 10               // Error: &T is read-only
 }
 
 // Mutable access
-mutateData = (var c: Ref<Container>) {
-    val p = c.data            // p: var Ref<Point> (auto-borrow, inherits mutability)
-    p.x = 10                  // OK: can mutate through var Ref
+mutateData = (c: &&Container) {
+    val p = c.data            // p: &&Point (auto-borrow, inherits mutability)
+    p.x = 10                  // OK: can mutate through &&T
 }
 ```
 
 **Chained access:** Mutability propagates through the chain.
 
 ```slang
-Outer = struct { val inner: Own<Inner> }
-Inner = struct { val point: Own<Point> }
+Outer = struct { val inner: *Inner }
+Inner = struct { val point: *Point }
 
-deepAccess = (var o: Ref<Outer>) {
-    val p = o.inner.point     // p: var Ref<Point>
-    // o is var Ref<Outer>
-    // o.inner is var Ref<Inner> (auto-borrow, inherits var)
-    // o.inner.point is var Ref<Point> (auto-borrow, inherits var)
+deepAccess = (o: &&Outer) {
+    val p = o.inner.point     // p: &&Point
+    // o is &&Outer
+    // o.inner is &&Inner (auto-borrow, inherits mutability)
+    // o.inner.point is &&Point (auto-borrow, inherits mutability)
     p.x = 100                 // OK
 }
 ```
@@ -174,43 +200,43 @@ deepAccess = (var o: Ref<Outer>) {
 
 ## Mutability
 
-Mutability is controlled by `val`/`var` on the binding, not by the pointer type:
+**Key principle**: `val`/`var` controls **reassignability** only; `&T` vs `&&T` controls **borrow mutability**:
 
 | Declaration | Can Reassign | Can Mutate Fields |
 |-------------|--------------|-------------------|
-| `val p: Own<T>` | No | No |
-| `var p: Own<T>` | Yes | Yes (if field is `var`) |
-| `p: Ref<T>` | — | No |
-| `var p: Ref<T>` | — | Yes (if field is `var`) |
+| `val p: *T` | No | Yes (if field is `var`) |
+| `var p: *T` | Yes | Yes (if field is `var`) |
+| `p: &T` | — | No |
+| `p: &&T` | — | Yes (if field is `var`) |
 
 ## Type Usage
 
-- `Own<T>` - Can be used anywhere: variables, parameters, return types, struct fields. T must be a non-nullable type.
-- `Ref<T>` - Can be used as function parameters. Cannot be stored in struct fields or returned from functions (would dangle). T must be a non-nullable type.
-- `Own<T>?` - Nullable owned pointer. The pointer may be null; if non-null, it points to a valid T.
-- `Ref<T>?` - Nullable borrowed reference. Can be used as function parameter for optional borrowed data.
-- **Recursive types** - Structs can reference themselves via `Own<Self>?` fields (must be nullable to allow a base case).
-- **No `Own<T?>`** - Pointers to nullable types are not supported. Use `Own<T>?` instead.
+- `*T` - Can be used anywhere: variables, parameters, return types, struct fields. T must be a non-nullable type.
+- `&T` - Can be used as function parameters. Cannot be stored in struct fields or returned from functions (would dangle). T must be a non-nullable type.
+- `*T?` - Nullable owned pointer. The pointer may be null; if non-null, it points to a valid T.
+- `&T?` - Nullable borrowed reference. Can be used as function parameter for optional borrowed data.
+- **Recursive types** - Structs can reference themselves via `*Self?` fields (must be nullable to allow a base case).
+- **No `*T?`** - Pointers to nullable types are not supported. Use `*T?` instead.
 
 ```slang
 // ✅ Valid pointer types
-val p: Own<Point> = Heap.new(Point{ 1, 2 })
-val q: Own<Point>? = null
-val r: Own<Array<Own<Point>>> = Heap.new([...])
+val p: *Point = Heap.new(Point{ 1, 2 })
+val q: *Point? = null
+val r: *Array<*Point> = Heap.new([...])
 
-// ❌ Invalid: T? inside Own
-val bad: Own<Point?> = ...             // Error: Own<T> requires non-nullable T
+// ❌ Invalid: T? inside *
+val bad: *Point? = ...             // Error: *T requires non-nullable T
 ```
 
 ```slang
 // Recursive type example
 Node = struct {
     val value: i64
-    var next: Own<Node>?               // nullable self-reference
+    var next: *Node?               // nullable self-reference
 }
 
 // Optional borrowed data
-maybeUse = (p: Ref<Point>?) {
+maybeUse = (p: &Point?) {
     if (p != null) {
         print(p.x)
     }
@@ -228,7 +254,7 @@ main = () {
 Types are either **copyable** (can be duplicated) or **move-only** (must transfer ownership):
 
 - **Copyable types:** Primitives (`i64`, `bool`, `string`) and structs containing only copyable fields
-- **Move-only types:** `Own<T>` and any struct containing `Own<T>` fields
+- **Move-only types:** `*T` and any struct containing `*T` fields
 
 ```slang
 // Copyable - all fields are primitives
@@ -236,8 +262,8 @@ Point = struct { val x: i64; val y: i64 }
 val p1 = Point{ 1, 2 }
 val p2 = p1            // Copy - both valid
 
-// Move-only - contains Own<T>
-Container = struct { val data: Own<Point> }
+// Move-only - contains *T
+Container = struct { val data: *Point }
 val c1 = Container{ Heap.new(Point{ 1, 2 }) }
 val c2 = c1            // Move - c1 is invalid
 
@@ -245,7 +271,7 @@ val c2 = c1            // Move - c1 is invalid
 val c3 = c1.copy()     // Deep copy - both valid (if c1 wasn't moved)
 ```
 
-This affects array indexing: `arr[i]` returns a copy for copyable element types, but `Ref<T>` for move-only element types.
+This affects array indexing: `arr[i]` returns a copy for copyable element types, but `&T` for move-only element types.
 
 ## Auto-Dereference
 
@@ -255,10 +281,10 @@ This affects array indexing: `arr[i]` returns a copy for copyable element types,
 - **Error on non-nullable:** Using `?.` on a non-nullable pointer is a compile error.
 
 ```slang
-val p = Heap.new(Point{ 1, 2 })       // Own<Point>, not nullable
+val p = Heap.new(Point{ 1, 2 })       // *Point, not nullable
 print(p?.x)                            // Error: safe navigation on non-nullable type
 
-val q: Own<Point>? = maybeGet()
+val q: *Point? = maybeGet()
 print(q?.x)                            // OK: q is nullable
 ```
 
@@ -267,7 +293,7 @@ print(q?.x)                            // OK: q is nullable
 - `p == q` for pointers is **identity comparison** (same address), not value comparison.
 - For value comparison, compare fields directly: `p.x == q.x && p.y == q.y`.
 - Nullable pointers can be compared to `null`: `p == null`.
-- `Own<T>` can be compared with `Ref<T>` - both are identity (address) comparison.
+- `*T` can be compared with `&T` - both are identity (address) comparison.
 
 ```slang
 val p = Heap.new(Point{ 1, 2 })
@@ -278,11 +304,11 @@ print(p == q)                         // false: different allocations
 print(p == r)                         // false: copy is separate allocation
 print(p.x == q.x && p.y == q.y)       // true: same field values
 
-val n: Own<Point>? = null
+val n: *Point? = null
 print(n == null)                      // true
 
-// Own<T> vs Ref<T> comparison
-compare = (r: Ref<Point>) -> bool {
+// *T vs &T comparison
+compare = (r: &Point) -> bool {
     r == p                            // OK: identity comparison
 }
 print(compare(p))                     // true: same address
@@ -291,19 +317,19 @@ print(compare(q))                     // false: different address
 
 ## Implicit Conversions
 
-- `Own<T>` → `Ref<T>` - Automatic when passing to function expecting `Ref<T>` parameter.
-- `Own<T>?` → `Ref<T>` - **Not allowed.** Must unwrap first via null check or smart cast.
+- `*T` → `&T` - Automatic when passing to function expecting `&T` parameter.
+- `*T?` → `&T` - **Not allowed.** Must unwrap first via null check or smart cast.
 
 ```slang
-foo = (p: Ref<Point>) { print(p.x) }
+foo = (p: &Point) { print(p.x) }
 
 main = () {
-    val p: Own<Point>? = maybeGet()
+    val p: *Point? = maybeGet()
 
     // foo(p)                         // Error: cannot auto-borrow nullable pointer
 
     if (p != null) {
-        foo(p)                         // OK: p is smart cast to Own<Point>
+        foo(p)                         // OK: p is smart cast to *Point
     }
 }
 ```
@@ -313,18 +339,18 @@ main = () {
 Slang uses a simple ownership model that provides memory safety without garbage collection or lifetime annotations.
 
 **Two concepts to remember:**
-1. **Ownership** - `Own<T>` means you control the lifetime; `Ref<T>` means you're borrowing
+1. **Ownership** - `*T` means you control the lifetime; `&T` means you're borrowing
 2. **Mutability** - `val` means immutable; `var` means mutable
 
 ## Core Concepts
 
 ### Single Ownership
 
-Every `Own<T>` has exactly one owner. When the owner goes out of scope, the memory is automatically freed.
+Every `*T` has exactly one owner. When the owner goes out of scope, the memory is automatically freed.
 
 ```slang
 main = () {
-    val p = Heap.new(Point{ 1, 2 })    // p: Own<Point>, main owns it
+    val p = Heap.new(Point{ 1, 2 })    // p: *Point, main owns it
     print(p.x)
 }                                       // p automatically freed here
 ```
@@ -343,44 +369,44 @@ main = () {
 }
 ```
 
-### Borrowing with Ref<T>
+### Borrowing with &T
 
-`Ref<T>` parameters borrow - the caller keeps ownership.
+`&T` parameters borrow - the caller keeps ownership.
 
 ```slang
-// Ref<T> parameter = immutable borrow (read-only)
-printPoint = (p: Ref<Point>) {
+// &T parameter = immutable borrow (read-only)
+printPoint = (p: &Point) {
     print(p.x)
     print(p.y)
-    // p.x = 100                        // Error: p is not var
+    // p.x = 100                        // Error: &T is read-only
 }
 
-// var Ref<T> parameter = mutable borrow (read-write)
-scalePoint = (var p: Ref<Point>, factor: i64) {
-    p.x = p.x * factor                  // OK: p is var
+// &&T parameter = mutable borrow (read-write)
+scalePoint = (p: &&Point, factor: i64) {
+    p.x = p.x * factor                  // OK: &&T allows mutation
     p.y = p.y * factor
 }
 
 main = () {
     var p = Heap.new(Point{ 1, 2 })
 
-    printPoint(p)                       // borrows as Ref<Point> (immutable)
+    printPoint(p)                       // borrows as &Point (immutable)
     printPoint(p)                       // can borrow again
 
-    scalePoint(p, 10)                   // borrows as var Ref<Point> (mutable)
+    scalePoint(p, 10)                   // borrows as &&Point (mutable)
     print(p.x)                          // prints: 10
 
     print(p.x)                          // OK: main still owns p
 }
 ```
 
-### Ownership Transfer with Own<T>
+### Ownership Transfer with *T
 
-`Own<T>` parameters take ownership - the caller loses access.
+`*T` parameters take ownership - the caller loses access.
 
 ```slang
-// Own<T> parameter = takes ownership
-consume = (p: Own<Point>) {
+// *T parameter = takes ownership
+consume = (p: *Point) {
     print(p.x)
 }                                       // p freed here - we own it
 
@@ -398,7 +424,7 @@ Stack-allocated values can be moved to the heap with `Heap.new()`.
 ```slang
 main = () {
     val p = Point{ 1, 2 }               // stack-allocated
-    val h = Heap.new(p)                 // moves p to heap, h: Own<Point>
+    val h = Heap.new(p)                 // moves p to heap, h: *Point
 
     // print(p.x)                       // Error: p was moved
     print(h.x)                          // OK: access through h
@@ -409,7 +435,7 @@ This is useful when you create a value and later decide it needs to live on the 
 
 ### Deep Copy with `.copy()`
 
-To create an independent copy (both remain valid), use `.copy()`. This is a built-in method on `Own<T>`.
+To create an independent copy (both remain valid), use `.copy()`. This is a built-in method on `*T`.
 
 ```slang
 main = () {
@@ -421,31 +447,31 @@ main = () {
 }                                       // both freed independently
 ```
 
-**Safe navigation with `.copy()`:** For nullable pointers, `?.copy()` returns `Own<T>?`:
+**Safe navigation with `.copy()`:** For nullable pointers, `?.copy()` returns `*T?`:
 ```slang
 main = () {
-    val p: Own<Point>? = maybeGetPoint()
-    val q: Own<Point>? = p?.copy()      // q is null if p is null, otherwise deep copy
+    val p: *Point? = maybeGetPoint()
+    val q: *Point? = p?.copy()      // q is null if p is null, otherwise deep copy
 }
 ```
 
-**`.copy()` is only for `Own<T>`:** Stack-allocated copyable types use assignment to copy. Using `.copy()` on a stack value is an error:
+**`.copy()` is only for `*T`:** Stack-allocated copyable types use assignment to copy. Using `.copy()` on a stack value is an error:
 ```slang
 main = () {
     val p = Point{ 1, 2 }              // Stack-allocated, copyable
     val q = p                          // Copy via assignment - both valid
-    // val r = p.copy()                // Error: .copy() is only for Own<T>
+    // val r = p.copy()                // Error: .copy() is only for *T
 
     val h = Heap.new(Point{ 1, 2 })    // Heap-allocated
     val i = h.copy()                   // OK: deep copy of owned pointer
 }
 ```
 
-**Nested structures:** `.copy()` performs a deep copy, recursively copying all `Own<T>` fields.
+**Nested structures:** `.copy()` performs a deep copy, recursively copying all `*T` fields.
 
 ```slang
 Container = struct {
-    val data: Own<Point>
+    val data: *Point
 }
 
 main = () {
@@ -476,10 +502,10 @@ main = () {
 
 ## Returning Pointers
 
-Functions can return `Own<T>` - ownership transfers to the caller.
+Functions can return `*T` - ownership transfers to the caller.
 
 ```slang
-createPoint = (x: i64, y: i64) -> Own<Point> {
+createPoint = (x: i64, y: i64) -> *Point {
     Heap.new(Point{ x, y })             // ownership transferred to caller
 }
 
@@ -491,11 +517,11 @@ main = () {
 
 ## Pointers in Structs
 
-Struct fields with `Own<T>` types are **owned** by the struct.
+Struct fields with `*T` types are **owned** by the struct.
 
 ```slang
 Container = struct {
-    val data: Own<Point>
+    val data: *Point
 }
 
 main = () {
@@ -514,7 +540,7 @@ Nullable pointers follow the same ownership rules.
 ```slang
 Node = struct {
     val value: i64
-    var next: Own<Node>?                // nullable, owned by this node
+    var next: *Node?                // nullable, owned by this node
 }
 
 main = () {
@@ -530,14 +556,14 @@ main = () {
 
 | Operation | Syntax | Effect |
 |-----------|--------|--------|
-| Allocate literal | `Heap.new(Point{ 1, 2 })` | Returns `Own<T>`, caller owns it |
-| Stack to heap | `Heap.new(p)` | Moves stack value to heap, returns `Own<T>` |
+| Allocate literal | `Heap.new(Point{ 1, 2 })` | Returns `*T`, caller owns it |
+| Stack to heap | `Heap.new(p)` | Moves stack value to heap, returns `*T` |
 | Assign | `val q = p` | Moves ownership, `p` invalid |
 | Copy | `p.copy()` | Deep copy, both valid |
-| Pass to `Ref<T>` param | `f(p)` | Borrow (immutable) |
-| Pass to `var Ref<T>` param | `f(p)` | Borrow (mutable) |
-| Pass to `Own<T>` param | `f(p)` | Transfers ownership |
-| Return `Own<T>` | `return p` | Transfers to caller |
+| Pass to `&T` param | `f(p)` | Borrow (immutable) |
+| Pass to `&&T` param | `f(p)` | Borrow (mutable) |
+| Pass to `*T` param | `f(p)` | Transfers ownership |
+| Return `*T` | `return p` | Transfers to caller |
 | Reassign `var` | `p = new` | Old value auto-freed |
 | Scope exit | `}` | Owner's memory freed |
 
@@ -549,25 +575,27 @@ val p = Heap.new(Point{ 1, 2 })
 val q = p
 print(p.x)                              // Error: 'p' was moved to 'q'
 
-// Error: cannot mutate through immutable Ref
-readPoint = (p: Ref<Point>) {
+// Error: cannot mutate through immutable &T
+readPoint = (p: &Point) {
     p.x = 100                           // Error: p is not var
 }
 
-// Error: cannot store Ref<T> in struct
+// Error: cannot store &T in struct
 BadStruct = struct {
-    val cached: Ref<Point>              // Error: Ref<T> cannot be stored
+    val cached: &Point              // Error: &T cannot be stored
 }
 
-// Error: cannot return Ref<T>
-bad = (p: Ref<Point>) -> Ref<Point> {
-    p                                   // Error: cannot return Ref<T>
+// Error: cannot return &T
+bad = (p: &Point) -> &Point {
+    p                                   // Error: cannot return &T
 }
 
-// Error: cannot mutate through val binding
+// val binding CAN mutate var fields (val only controls reassignment)
+Point = struct { var x: i64; var y: i64 }
 main = () {
     val p = Heap.new(Point{ 1, 2 })
-    p.x = 10                            // Error: p is val, cannot mutate
+    p.x = 10                            // OK: x is a var field
+    // p = other                        // Error: p is val, cannot reassign
 }
 ```
 
@@ -581,7 +609,7 @@ Cannot assign a pointer into a field of the same struct instance.
 
 ```slang
 Node = struct {
-    var next: Own<Node>?
+    var next: *Node?
 }
 
 main = () {
@@ -592,26 +620,26 @@ main = () {
 
 **Rationale:** Would cause infinite loop or double-free during deallocation.
 
-## Rule: `Ref<T>` Cannot Be Stored or Returned
+## Rule: `&T` Cannot Be Stored or Returned
 
-`Ref<T>` can only appear as function parameter types. Cannot be stored in variables, returned, or used in struct fields.
+`&T` can only appear as function parameter types. Cannot be stored in variables, returned, or used in struct fields.
 
 ```slang
-// ✅ OK: Ref<T> as parameter
-printPoint = (p: Ref<Point>) { print(p.x) }
+// ✅ OK: &T as parameter
+printPoint = (p: &Point) { print(p.x) }
 
-// ❌ Error: Ref<T> as return type
-bad1 = (p: Ref<Point>) -> Ref<Point> { p }
+// ❌ Error: &T as return type
+bad1 = (p: &Point) -> &Point { p }
 
-// ❌ Error: Ref<T> as local variable type
+// ❌ Error: &T as local variable type
 main = () {
     val p = Heap.new(Point{ 1, 2 })
-    val borrowed: Ref<Point> = p       // Error: cannot store Ref<T>
+    val borrowed: &Point = p       // Error: cannot store &T
 }
 
-// ❌ Error: Ref<T> as struct field
+// ❌ Error: &T as struct field
 Cache = struct {
-    val ref: Ref<Point>                // Error: Ref<T> cannot be stored
+    val ref: &Point                // Error: &T cannot be stored
 }
 ```
 
@@ -684,7 +712,7 @@ Cannot move individual fields out of a struct.
 
 ```slang
 Outer = struct {
-    val inner: Own<Inner>
+    val inner: *Inner
 }
 
 main = () {
@@ -695,33 +723,33 @@ main = () {
 
 **Rationale:** Keeps structs fully valid or fully invalid.
 
-## Rule: Mutable Borrow Requires `var` Source
+## Rule: Val Binding Can Create Mutable Borrows
 
-To create a mutable borrow (`var Ref<T>`), the source must be a `var` binding.
+Since `val`/`var` only controls reassignability (not mutability), a `val` binding CAN create mutable borrows.
 
 ```slang
-mutate = (var p: Ref<Point>) {
+mutate = (p: &&Point) {
     p.x = 10
 }
 
 main = () {
     val p = Heap.new(Point{ 1, 2 })   // val binding
-    mutate(p)                          // Error: cannot create mutable borrow from val binding
+    mutate(p)                          // OK: val only prevents reassigning p
+    print(p.x)                         // prints 10
 
-    var q = Heap.new(Point{ 1, 2 })   // var binding
-    mutate(q)                          // OK: q is var
+    // p = other                       // Error: cannot reassign val binding
 }
 ```
 
-**Rationale:** A `val` binding promises immutability. Allowing mutable borrows would violate that promise.
+**Rationale:** `val` means you can't reassign the binding itself. Mutating through the pointer doesn't change what `p` points to - it changes the pointed-to data. This is similar to Java's `final` or JavaScript's `const` for object references.
 
 ## Rule: Borrow Exclusivity
 
-A value can have **either** one mutable borrow (`var Ref<T>`) **or** any number of immutable borrows (`Ref<T>`), but not both simultaneously.
+A value can have **either** one mutable borrow (`&&T`) **or** any number of immutable borrows (`&T`), but not both simultaneously.
 
 ```slang
 // ✅ OK: multiple immutable borrows
-readBoth = (a: Ref<Point>, b: Ref<Point>) {
+readBoth = (a: &Point, b: &Point) {
     print(a.x + b.x)
 }
 main = () {
@@ -730,7 +758,7 @@ main = () {
 }
 
 // ❌ Error: multiple mutable borrows
-bothMutate = (var a: Ref<Point>, var b: Ref<Point>) {
+bothMutate = (a: &&Point, b: &&Point) {
     a.x = 10
     b.x = 20
 }
@@ -740,7 +768,7 @@ main = () {
 }
 
 // ❌ Error: mutable + immutable borrow
-mixedBorrow = (var a: Ref<Point>, b: Ref<Point>) {
+mixedBorrow = (a: &&Point, b: &Point) {
     a.x = b.x + 1
 }
 main = () {
@@ -757,7 +785,7 @@ Moving a nullable pointer moves it regardless of runtime null state.
 
 ```slang
 main = () {
-    val p: Own<Point>? = maybeGetPoint()
+    val p: *Point? = maybeGetPoint()
 
     if (p != null) {
         val q = p                      // moves p
@@ -775,10 +803,10 @@ Inside a null check, nullable pointers are smart cast to their non-null type. In
 
 ```slang
 main = () {
-    val p: Own<Point>? = maybeGetPoint()
+    val p: *Point? = maybeGetPoint()
 
     if (p != null) {
-        // p is smart cast to Own<Point> inside this block
+        // p is smart cast to *Point inside this block
         print(p.x)                     // OK: no ?. needed
         print(p.y)                     // OK: direct access
 
@@ -798,7 +826,7 @@ main = () {
 **Reassignment preserves validity:**
 ```slang
 main = () {
-    var p: Own<Point>? = maybeGetPoint()
+    var p: *Point? = maybeGetPoint()
 
     if (p != null) {
         p = null                       // reassign, not move
@@ -811,10 +839,10 @@ main = () {
 **While loops:** Smart casting also works in `while` loop bodies:
 ```slang
 main = () {
-    var p: Own<Point>? = maybeGetPoint()
+    var p: *Point? = maybeGetPoint()
 
     while (p != null) {
-        print(p.x)                     // p: Own<Point> (smart cast)
+        print(p.x)                     // p: *Point (smart cast)
         p = getNextPoint()             // may reassign to null
     }
 }
@@ -823,16 +851,16 @@ main = () {
 **Nested null checks:** When accessing nullable fields on smart-casted values:
 ```slang
 Container = struct {
-    val data: Own<Point>?
+    val data: *Point?
 }
 
 main = () {
-    val c: Own<Container>? = maybeGetContainer()
+    val c: *Container? = maybeGetContainer()
 
     if (c != null) {
-        // c: Own<Container> (smart cast)
+        // c: *Container (smart cast)
         if (c.data != null) {
-            // c.data: Ref<Point> (auto-borrow + smart cast)
+            // c.data: &Point (auto-borrow + smart cast)
             print(c.data.x)            // OK: direct access
         }
     }
@@ -864,19 +892,19 @@ main = () {
 
 **Rationale:** Consistent with struct mutability rules; `val`/`var` applies uniformly.
 
-## Rule: Closures Cannot Capture `Ref<T>`
+## Rule: Closures Cannot Capture `&T`
 
-Closures can be stored or returned, so they cannot capture `Ref<T>` (would violate "no storing Ref").
+Closures can be stored or returned, so they cannot capture `&T` (would violate "no storing &T").
 
 ```slang
-// ❌ Error: cannot capture Ref<T>
-useRef = (p: Ref<Point>) {
+// ❌ Error: cannot capture &T
+useRef = (p: &Point) {
     val f = () {
-        print(p.x)                     // Error: cannot capture Ref<T>
+        print(p.x)                     // Error: cannot capture &T
     }
 }
 
-// ✅ OK: capture Own<T> (moves ownership into closure)
+// ✅ OK: capture *T (moves ownership into closure)
 main = () {
     val p = Heap.new(Point{ 1, 2 })
 
@@ -888,55 +916,55 @@ main = () {
     f()                                // OK: closure owns p
 }
 
-// ✅ OK: pass Ref<T> as parameter instead of capturing
-forEach = (arr: Ref<Array<i64>>, f: (i64) -> void) {
+// ✅ OK: pass &T as parameter instead of capturing
+forEach = (arr: &Array<i64>, f: (i64) -> void) {
     for (var i = 0; i < len(arr); i = i + 1) {
         f(arr[i])
     }
 }
 ```
 
-**Rationale:** Closures can escape their creating scope; captured `Ref<T>` could dangle.
+**Rationale:** Closures can escape their creating scope; captured `&T` could dangle.
 
-## Rule: Generics Cannot Store `Ref<T>`
+## Rule: Generics Cannot Store `&T`
 
-Type parameters can only be instantiated with `Ref<T>` if used exclusively in function parameter positions.
+Type parameters can only be instantiated with `&T` if used exclusively in function parameter positions.
 
 ```slang
-// ✅ OK: Own<T> as type argument for fields
+// ✅ OK: *T as type argument for fields
 List = struct<T> {
     var items: Array<T>
 }
 
 main = () {
-    var list: List<Own<Point>> = List{ [] }
+    var list: List<*Point> = List{ [] }
     list.items = append(list.items, Heap.new(Point{ 1, 2 }))
 }
 
-// ❌ Error: Ref<T> as type argument for fields
+// ❌ Error: &T as type argument for fields
 Cache = struct<T> {
-    val item: T                        // if T = Ref<Point>, this is invalid
+    val item: T                        // if T = &Point, this is invalid
 }
 
 main = () {
     val p = Heap.new(Point{ 1, 2 })
-    val c: Cache<Ref<Point>> = ...     // Error: Ref<T> cannot be stored
+    val c: Cache<&Point> = ...     // Error: &T cannot be stored
 }
 ```
 
-**Rationale:** Consistent with "Ref<T> cannot be stored" rule.
+**Rationale:** Consistent with "&T cannot be stored" rule.
 
 ## Rule: Temporary Lifetimes
 
 Temporaries (values returned from function calls) live until the end of the statement.
 
 ```slang
-createPoint = () -> Own<Point> {
+createPoint = () -> *Point {
     Heap.new(Point{ 10, 20 })
 }
 
 main = () {
-    // Temporary Own<Point> lives for the full statement
+    // Temporary *Point lives for the full statement
     val x = createPoint().x            // OK: temp lives until semicolon
     print(x)                           // prints: 10
     // Temporary freed after previous statement
@@ -954,7 +982,7 @@ main = () {
 
 ## Rule: No Self-Assignment
 
-Assigning an `Own<T>` variable to itself is a compile-time error.
+Assigning an `*T` variable to itself is a compile-time error.
 
 ```slang
 main = () {
@@ -967,11 +995,11 @@ main = () {
 
 ## Rule: No Overlapping Moves in Assignment
 
-The left-hand side and right-hand side of an assignment cannot share paths when `Own<T>` moves are involved.
+The left-hand side and right-hand side of an assignment cannot share paths when `*T` moves are involved.
 
 ```slang
 Container = struct {
-    var data: Own<Data>
+    var data: *Data
 }
 
 main = () {
@@ -992,7 +1020,7 @@ Expressions are evaluated left-to-right. If a variable is moved, any subsequent 
 main = () {
     val p = Heap.new(Point{ 1, 2 })
 
-    // Assuming consume takes Own<T> (moves) and read takes Ref<T> (borrows)
+    // Assuming consume takes *T (moves) and read takes &T (borrows)
     consume(p, p)                      // Error: 'p' moved in first argument, used in second
     consume(p, read(p))                // Error: 'p' moved in first argument, read(p) uses moved value
     consume(read(p), p)                // Error: read(p) evaluates first, but 'p' moved in second arg
@@ -1014,7 +1042,7 @@ main = () {
 Cannot borrow and move the same value in a single function call.
 
 ```slang
-mixed = (r: Ref<Point>, p: Own<Point>) {
+mixed = (r: &Point, p: *Point) {
     print(r.x)
     // p is freed at end of function
 }
@@ -1031,7 +1059,7 @@ main = () {
 
 ## Rule: Early Return Cleanup
 
-When a function returns early, all live `Own<T>` values are dropped in reverse declaration order.
+When a function returns early, all live `*T` values are dropped in reverse declaration order.
 
 ```slang
 main = () {
@@ -1067,37 +1095,40 @@ main = () {
 
 // For pointer elements: x borrows each element
 main = () {
-    val points: Own<Array<Own<Point>>> = Heap.new([
+    val points: *Array<*Point> = Heap.new([
         Heap.new(Point{ 1, 2 }),
         Heap.new(Point{ 3, 4 })
     ])
 
     // x borrows each element (cannot move out of array)
     for x in points {
-        print(x.x)                     // x: Ref<Point> (borrowed)
+        print(x.x)                     // x: &Point (borrowed)
     }
 
     // Array still owns all points
     print(points[0].x)                 // OK
 }
 
-// Mutable iteration: var array produces var Ref
+// Mutable iteration: use &&T to get mutable access
+mutateAll = (points: &&Array<*Point>) {
+    // x is &&Point when iterating through &&T
+    for x in points {
+        x.x = x.x * 2                  // OK: can mutate through &&T
+    }
+}
+
 main = () {
-    var points = Heap.new([
+    val points = Heap.new([
         Heap.new(Point{ 1, 2 }),
         Heap.new(Point{ 3, 4 })
     ])
 
-    // x is var Ref<Point> since points is var
-    for x in points {
-        x.x = x.x * 2                  // OK: can mutate through var Ref
-    }
-
+    mutateAll(points)
     print(points[0].x)                 // prints: 2
 }
 ```
 
-**Rationale:** Moving elements out during iteration would leave holes. Borrowing is safe. Mutability inherits from the source binding.
+**Rationale:** Moving elements out during iteration would leave holes. Borrowing is safe. Use `&&T` for mutable access to elements.
 
 ## Rule: Cannot Reassign While Borrowed
 
@@ -1119,9 +1150,9 @@ main = () {
 
 **Rationale:** Reassignment drops the old value. Dropping a borrowed value would invalidate the borrow.
 
-## Rule: Operators Auto-Dereference `Own<primitive>`
+## Rule: Operators Auto-Dereference `*primitive`
 
-Arithmetic and comparison operators auto-dereference `Own<T>` for primitive types. The result is the primitive type, not a pointer.
+Arithmetic and comparison operators auto-dereference `*T` for primitive types. The result is the primitive type, not a pointer.
 
 ```slang
 main = () {
@@ -1160,12 +1191,12 @@ main = () {
 `null` can be passed directly to functions expecting nullable pointer parameters.
 
 ```slang
-foo = (p: Own<Point>?) { ... }
-bar = (r: Ref<Point>?) { ... }
+foo = (p: *Point?) { ... }
+bar = (r: &Point?) { ... }
 
 main = () {
-    foo(null)                          // OK: null is valid for Own<T>?
-    bar(null)                          // OK: null is valid for Ref<T>?
+    foo(null)                          // OK: null is valid for *T?
+    bar(null)                          // OK: null is valid for &T?
 }
 ```
 
@@ -1194,18 +1225,18 @@ main = () {
 
 ## Rule: Array of Nullable Pointers
 
-For `Array<Own<T>?>`, indexing returns `Ref<T>?` (nullable borrow).
+For `Array<*T?>`, indexing returns `&T?` (nullable borrow).
 
 ```slang
 main = () {
-    val arr: Own<Array<Own<Point>?>> = Heap.new([
+    val arr: *Array<*Point?> = Heap.new([
         Heap.new(Point{ 1, 2 }),
         null,
         Heap.new(Point{ 3, 4 })
     ])
 
-    val p = arr[0]                     // p: Ref<Point>? (non-null borrow)
-    val q = arr[1]                     // q: Ref<Point>? (null)
+    val p = arr[0]                     // p: &Point? (non-null borrow)
+    val q = arr[1]                     // q: &Point? (null)
 
     print(p?.x)                        // prints: 1
     print(q?.x)                        // prints: null
@@ -1216,11 +1247,11 @@ main = () {
 
 ## Rule: Array Literal Type Inference
 
-Array literals containing both `Own<T>` and `null` infer element type `Own<T>?`.
+Array literals containing both `*T` and `null` infer element type `*T?`.
 
 ```slang
 main = () {
-    // Inferred as Array<Own<Point>?>
+    // Inferred as Array<*Point?>
     val arr = [
         Heap.new(Point{ 1, 2 }),
         null,
@@ -1228,7 +1259,7 @@ main = () {
     ]
 
     // Explicit type annotation works too
-    val arr2: Array<Own<Point>?> = [Heap.new(Point{ 5, 6 }), null]
+    val arr2: Array<*Point?> = [Heap.new(Point{ 5, 6 }), null]
 }
 ```
 
@@ -1240,18 +1271,18 @@ Implicit return (expression as last statement) moves ownership just like explici
 
 ```slang
 // These are equivalent:
-createExplicit = () -> Own<Point> {
+createExplicit = () -> *Point {
     val p = Heap.new(Point{ 1, 2 })
     return p                           // Explicit return, moves p
 }
 
-createImplicit = () -> Own<Point> {
+createImplicit = () -> *Point {
     val p = Heap.new(Point{ 1, 2 })
     p                                  // Implicit return, moves p
 }
 
 // Direct allocation works too
-createDirect = () -> Own<Point> {
+createDirect = () -> *Point {
     Heap.new(Point{ 1, 2 })            // Implicit return of temporary
 }
 ```
@@ -1264,12 +1295,12 @@ A function can take ownership and immediately return it (pass-through).
 
 ```slang
 // Valid: takes ownership, returns same value
-identity = (p: Own<Point>) -> Own<Point> {
+identity = (p: *Point) -> *Point {
     p                                  // Ownership transfers through
 }
 
 // Useful for conditional wrapping
-maybeWrap = (p: Own<Point>, shouldWrap: bool) -> Own<Container> {
+maybeWrap = (p: *Point, shouldWrap: bool) -> *Container {
     if (shouldWrap) {
         Heap.new(Container{ p })       // p moves into Container
     } else {
@@ -1303,12 +1334,12 @@ val y = 5           // y cannot be reassigned
 **2. Reference parameters:** `var` means you can mutate through the reference
 ```slang
 // var before parameter: can mutate the referenced data
-mutate = (var p: Ref<Point>) {
-    p.x = 10        // OK: can modify through var Ref
+mutate = (p: &&Point) {
+    p.x = 10        // OK: can modify through &&T
 }
 
 // Without var: read-only access
-read = (p: Ref<Point>) {
+read = (p: &Point) {
     print(p.x)      // OK: can read
     // p.x = 10     // Error: p is not var
 }
@@ -1318,7 +1349,7 @@ read = (p: Ref<Point>) {
 ```slang
 // This does NOT mean p can be reassigned inside the function
 // It means you can mutate the data p points to
-mutate = (var p: Ref<Point>) {
+mutate = (p: &&Point) {
     p.x = 10        // Mutates the Point that p references
     // p = ...      // This would be reassigning the parameter itself (different concept)
 }
@@ -1339,19 +1370,19 @@ These common patterns don't work with single ownership:
 ```slang
 // ❌ Doubly-linked list - two owners for each node
 Node = struct {
-    var next: Own<Node>?
-    var prev: Own<Node>?       // Error: would need two owners
+    var next: *Node?
+    var prev: *Node?       // Error: would need two owners
 }
 
 // ❌ Tree with parent pointer
 TreeNode = struct {
-    var children: Array<Own<TreeNode>>
-    var parent: Own<TreeNode>? // Error: parent owns child, child can't own parent
+    var children: Array<*TreeNode>
+    var parent: *TreeNode? // Error: parent owns child, child can't own parent
 }
 
 // ❌ Graph with cycles
 GraphNode = struct {
-    var neighbors: Array<Own<GraphNode>>   // Error: cycles = multiple owners
+    var neighbors: Array<*GraphNode>   // Error: cycles = multiple owners
 }
 ```
 
@@ -1368,13 +1399,13 @@ DLLNode = struct {
 }
 
 DoublyLinkedList = struct {
-    var nodes: Own<Array<DLLNode>>
+    var nodes: *Array<DLLNode>
     var head: i64
     var tail: i64
 }
 
 // Helper to get node by index
-getNode = (list: Ref<DoublyLinkedList>, idx: i64) -> Ref<DLLNode> {
+getNode = (list: &DoublyLinkedList, idx: i64) -> &DLLNode {
     list.nodes[idx]
 }
 
@@ -1424,15 +1455,15 @@ Pass parent/context as a parameter during traversal rather than storing it.
 ```slang
 TreeNode = struct {
     val value: i64
-    var children: Array<Own<TreeNode>>
+    var children: Array<*TreeNode>
     // No parent field - passed during traversal
 }
 
 // Parent available as parameter, not stored
 traverseWithParent = (
-    node: Ref<TreeNode>,
-    parent: Ref<TreeNode>?,
-    visit: (Ref<TreeNode>, Ref<TreeNode>?) -> void
+    node: &TreeNode,
+    parent: &TreeNode?,
+    visit: (&TreeNode, &TreeNode?) -> void
 ) {
     visit(node, parent)
 
@@ -1442,7 +1473,7 @@ traverseWithParent = (
 }
 
 // Find path to root by walking up via recursion
-findDepth = (node: Ref<TreeNode>, parent: Ref<TreeNode>?) -> i64 {
+findDepth = (node: &TreeNode, parent: &TreeNode?) -> i64 {
     if (parent == null) {
         0
     } else {
@@ -1500,7 +1531,7 @@ Edge = struct {
 }
 
 // Get all neighbors of a node
-neighbors = (g: Ref<Graph>, nodeIdx: i64) -> Array<i64> {
+neighbors = (g: &Graph, nodeIdx: i64) -> Array<i64> {
     var result: Array<i64> = []
     for (var i = 0; i < len(g.edges); i = i + 1) {
         if (g.edges[i].from == nodeIdx) {
@@ -1511,7 +1542,7 @@ neighbors = (g: Ref<Graph>, nodeIdx: i64) -> Array<i64> {
 }
 
 // BFS traversal
-bfs = (g: Ref<Graph>, start: i64) {
+bfs = (g: &Graph, start: i64) {
     var visited: Array<bool> = [false; len(g.nodes)]
     var queue: Array<i64> = [start]
 
@@ -1583,12 +1614,12 @@ Edge = struct {
 }
 
 // Constructor
-newGraph = () -> Own<Graph> {
+newGraph = () -> *Graph {
     Heap.new(Graph{ [], [], [] })
 }
 
 // Add node, returns its index (reuses deleted slots)
-addNode = (var g: Ref<Graph>, label: string, weight: i64) -> i64 {
+addNode = (g: &&Graph, label: string, weight: i64) -> i64 {
     if (len(g.freeList) > 0) {
         // Reuse a deleted slot
         val id = g.freeList[len(g.freeList) - 1]
@@ -1604,18 +1635,18 @@ addNode = (var g: Ref<Graph>, label: string, weight: i64) -> i64 {
 }
 
 // Add directed edge
-addEdge = (var g: Ref<Graph>, from: i64, to: i64) {
+addEdge = (g: &&Graph, from: i64, to: i64) {
     g.edges = append(g.edges, Edge{ from, to, false })
 }
 
 // Add undirected edge (two directed edges)
-connect = (var g: Ref<Graph>, a: i64, b: i64) {
+connect = (g: &&Graph, a: i64, b: i64) {
     addEdge(g, a, b)
     addEdge(g, b, a)
 }
 
 // Delete a node (marks as deleted, adds to free list)
-deleteNode = (var g: Ref<Graph>, nodeIdx: i64) {
+deleteNode = (g: &&Graph, nodeIdx: i64) {
     if (nodeIdx >= 0 && nodeIdx < len(g.nodes) && !g.nodes[nodeIdx].deleted) {
         // Mark node as deleted
         g.nodes[nodeIdx].deleted = true
@@ -1633,7 +1664,7 @@ deleteNode = (var g: Ref<Graph>, nodeIdx: i64) {
 }
 
 // Delete a specific edge
-deleteEdge = (var g: Ref<Graph>, from: i64, to: i64) {
+deleteEdge = (g: &&Graph, from: i64, to: i64) {
     for (var i = 0; i < len(g.edges); i = i + 1) {
         if (g.edges[i].from == from && g.edges[i].to == to && !g.edges[i].deleted) {
             g.edges[i].deleted = true
@@ -1643,12 +1674,12 @@ deleteEdge = (var g: Ref<Graph>, from: i64, to: i64) {
 }
 
 // Check if node is valid (exists and not deleted)
-isValidNode = (g: Ref<Graph>, nodeIdx: i64) -> bool {
+isValidNode = (g: &Graph, nodeIdx: i64) -> bool {
     nodeIdx >= 0 && nodeIdx < len(g.nodes) && !g.nodes[nodeIdx].deleted
 }
 
 // Check if edge exists (and not deleted)
-hasEdge = (g: Ref<Graph>, from: i64, to: i64) -> bool {
+hasEdge = (g: &Graph, from: i64, to: i64) -> bool {
     for (var i = 0; i < len(g.edges); i = i + 1) {
         if (g.edges[i].from == from && g.edges[i].to == to && !g.edges[i].deleted) {
             return true
@@ -1658,7 +1689,7 @@ hasEdge = (g: Ref<Graph>, from: i64, to: i64) -> bool {
 }
 
 // Get all outgoing neighbors (skips deleted)
-outNeighbors = (g: Ref<Graph>, nodeIdx: i64) -> Array<i64> {
+outNeighbors = (g: &Graph, nodeIdx: i64) -> Array<i64> {
     var result: Array<i64> = []
     for (var i = 0; i < len(g.edges); i = i + 1) {
         if (g.edges[i].from == nodeIdx && !g.edges[i].deleted) {
@@ -1672,7 +1703,7 @@ outNeighbors = (g: Ref<Graph>, nodeIdx: i64) -> Array<i64> {
 }
 
 // Count active (non-deleted) nodes
-nodeCount = (g: Ref<Graph>) -> i64 {
+nodeCount = (g: &Graph) -> i64 {
     var count = 0
     for (var i = 0; i < len(g.nodes); i = i + 1) {
         if (!g.nodes[i].deleted) {
@@ -1752,15 +1783,15 @@ Use owned pointers for the primary structure, indices for secondary references.
 TreeNode = struct {
     val id: i64
     val value: i64
-    var children: Array<Own<TreeNode>>
+    var children: Array<*TreeNode>
 }
 
 Tree = struct {
-    var root: Own<TreeNode>
-    var parentMap: Own<Map<i64, i64>>      // child_id -> parent_id
+    var root: *TreeNode
+    var parentMap: *Map<i64, i64>>      // child_id -> parent_id
 }
 
-buildTree = () -> Own<Tree> {
+buildTree = () -> *Tree {
     val child1 = Heap.new(TreeNode{ 1, 10, [] })
     val child2 = Heap.new(TreeNode{ 2, 20, [] })
     val root = Heap.new(TreeNode{ 0, 0, [child1, child2] })
@@ -1772,7 +1803,7 @@ buildTree = () -> Own<Tree> {
     Heap.new(Tree{ root, parents })
 }
 
-getParentId = (tree: Ref<Tree>, nodeId: i64) -> i64? {
+getParentId = (tree: &Tree, nodeId: i64) -> i64? {
     tree.parentMap.get(nodeId)
 }
 ```
@@ -1789,18 +1820,18 @@ Point = class {
     var y: i64
 
     // Immutable borrow - cannot modify self
-    magnitude = (self: Ref<Point>) -> i64 {
+    magnitude = (self: &Point) -> i64 {
         sqrt(self.x * self.x + self.y * self.y)
     }
 
     // Mutable borrow - can modify self, caller keeps ownership
-    scale = (var self: Ref<Point>, factor: i64) {
+    scale = (self: &&Point, factor: i64) {
         self.x = self.x * factor
         self.y = self.y * factor
     }
 
     // Takes ownership - self is consumed
-    intoArray = (self: Own<Point>) -> Array<i64> {
+    intoArray = (self: *Point) -> Array<i64> {
         [self.x, self.y]
     }   // self freed here
 }
@@ -1819,7 +1850,7 @@ main = () {
 
 ## Static Factory Methods
 
-Static methods (no `self` parameter) can return `Own<Self>`:
+Static methods (no `self` parameter) can return `*Self`:
 
 ```slang
 Point = class {
@@ -1827,18 +1858,18 @@ Point = class {
     var y: i64
 
     // Static factory - no self parameter
-    static new = (x: i64, y: i64) -> Own<Point> {
+    static new = (x: i64, y: i64) -> *Point {
         Heap.new(Point{ x, y })
     }
 
     // Static factory with default
-    static origin = () -> Own<Point> {
+    static origin = () -> *Point {
         Point.new(0, 0)
     }
 }
 
 main = () {
-    val p = Point.new(10, 20)         // returns Own<Point>
+    val p = Point.new(10, 20)         // returns *Point
     val origin = Point.origin()
 }
 ```
@@ -1847,13 +1878,13 @@ main = () {
 
 | Receiver Type | Effect | Caller Ownership |
 |---------------|--------|------------------|
-| `self: Ref<T>` | Immutable borrow | Keeps ownership |
-| `var self: Ref<T>` | Mutable borrow | Keeps ownership |
-| `self: Own<T>` | Takes ownership | Loses access |
+| `self: &T` | Immutable borrow | Keeps ownership |
+| `self: &&T` | Mutable borrow | Keeps ownership |
+| `self: *T` | Takes ownership | Loses access |
 
 ## Method Chaining with Consuming Methods
 
-Method chaining works with consuming methods (`self: Own<T>`). The receiver is moved into the method.
+Method chaining works with consuming methods (`self: *T`). The receiver is moved into the method.
 
 ```slang
 Point = class {
@@ -1861,7 +1892,7 @@ Point = class {
     var y: i64
 
     // Consuming method - self is moved in
-    intoArray = (self: Own<Point>) -> Own<Array<i64>> {
+    intoArray = (self: *Point) -> *Array<i64> {
         Heap.new([self.x, self.y])
     }   // self freed here
 }
@@ -1892,7 +1923,7 @@ Non-owning references that don't prevent deallocation.
 ```slang
 // Future syntax (not in this SEP)
 Node = struct {
-    var next: Own<Node>?       // owns next
+    var next: *Node?       // owns next
     var prev: Weak<Node>?      // weak reference, doesn't own
 }
 
@@ -1901,7 +1932,7 @@ main = () {
     var b = Heap.new(Node{ null, a.weak() })
     a.next = b
 
-    // Later: b.prev.upgrade() returns Own<Node>? (null if freed)
+    // Later: b.prev.upgrade() returns *Node? (null if freed)
 }
 ```
 
@@ -1930,7 +1961,7 @@ For cases where allocation failure should be handled gracefully:
 ```slang
 // Future syntax (not in this SEP)
 main = () {
-    val maybePoint = Heap.tryNew(Point{ 1, 2 })  // returns Own<Point>?
+    val maybePoint = Heap.tryNew(Point{ 1, 2 })  // returns *Point?
 
     if (maybePoint == null) {
         print("allocation failed")
@@ -1955,7 +1986,7 @@ main = () {
 
     // drain() consumes the array, yielding owned elements
     for p in points.drain() {
-        consume(p)                    // p: Own<Point>
+        consume(p)                    // p: *Point
     }
 
     // points is now empty/invalid
@@ -1964,11 +1995,156 @@ main = () {
 
 These would be separate SEPs building on the ownership foundation established here.
 
+# Design Evaluation
+
+After implementing and testing the ownership system with pattern examples (linked lists, binary trees, ownership patterns), here is an assessment of the design.
+
+## Evaluation Summary
+
+| Criterion | Score | Assessment |
+|-----------|-------|------------|
+| Easy to understand | 7/10 | Clear mental model, some edge cases surprise users |
+| Easy to code in | 7/10 | Auto-borrow helps significantly, some restrictions feel limiting |
+| Syntax makes sense | 8/10 | Familiar generic syntax, consistent with other languages |
+| Flexibility | 7/10 | Good for trees/lists, missing shared ownership patterns |
+
+## What Works Well
+
+### 1. Simple Mental Model
+The three pointer types have clear, distinct purposes:
+- `*T` = "I own this, it dies when I do"
+- `&T` = "I'm borrowing this to read"
+- `&&T` = "I'm borrowing this to modify"
+
+### 2. Auto-Borrowing Eliminates Boilerplate
+No explicit `.borrow()` or `&` syntax needed:
+```slang
+printPoint = (p: &Point) { print(p.x) }
+val p = Heap.new(Point{ 1, 2 })
+printPoint(p)  // Just works - auto-borrows
+```
+
+### 3. Ownership Restoration on Reassignment
+The pattern `x = fn(x)` naturally works:
+```slang
+var list: *Node? = null
+list = prepend(list, 1)  // list moved to prepend, result assigned back
+list = prepend(list, 2)  // works again - ownership was restored
+```
+
+### 4. Safe Nullable Traversal
+The `?.` operator makes recursive structure traversal clean:
+```slang
+val v1 = list?.value
+val v2 = list?.next?.value
+val v3 = list?.next?.next?.value
+```
+
+### 5. Automatic Recursive Cleanup
+Nested `*T?` fields are automatically freed:
+```slang
+TreeNode = struct {
+    var left: *TreeNode?
+    var right: *TreeNode?
+    val value: i64
+}
+// Entire tree freed when root goes out of scope
+```
+
+## Potential User Struggles
+
+### 1. Move vs Copy Confusion (Medium)
+Users must learn which types are copyable vs move-only:
+```slang
+val x = 5
+val y = x      // OK - i64 is copyable
+
+val p = Heap.new(Point{ 1, 2 })
+val q = p      // MOVES p - *Point is move-only
+print(p.x)     // ERROR: use of moved value
+```
+
+**Mitigation:** Clear error messages explain moves. Consider adding visual move syntax in future (e.g., `val q = move p`).
+
+### 2. Conditional Moves are Conservative (Medium)
+Moving in any branch invalidates the variable in all paths:
+```slang
+val p = Heap.new(Point{ 1, 2 })
+if condition {
+    consume(p)  // moves p
+}
+print(p.x)  // ERROR even if condition was false
+```
+
+**Rationale:** Simpler to implement and reason about. Flow-sensitive analysis could relax this in future.
+
+### 3. No Moves Inside Loops (Medium)
+Cannot move inside loop bodies:
+```slang
+for i in 0..10 {
+    consume(p)  // ERROR: cannot move inside loop
+}
+```
+
+**Rationale:** Prevents double-free on second iteration. Users must restructure (e.g., use `.copy()` or move before loop).
+
+### 4. References Only in Parameters (Low)
+Cannot store `&T` in local variables or struct fields:
+```slang
+// Cannot do this:
+val r: &Point = p  // ERROR
+
+// Must pass directly to functions:
+usePoint(p)  // OK - auto-borrows at call site
+```
+
+**Rationale:** Prevents dangling references. More complex lifetime analysis could enable this in future.
+
+### 5. Borrow Exclusivity Across Arguments (Low)
+Same variable with mixed borrow types fails:
+```slang
+fn = (a: &&Point, b: &Point) { ... }
+fn(p, p)  // ERROR: cannot borrow as both mutable and immutable
+```
+
+**Rationale:** Prevents data races. This matches Rust's rules.
+
+## Design Trade-offs
+
+### Simplicity vs Flexibility
+We chose **simplicity**: no lifetime annotations, no explicit borrow syntax, references parameter-only. This makes the system easier to learn but less flexible than Rust.
+
+### Safety vs Convenience
+We chose **safety**: conservative conditional moves, no loop moves. Users occasionally need to restructure code, but the compiler catches all use-after-move bugs.
+
+### Implicit vs Explicit
+We chose **mostly implicit**: auto-borrowing, auto-dereference, implicit moves. This reduces boilerplate but can make moves less visible in code.
+
+## Validated Patterns
+
+The following patterns work well with the current system (see `_programs/patterns/`):
+
+1. **Linked List** - Build with `prepend(list, value)`, traverse with `?.`
+2. **Binary Tree** - Recursive `*T?` children, automatic cleanup
+3. **Factory Functions** - Return `*T` for caller ownership
+4. **Transform Functions** - Take `*T`, return `*T`
+5. **Read-Only Access** - Use `&T` parameters
+6. **Mutation** - Use `&&T` parameters
+
+## Known Limitations
+
+1. **No Shared Ownership** - Everything is unique or borrowed; no `Rc<T>` yet
+2. **No Weak References** - Cannot break reference cycles
+3. **No Interior Mutability** - No `Cell<T>` or `RefCell<T>`
+4. **No Deep Copy** - `.copy()` not yet implemented
+
+These are documented in Future Work and will be addressed in subsequent SEPs.
+
 # Implementation
 
 ## Built-in Types Infrastructure
 
-This SEP introduces several new built-in types (`Own<T>`, `Ref<T>`, `Heap`) and built-in methods (`.copy()`). This section documents the infrastructure needed to support these and enable easier addition of built-in types in the future.
+This SEP introduces several new built-in types (`*T`, `&T`, `Heap`) and built-in methods (`.copy()`). This section documents the infrastructure needed to support these and enable easier addition of built-in types in the future.
 
 ### Current Built-in Types
 
@@ -1983,8 +2159,8 @@ These are currently hardcoded in the type system with special-case handling thro
 
 | Type | Category | Description |
 |------|----------|-------------|
-| `Own<T>` | Generic wrapper | Owned pointer type |
-| `Ref<T>` | Generic wrapper | Borrowed reference type |
+| `*T` | Generic wrapper | Owned pointer type |
+| `&T` | Generic wrapper | Borrowed reference type |
 | `Heap` | Singleton type | Built-in allocator with `.new()` method |
 
 ### Built-in Type Registry
@@ -1996,7 +2172,7 @@ To enable easier addition of built-in types, introduce a **Built-in Type Registr
 
 type BuiltinType struct {
     Name           string
-    TypeParams     []string              // e.g., ["T"] for Own<T>
+    TypeParams     []string              // e.g., ["T"] for *T
     Methods        map[string]BuiltinMethod
     Constraints    TypeConstraints       // e.g., T must be non-nullable
 }
@@ -2014,22 +2190,29 @@ type TypeConstraints struct {
     // Future: other constraints
 }
 
+// Internal names for pointer types (surface syntax: *T, &T, &&T)
 var BuiltinTypes = map[string]BuiltinType{
-    "Own": {
-        Name:       "Own",
+    "Owned": {  // Surface syntax: *T
+        Name:       "Owned",
         TypeParams: []string{"T"},
         Methods: map[string]BuiltinMethod{
             "copy": {
                 Name:       "copy",
                 Params:     []ParamSpec{},
-                ReturnType: TypeSpec{Kind: "Own", TypeArg: "T"},
+                ReturnType: TypeSpec{Kind: "Owned", TypeArg: "T"},
                 Flags:      MethodFlags{BorrowsReceiver: true},
             },
         },
         Constraints: TypeConstraints{NonNullable: true},
     },
-    "Ref": {
+    "Ref": {  // Surface syntax: &T
         Name:       "Ref",
+        TypeParams: []string{"T"},
+        Methods:    map[string]BuiltinMethod{},
+        Constraints: TypeConstraints{NonNullable: true},
+    },
+    "MutRef": {  // Surface syntax: &&T
+        Name:       "MutRef",
         TypeParams: []string{"T"},
         Methods:    map[string]BuiltinMethod{},
         Constraints: TypeConstraints{NonNullable: true},
@@ -2079,7 +2262,7 @@ var BuiltinSingletons = map[string]BuiltinSingleton{
                 Name:       "new",
                 TypeParams: []string{"T"},              // Inferred from argument
                 Params:     []ParamSpec{{Type: "T"}},
-                ReturnType: TypeSpec{Kind: "Own", TypeArg: "T"},
+                ReturnType: TypeSpec{Kind: "Owned", TypeArg: "T"},
                 Flags:      MethodFlags{MovesArgument: true},
             },
             // Future: tryNew, alloc, etc.
@@ -2095,7 +2278,7 @@ When the semantic analyzer encounters a type or method call:
 1. **Type lookup:** Check `BuiltinTypes` registry first, then user-defined types
 2. **Method lookup:** For `expr.method()`, check if `expr`'s type has the method in registry
 3. **Singleton lookup:** For `Heap.new()`, check `BuiltinSingletons` registry
-4. **Constraint validation:** Ensure type arguments satisfy constraints (e.g., `Own<T?>` fails)
+4. **Constraint validation:** Ensure type arguments satisfy constraints (e.g., `*T?` fails)
 
 ```go
 // Example type resolution
@@ -2132,9 +2315,10 @@ type BuiltinCodegen interface {
 }
 
 var BuiltinCodegenHandlers = map[string]BuiltinCodegen{
-    "Own": &OwnedPointerCodegen{},
-    "Ref": &RefPointerCodegen{},
-    "Array": &ArrayCodegen{},
+    "Owned":  &OwnedPointerCodegen{},   // *T
+    "Ref":    &RefPointerCodegen{},     // &T
+    "MutRef": &MutRefPointerCodegen{},  // &&T
+    "Array":  &ArrayCodegen{},
 }
 ```
 
@@ -2152,9 +2336,9 @@ This infrastructure enables future additions:
 
 | Type | Description | Methods |
 |------|-------------|---------|
-| `Weak<T>` | Weak pointer | `.upgrade() -> Own<T>?` |
+| `Weak<T>` | Weak pointer | `.upgrade() -> *T?` |
 | `Rc<T>` | Reference counted | `.clone() -> Rc<T>`, `.count() -> i64` |
-| `Box<T>` | Simple owned pointer (no custom allocator) | Same as `Own<T>` |
+| `Box<T>` | Simple owned pointer (no custom allocator) | Same as `*T` |
 | `Map<K, V>` | Hash map | `.get()`, `.set()`, `.remove()`, `.keys()` |
 | `Set<T>` | Hash set | `.add()`, `.remove()`, `.contains()` |
 | `Result<T, E>` | Error handling | `.unwrap()`, `.map()`, `.isOk()` |
@@ -2162,7 +2346,7 @@ This infrastructure enables future additions:
 
 ### Implementation Priority
 
-1. **Phase 1 (This SEP):** `Own<T>`, `Ref<T>`, `Heap` with manual implementation
+1. **Phase 1 (This SEP):** `*T`, `&T`, `Heap` with manual implementation
 2. **Phase 2:** Refactor to use registry approach
 3. **Phase 3:** Add more built-in types using registry
 
@@ -2171,34 +2355,36 @@ The registry approach is recommended but not required for initial implementation
 ## Step 1: Lexer Changes
 
 Add token support for pointer syntax:
-- Add `Own` and `Ref` keyword tokens
+- Recognize `*` as pointer/owned type prefix (context-dependent: multiply vs type prefix)
+- Recognize `&` as immutable borrow prefix
+- Recognize `&&` as mutable borrow prefix
 - Add `Heap` keyword token (or treat as built-in identifier)
 - Recognize `.new`, `.copy` as method calls
 
 ## Step 2: Parser Changes
 
 Extend the parser to handle pointer expressions and types:
-- Parse `Own<T>` and `Ref<T>` type syntax
+- Parse `*T` and `&T` type syntax
 - Parse `Heap.new(expr)` as allocation expression
 - Parse `.copy()` method calls
 - Parse `var` modifier on function parameters
-- Enforce `Ref<T>` only in parameter position
+- Enforce `&T` only in parameter position
 
 ## Step 3: Type System Changes
 
 Add pointer types to the semantic analyzer:
 - Add `OwnedPointerType` and `RefPointerType` structs
-- `Heap.new(expr)` returns `Own<T>` where T is inferred
-- Implicit conversion: `Own<T>` → `Ref<T>` for function arguments
-- Error if `Ref<T>` used outside parameter position
+- `Heap.new(expr)` returns `*T` where T is inferred
+- Implicit conversion: `*T` → `&T` for function arguments
+- Error if `&T` used outside parameter position
 - Track `var` modifier on parameters for mutability
 
 ## Step 4: Ownership Tracking
 
 Add ownership analysis pass:
 - Track variable states: `owned`, `moved`
-- `Ref<T>` parameters = borrow (caller keeps ownership)
-- `Own<T>` parameters = ownership transfer (caller loses access)
+- `&T` parameters = borrow (caller keeps ownership)
+- `*T` parameters = ownership transfer (caller loses access)
 - Detect moves on assignment
 - Detect use-after-move
 - Detect moves in loops (error)
@@ -2213,16 +2399,16 @@ Add ownership analysis pass:
 Validate mutability rules:
 - `val` bindings cannot be mutated or reassigned
 - `var` bindings can be mutated (if fields are `var`) and reassigned
-- `Ref<T>` parameters default to immutable
-- `var Ref<T>` parameters allow mutation
-- Borrow exclusivity: one `var Ref<T>` OR many `Ref<T>`, not both
+- `&T` parameters default to immutable
+- `&&T` parameters allow mutation
+- Borrow exclusivity: one `&&T` OR many `&T`, not both
 - No self-referential assignments
 
 ## Step 6: Nullable Pointer Integration
 
 Leverage existing nullable type system:
-- `Own<T>?` is valid - nullable owned pointer
-- `null` assignable to `Own<T>?`
+- `*T?` is valid - nullable owned pointer
+- `null` assignable to `*T?`
 - Safe navigation `?.` works
 - Same ownership rules apply
 
@@ -2231,12 +2417,12 @@ Leverage existing nullable type system:
 Generate ARM64 assembly:
 
 ### Allocation
-- `mmap` syscall for heap memory
+- Call `_sl_alloc(size)` runtime function
 - Store value at allocated address
 - Return pointer
 
 ### Deallocation
-- Insert `munmap` at scope exit for owned pointers
+- Call `_sl_free(ptr, size)` at scope exit for owned pointers
 - Handle nested structs (free inner pointers first)
 - Handle reassignment (free old value before new)
 
@@ -2245,16 +2431,136 @@ Generate ARM64 assembly:
 - Deep copy contents
 - Recursively copy nested pointers
 
+## Memory Allocator
+
+The runtime uses a **bump allocator with size-class free lists** for efficient memory management.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Arena Chain                              │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐               │
+│  │ Arena 3  │───▶│ Arena 2  │───▶│ Arena 1  │───▶ null      │
+│  │ (current)│    │          │    │          │               │
+│  └──────────┘    └──────────┘    └──────────┘               │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌──────────────────────────────────────────┐               │
+│  │ Arena Layout (1MB each):                 │               │
+│  │ [next_ptr:8][bump_space:1048560 bytes]   │               │
+│  └──────────────────────────────────────────┘               │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│                   Size-Class Free Lists                      │
+│  Class 0 (16B):  ○──▶○──▶○──▶null                           │
+│  Class 1 (32B):  ○──▶null                                   │
+│  Class 2 (64B):  ○──▶○──▶○──▶○──▶null                       │
+│  Class 3 (128B): null                                        │
+│  Class 4 (256B): ○──▶null                                   │
+│  Class 5 (512B): null                                        │
+│  Class 6 (1KB):  null                                        │
+│  Class 7 (2KB):  null                                        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Size Classes
+
+| Class | Size | Use Case |
+|-------|------|----------|
+| 0 | 16 bytes | Small structs (1-2 fields) |
+| 1 | 32 bytes | Small structs (3-4 fields) |
+| 2 | 64 bytes | Medium structs, linked list nodes |
+| 3 | 128 bytes | Larger structs |
+| 4 | 256 bytes | Small arrays |
+| 5 | 512 bytes | Medium arrays |
+| 6 | 1024 bytes | Larger arrays |
+| 7 | 2048 bytes | Large structs |
+| 8+ | Aligned | Very large allocations (bump only) |
+
+### Allocation Algorithm
+
+```
+_sl_alloc(size):
+  1. Get size class and rounded size
+  2. If size class < 8 (not large):
+     a. Check free list for this class
+     b. If non-empty: pop head, return it (O(1))
+  3. Bump allocate:
+     a. If bump_ptr + size > arena_end:
+        - Allocate new 1MB arena via mmap
+        - Chain to previous arena
+     b. result = bump_ptr
+     c. bump_ptr += size
+     d. Return result
+```
+
+### Deallocation Algorithm
+
+```
+_sl_free(ptr, size):
+  1. Get size class for size
+  2. If size class >= 8: return (large allocs not recycled)
+  3. Push ptr onto free list head (O(1))
+     - ptr.next = free_list[class]
+     - free_list[class] = ptr
+```
+
+### Arena Retention Policy
+
+**Arenas are allocated but never deallocated.** This is intentional:
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Retain arenas (current)** | Simple, fast, no bookkeeping | Memory stays at high-water mark |
+| Deallocate empty arenas | Returns memory to OS | Complex ref counting, slower |
+
+**Rationale:**
+- Short-lived programs (compilers, scripts): doesn't matter
+- Servers with steady-state allocation: arenas reach working set and stay there
+- Extreme memory spikes: could add explicit `Heap.shrink()` API later
+- Common pattern: jemalloc, tcmalloc also retain memory pools
+
+### Performance Characteristics
+
+| Operation | Complexity | Notes |
+|-----------|------------|-------|
+| Allocation (free list hit) | O(1) | Pop from free list |
+| Allocation (bump) | O(1) | Increment pointer |
+| Allocation (new arena) | O(1) | mmap syscall |
+| Deallocation | O(1) | Push to free list |
+
+### Memory Efficiency
+
+| Scenario | Old (mmap each) | New (bump allocator) |
+|----------|-----------------|----------------------|
+| 1,000 small allocs | ~16 MB | ~1 MB |
+| 50,000 small allocs | ~800 MB | ~4 MB |
+| 5M alloc/free cycles | ~800 MB peak | ~1 MB flat |
+
+The bump allocator reduces memory usage by **~200x** for typical allocation patterns.
+
+### Runtime Functions
+
+| Function | Purpose |
+|----------|---------|
+| `_sl_heap_init` | Initialize first arena (called at `_start`) |
+| `_sl_alloc(size)` | Allocate memory, returns pointer in x0 |
+| `_sl_free(ptr, size)` | Return memory to free list |
+| `_sl_get_size_class(size)` | Map size to class index |
+| `_sl_arena_grow` | Allocate new 1MB arena |
+
 ## Error Handling
 
 ```slang
 val p = Heap.new(42)
-print(p.x)                                // Error: Own<i64> has no fields
+print(p.x)                                // Error: *i64 has no fields
 
 val p = Heap.new(Point{ 1, 2 })
-print(p[0])                               // Error: Own<Point> not indexable
+print(p[0])                               // Error: *Point not indexable
 
-val maybeP: Own<Point>? = null
+val maybeP: *Point? = null
 print(maybeP.x)                           // Error: use ?.x for nullable pointer
 
 var q = Heap.new(Point{ 1, 2 })
@@ -2267,30 +2573,49 @@ foo(p, p)                                 // Error: 'p' moved in first argument
 
 | Expression | Type of `p` | Result Type | Notes |
 |------------|-------------|-------------|-------|
-| `p.x` | `Own<Struct>` or `Ref<Struct>` | field type | Auto-deref |
-| `p[i]` | `Own<Array<T>>` where T is primitive | `T` | Copy of element |
-| `p[i]` | `Own<Array<Own<T>>>` | `Ref<T>` | Borrows element |
-| `p.field` | where field is `Own<T>` | `Ref<T>` | Auto-borrow through ref |
-| `p?.x` | `Own<Struct>?` | field type? | Safe navigation |
-| `p?[i]` | `Own<Array<T>>?` | `T?` | Safe navigation |
-| `p == null` | `Own<T>?` | `bool` | Null check |
-| `p == q` | `Own<T>` | `bool` | Identity (address) comparison |
+| `p.x` | `*Struct` or `&Struct` | field type | Auto-deref |
+| `p[i]` | `*Array<T>` where T is primitive | `T` | Copy of element |
+| `p[i]` | `*Array<*T>` | `&T` | Borrows element |
+| `p.field` | where field is `*T` | `&T` | Auto-borrow through ref |
+| `p?.x` | `*Struct?` | field type? | Safe navigation |
+| `p?[i]` | `*Array<T>?` | `T?` | Safe navigation |
+| `p == null` | `*T?` | `bool` | Null check |
+| `p == q` | `*T` | `bool` | Identity (address) comparison |
 
 # Alternatives
 
-1. **Rust-style references (`&T`, `&mut T`)**: More complex borrow checker required. Rejected for MVP simplicity.
+1. **Generic wrapper types (`Own<T>`, `Ref<T>`, `MutRef<T>`)**: Originally considered using generic wrapper types like `Own<Point>`, `Ref<Point>`, `MutRef<Point>`. Rejected due to verbosity with nested types (e.g., `Own<Array<Own<Point>>>`). The symbol-based syntax (`*T`, `&T`, `&&T`) is more concise.
 
-2. **C-style pointers (`*T`, `*p`)**: Less explicit, potential confusion with multiplication. The `Own<T>`/`Ref<T>` syntax is clearer and more consistent with generic types.
+2. **Rust-style references (`&T`, `&mut T`)**: More complex borrow checker required. Rejected for MVP simplicity. We use `&T` for immutable borrows but `&&T` for mutable borrows (instead of `&mut T`).
 
-3. **Three pointer types (`ptr`, `ref`, `own`)**: Considered but rejected. Using `val`/`var` for mutability keeps ownership and mutability orthogonal, reuses familiar keywords.
+3. **`&var T` or `&mut T` for mutable borrows**: Originally considered using `&var T` or `&mut T` to indicate mutable borrows. Rejected in favor of `&&T` for conciseness - "double ampersand = more power" is an intuitive mnemonic.
 
-4. **`mut` keyword for mutable borrows**: Considered `mut Ref<T>` but rejected. Using `var` is consistent with variable declarations.
+4. **Implicit dereference everywhere**: Would hide pointer semantics too much. Auto-deref for field access provides convenience where it's unambiguous.
 
-5. **Implicit dereference everywhere**: Would hide pointer semantics too much. The `.deref()` requirement makes pointer operations explicit while auto-deref provides convenience where it's unambiguous.
+5. **Manual memory management from start**: Would complicate MVP. Starting with allocation-only allows proving the design before adding deallocation complexity.
 
-6. **Manual memory management from start**: Would complicate MVP. Starting with allocation-only allows proving the design before adding deallocation complexity.
+6. **`ptr::new(value)` syntax**: Simpler but doesn't allow for custom allocators. The `Heap.new(value)` design anticipates the allocator interface pattern.
 
-7. **`ptr::new(value)` syntax**: Simpler but doesn't allow for custom allocators. The `Heap.new(value)` design anticipates the allocator interface pattern.
+## Syntax Choice Rationale
+
+The final syntax uses symbols for pointer types:
+
+| Type | Symbol | Meaning |
+|------|--------|---------|
+| Owned pointer | `*T` | You control the lifetime |
+| Immutable borrow | `&T` | Read-only borrowed reference |
+| Mutable borrow | `&&T` | Can mutate `var` fields |
+
+**Why symbols over generics?**
+- **Conciseness**: `*Array<*Point>` vs `Own<Array<Own<Point>>>`
+- **Familiarity**: `*` and `&` are well-known from C/Rust
+- **No keyword mixing**: `&&T` is cleaner than `&var T`
+- **Visual hierarchy**: `&` < `&&` suggests "more ampersands = more access"
+
+**Why `&&T` for mutable borrow?**
+- Concise (2 characters vs `&mut T`)
+- Symmetric with `&T`
+- In type position, `&&` doesn't conflict with logical AND (expression context only)
 
 # Future Work: Allocator Interface
 
@@ -2299,9 +2624,9 @@ The `Heap` type is designed to be the first implementation of an allocator inter
 ```slang
 // Future: Allocator interface (requires interface/trait system)
 Allocator = interface {
-    new<T>(value: T) -> Own<T>
-    alloc<T>() -> Own<T>              // uninitialized allocation
-    free<T>(p: Own<T>)                // explicit deallocation
+    new<T>(value: T) -> *T
+    alloc<T>() -> *T              // uninitialized allocation
+    free<T>(p: *T)                // explicit deallocation
 }
 
 // Built-in implementations
@@ -2310,7 +2635,7 @@ Arena: Allocator       // Arena/bump allocator
 Pool<T>: Allocator     // Fixed-size pool allocator
 
 // Usage with custom allocator
-createWithAllocator = (alloc: Allocator, x: i64, y: i64) -> Own<Point> {
+createWithAllocator = (alloc: Allocator, x: i64, y: i64) -> *Point {
     alloc.new(Point{ x, y })
 }
 
@@ -2327,8 +2652,8 @@ This is explicitly out of scope for the initial implementation but informs the d
 # Testing
 
 ## Lexer/Parser Tests
-- Token recognition for `Own`, `Ref`, `Heap`
-- `Own<T>` and `Ref<T>` type parsing
+- Token recognition for `*`, `&`, `&&`, `Heap`
+- `*T`, `&T`, and `&&T` type parsing
 - `Heap.new(expr)` expressions
 - `.copy()` method calls
 - `var` modifier on function parameters
@@ -2337,14 +2662,14 @@ This is explicitly out of scope for the initial implementation but informs the d
 - Type inference for pointer types
 - `Heap` type checking
 - Auto-dereference rules
-- Auto-borrowing from `Own<T>` to `Ref<T>`
+- Auto-borrowing from `*T` to `&T`
 - Nullable pointer rules
-- `Ref<T>` only allowed in parameter position
+- `&T` only allowed in parameter position
 - `var` enables mutation on parameters
 - Pointer comparison (`==`) is identity (address) comparison
 - Nullable pointer comparison to `null`
-- Array indexing returns copy for primitives, borrow for `Own<T>`
-- `Own<T?>` is invalid (T must be non-nullable)
+- Array indexing returns copy for primitives, borrow for `*T`
+- `*T?` is invalid (T must be non-nullable)
 - Safe navigation `?.` on non-nullable is error
 - Array of nullable pointers: indexing returns nullable borrow
 - Array literal type inference with null elements
@@ -2352,22 +2677,22 @@ This is explicitly out of scope for the initial implementation but informs the d
 ## Ownership Tests
 - Move on assignment (`val q = p` invalidates `p`)
 - Use-after-move detection
-- `Ref<T>` parameters borrow (caller keeps ownership)
-- `Own<T>` parameters take ownership (caller loses access)
-- Cannot mutate through immutable `Ref<T>`
-- `var Ref<T>` allows mutation
-- Mutable borrow requires `var` source (cannot create `var Ref` from `val` binding)
-- Borrow exclusivity (one `var Ref<T>` OR many `Ref<T>`, not both)
+- `&T` parameters borrow (caller keeps ownership)
+- `*T` parameters take ownership (caller loses access)
+- Cannot mutate through immutable `&T`
+- `&&T` allows mutation
+- `val` binding can create mutable borrows (`val` only controls reassignment)
+- Borrow exclusivity (one `&&T` OR many `&T`, not both)
 - Mixed borrow + move in same call is error
-- Nested ownership (struct containing `Own<T>` fields)
-- Field access through `Ref` auto-borrows `Own<T>` fields
+- Nested ownership (struct containing `*T` fields)
+- Field access through `&T` auto-borrows `*T` fields
 - Chained field access propagates mutability
-- Closures capturing `Own<T>` move ownership into closure
-- Closures cannot capture `Ref<T>` (error)
-- Generics with `Ref<T>` in field position (error)
+- Closures capturing `*T` move ownership into closure
+- Closures cannot capture `&T` (error)
+- Generics with `&T` in field position (error)
 - Temporary lifetimes extend to end of statement
 - Loop iteration borrows container
-- Mutable iteration produces `var Ref<T>` for `var` arrays
+- Mutable iteration produces `&&T` for `var` arrays
 - Cannot reassign while borrowed (including during iteration)
 - Self-assignment is error
 - Overlapping moves in assignment is error
@@ -2376,7 +2701,7 @@ This is explicitly out of scope for the initial implementation but informs the d
 - Nullable pointer smart cast inside null check
 - Smart cast in while loop condition and body
 - Nested null checks with auto-borrow
-- Operators auto-dereference `Own<primitive>`
+- Operators auto-dereference `*primitive`
 - Short-circuit operators with moves (conditional move rule)
 - Conditional expressions with moves (both branches invalidated)
 - `break` and `continue` drop loop-local owned values
@@ -2408,8 +2733,8 @@ Full programs using pointers with expected outputs:
 - Nullable pointers with null checks
 - Safe navigation on nullable pointers
 - Linked list creation and traversal
-- Ownership transfer with `Own<T>` parameters
-- Auto-borrowing with `Ref<T>` and `var Ref<T>` parameters
+- Ownership transfer with `*T` parameters
+- Auto-borrowing with `&T` and `&&T` parameters
 - Memory freed correctly (no leaks in simple cases)
 - Pointer identity comparison (`p == q`)
 - Closures capturing owned pointers
@@ -2417,7 +2742,7 @@ Full programs using pointers with expected outputs:
 - Temporary lifetime in chained expressions
 - Method calls with different receiver types (SEP 7)
 - Method chaining with consuming methods
-- Operators auto-dereference Own<primitive>
+- Operators auto-dereference *primitive
 - Error cases:
   - Self-assignment
   - Double move in expression
@@ -2428,7 +2753,7 @@ Full programs using pointers with expected outputs:
   - Mutable borrow from val binding
   - Reassign while borrowed
   - Safe navigation on non-nullable pointer
-  - `Own<T?>` type declaration
+  - `*T?` type declaration
   - Move in short-circuit operator (conditional move)
   - Move in conditional expression (both branches)
   - `.copy()` on stack-allocated value
@@ -2446,8 +2771,8 @@ main = () {
     // For primitives, pass to function that takes the value
     printValue = (x: i64) { print(x) }
 
-    // Auto-borrow when passing to Ref parameter
-    printRef = (r: Ref<i64>) { /* can read r */ }
+    // Auto-borrow when passing to &T parameter
+    printRef = (r: &i64) { /* can read r */ }
     printRef(p)                           // auto-borrows p
 
     // Use .copy() to get an independent owned copy
@@ -2477,7 +2802,7 @@ main = () {
     print(h.x)                            // prints: 10 (via heap pointer)
 
     // Useful for storing in data structures
-    val points: Array<Own<Point>> = [
+    val points: Array<*Point> = [
         Heap.new(Point{ 1, 2 }),
         Heap.new(Point{ 3, 4 })
     ]
@@ -2527,7 +2852,7 @@ Demonstrates linked list with ownership transfer. Each node owns its `next` poin
 ```slang
 Node = struct {
     val value: i64
-    var next: Own<Node>?                  // nullable, owned by this node
+    var next: *Node?                  // nullable, owned by this node
 }
 
 main = () {
@@ -2549,7 +2874,7 @@ main = () {
 
 ## Example 6: Function Returning Pointer
 
-Shows a function that allocates and returns a pointer. Returns `Own<T>` to transfer ownership.
+Shows a function that allocates and returns a pointer. Returns `*T` to transfer ownership.
 
 ```slang
 Point = struct {
@@ -2557,7 +2882,7 @@ Point = struct {
     val y: i64
 }
 
-createPoint = (x: i64, y: i64) -> Own<Point> {
+createPoint = (x: i64, y: i64) -> *Point {
     Heap.new(Point{ x, y })
 }
 
@@ -2575,7 +2900,7 @@ Shows nullable pointer handling with null checks.
 Person = struct {
     val name: string
     val age: i64
-    var spouse: Own<Person>?              // may or may not have a spouse
+    var spouse: *Person?              // may or may not have a spouse
 }
 
 main = () {
@@ -2595,9 +2920,9 @@ main = () {
 }
 ```
 
-## Example 8: Borrowing with Ref<T> and Ownership with Own<T>
+## Example 8: Borrowing with &T and Ownership with *T
 
-Shows the difference between borrowing (`Ref<T>`) and ownership transfer (`Own<T>`).
+Shows the difference between borrowing (`&T`) and ownership transfer (`*T`).
 
 ```slang
 Point = struct {
@@ -2606,30 +2931,30 @@ Point = struct {
 }
 
 // Immutable borrow - cannot modify
-printPoint = (p: Ref<Point>) {
+printPoint = (p: &Point) {
     print(p.x)
     print(p.y)
     // p.x = 100                          // Error: p is not var
 }
 
 // Mutable borrow - can modify, caller keeps ownership
-scalePoint = (var p: Ref<Point>, factor: i64) {
+scalePoint = (p: &&Point, factor: i64) {
     p.x = p.x * factor
     p.y = p.y * factor
 }
 
 // Takes ownership - caller loses access
-consume = (p: Own<Point>) {
+consume = (p: *Point) {
     print(p.x)
 }                                         // p freed here
 
 main = () {
     var p = Heap.new(Point{ 10, 20 })
 
-    printPoint(p)                         // borrows as Ref<Point>
+    printPoint(p)                         // borrows as &Point
     printPoint(p)                         // can borrow multiple times
 
-    scalePoint(p, 2)                      // borrows as var Ref<Point>
+    scalePoint(p, 2)                      // borrows as &&Point
     print(p.x)                            // prints: 20 (was 10 * 2)
 
     val q = p.copy()                      // create independent copy
@@ -2651,22 +2976,22 @@ Shows ownership in a binary tree structure.
 ```slang
 TreeNode = struct {
     val value: i64
-    var left: Own<TreeNode>?
-    var right: Own<TreeNode>?
+    var left: *TreeNode?
+    var right: *TreeNode?
 }
 
 // Creates a new leaf node
-leaf = (value: i64) -> Own<TreeNode> {
+leaf = (value: i64) -> *TreeNode {
     Heap.new(TreeNode{ value, null, null })
 }
 
 // Creates a new internal node - children move into the node
-node = (value: i64, left: Own<TreeNode>, right: Own<TreeNode>) -> Own<TreeNode> {
+node = (value: i64, left: *TreeNode, right: *TreeNode) -> *TreeNode {
     Heap.new(TreeNode{ value, left, right })  // left and right move in
 }
 
-// Borrows tree to compute sum (Ref<T> = immutable borrow)
-sum = (t: Ref<TreeNode>) -> i64 {
+// Borrows tree to compute sum (&T = immutable borrow)
+sum = (t: &TreeNode) -> i64 {
     var total = t.value
     if (t.left != null) {
         total = total + sum(t.left)       // recursive borrow
@@ -2700,32 +3025,34 @@ Point = struct {
 }
 
 main = () {
-    // val binding - nothing can be mutated
+    // val binding - can mutate var fields (val only controls reassignment)
     val p = Heap.new(Point{ 1, 2 })
     // p.x = 10                           // Error: x is val field
-    // p.y = 20                           // Error: p is val binding
+    p.y = 20                              // OK: y is var field
+    // p = other                          // Error: cannot reassign val binding
 
-    // var binding - only var fields can be mutated
+    // var binding - can also reassign the binding itself
     var q = Heap.new(Point{ 1, 2 })
     // q.x = 10                           // Error: x is val field
-    q.y = 20                              // OK: q is var and y is var
+    q.y = 30                              // OK: y is var field
+    q = Heap.new(Point{ 5, 6 })           // OK: q is var, can reassign
 
-    print(q.y)                            // prints: 20
+    print(q.y)                            // prints: 6
 }
 ```
 
 ## Example 11: Method-Style Ownership Transfer
 
-Shows using `Own<T>` parameters to transfer ownership into struct fields.
+Shows using `*T` parameters to transfer ownership into struct fields.
 
 ```slang
 Node = struct {
     val value: i64
-    var next: Own<Node>?
+    var next: *Node?
 }
 
 // Takes ownership of 'next' and stores it in the node
-setNext = (var node: Ref<Node>, next: Own<Node>) {
+setNext = (node: &&Node, next: *Node) {
     node.next = next                      // OK: we own 'next', can move it
 }
 
@@ -2764,7 +3091,7 @@ main = () {
     print(p.x == r.x && p.y == r.y)        // prints: true
 
     // Nullable pointer comparison
-    val n: Own<Point>? = null
+    val n: *Point? = null
     print(n == null)                       // prints: true
 }
 ```
@@ -2813,7 +3140,7 @@ main = () {
 
     // Iteration borrows the array; each p borrows the element
     for p in points {
-        print(p.x)                         // p: Ref<Point>
+        print(p.x)                         // p: &Point
     }
     // prints: 1, 3, 5
 
@@ -2839,7 +3166,7 @@ Point = struct {
     val y: i64
 }
 
-createPoint = (x: i64, y: i64) -> Own<Point> {
+createPoint = (x: i64, y: i64) -> *Point {
     Heap.new(Point{ x, y })
 }
 
@@ -2855,10 +3182,10 @@ main = () {
 
     // Nested temporaries
     Outer = struct {
-        val inner: Own<Point>
+        val inner: *Point
     }
 
-    createOuter = () -> Own<Outer> {
+    createOuter = () -> *Outer {
         Heap.new(Outer{ Heap.new(Point{ 100, 200 }) })
     }
 
@@ -2885,16 +3212,16 @@ main = () {
     print(x + y)                           // prints: 20
 
     // Owned pointer array - indexing borrows
-    val points: Own<Array<Own<Point>>> = Heap.new([
+    val points: *Array<*Point> = Heap.new([
         Heap.new(Point{ 1, 2 }),
         Heap.new(Point{ 3, 4 }),
         Heap.new(Point{ 5, 6 })
     ])
 
-    val p = points[0]                      // p: Ref<Point> (borrow)
+    val p = points[0]                      // p: &Point (borrow)
     print(p.x)                             // prints: 1
 
-    val q = points[0]                      // q: Ref<Point> (can borrow again)
+    val q = points[0]                      // q: &Point (can borrow again)
     print(q.x)                             // prints: 1 (same element)
 
     // Array still owns all elements
@@ -2902,11 +3229,11 @@ main = () {
 
     // To replace an element, use .set()
     val old = points.set(0, Heap.new(Point{ 100, 200 }))
-    // old: Own<Point> (the replaced element)
+    // old: *Point (the replaced element)
     print(points[0].x)                     // prints: 100
 
     // To remove an element, use .remove()
-    val removed = points.remove(0)         // removed: Own<Point>, shifts elements
+    val removed = points.remove(0)         // removed: *Point, shifts elements
     print(len(points))                     // prints: 2
 }
 ```
@@ -2941,7 +3268,7 @@ bad3 = () {
 
 // ❌ Error: overlapping moves
 Container = struct {
-    var data: Own<Point>
+    var data: *Point
 }
 
 bad4 = () {
@@ -2955,7 +3282,7 @@ bad5 = () {
     mixedBorrow(p, p)                      // Error: mutable + immutable borrow
 }
 
-mixedBorrow = (var a: Ref<Point>, b: Ref<Point>) {
+mixedBorrow = (a: &&Point, b: &Point) {
     a.x = b.x + 1
 }
 
@@ -2965,17 +3292,18 @@ bad6 = () {
     borrowAndMove(p, p)                    // Error: cannot borrow and move same value
 }
 
-borrowAndMove = (r: Ref<Point>, p: Own<Point>) {
+borrowAndMove = (r: &Point, p: *Point) {
     print(r.x)
 }
 
-// ❌ Error: mutable borrow from val binding
-bad7 = () {
+// ✅ OK: mutable borrow from val binding (val only controls reassignment)
+good_mutate = () {
     val p = Heap.new(Point{ 1, 2 })        // val binding
-    mutate(p)                              // Error: cannot create mutable borrow from val
+    mutate(p)                              // OK: val only prevents reassigning p
+    print(p.x)                             // prints 10
 }
 
-mutate = (var p: Ref<Point>) {
+mutate = (p: &&Point) {
     p.x = 10
 }
 
@@ -2987,7 +3315,7 @@ bad8 = () {
     }
 }
 
-// ✅ OK: operators auto-dereference Own<primitive>
+// ✅ OK: operators auto-dereference *primitive
 good0 = () {
     val p = Heap.new(42)
     val sum = p + 1                        // OK: auto-derefs, sum is 43
@@ -3000,15 +3328,15 @@ good1 = () {
     readBoth(p, p)                         // OK: both immutable
 }
 
-readBoth = (a: Ref<Point>, b: Ref<Point>) {
+readBoth = (a: &Point, b: &Point) {
     print(a.x + b.x)
 }
 
 // ✅ OK: nullable smart cast
 good2 = () {
-    val p: Own<Point>? = maybeGet()
+    val p: *Point? = maybeGet()
     if (p != null) {
-        print(p.x)                         // OK: smart cast to Own<Point>
+        print(p.x)                         // OK: smart cast to *Point
     }
 }
 ```
@@ -3024,14 +3352,14 @@ Point = struct {
 }
 
 main = () {
-    val p: Own<Point>? = maybeGetPoint()
+    val p: *Point? = maybeGetPoint()
 
     // Without null check - must use ?.
     print(p?.x)                            // OK: safe navigation
 
     // With null check - smart cast to non-null
     if (p != null) {
-        print(p.x)                         // OK: p is Own<Point> here
+        print(p.x)                         // OK: p is *Point here
         print(p.y)                         // OK: no ?. needed
 
         // Ownership still applies
@@ -3043,7 +3371,7 @@ main = () {
     // print(p?.x)                         // Error: p may have been moved
 
     // Reassignment vs move
-    var r: Own<Point>? = maybeGetPoint()
+    var r: *Point? = maybeGetPoint()
     if (r != null) {
         r = null                           // reassign, not move
     }
@@ -3061,28 +3389,28 @@ Inner = struct {
 }
 
 Outer = struct {
-    val inner: Own<Inner>
+    val inner: *Inner
 }
 
 Container = struct {
-    val outer: Own<Outer>
+    val outer: *Outer
 }
 
 // Immutable access - all borrows are immutable
-readDeep = (c: Ref<Container>) {
-    // c is Ref<Container>
-    // c.outer is Ref<Outer> (auto-borrow of Own<Outer> field)
-    // c.outer.inner is Ref<Inner> (auto-borrow of Own<Inner> field)
+readDeep = (c: &Container) {
+    // c is &Container
+    // c.outer is &Outer (auto-borrow of *Outer field)
+    // c.outer.inner is &Inner (auto-borrow of *Inner field)
     val v = c.outer.inner.value            // v: i64 (copy of primitive)
     print(v)
 }
 
 // Mutable access - mutability propagates through chain
-mutateDeep = (var c: Ref<Container>) {
-    // c is var Ref<Container>
-    // c.outer is var Ref<Outer> (inherits var)
-    // c.outer.inner is var Ref<Inner> (inherits var)
-    c.outer.inner.value = 100              // OK: can mutate through var chain
+mutateDeep = (c: &&Container) {
+    // c is &&Container
+    // c.outer is &&Outer (inherits mutability)
+    // c.outer.inner is &&Inner (inherits mutability)
+    c.outer.inner.value = 100              // OK: can mutate through &&T chain
 }
 
 main = () {

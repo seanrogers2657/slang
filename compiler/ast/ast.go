@@ -167,6 +167,22 @@ func (f *FieldAccessExpr) End() Position {
 }
 func (f *FieldAccessExpr) exprNode() {}
 
+// MethodCallExpr represents a method call on an object (e.g., Heap.new(x), p.copy())
+// This is distinct from CallExpr which represents standalone function calls.
+type MethodCallExpr struct {
+	Object     Expression   // the receiver expression (e.g., Heap, p)
+	Dot        Position     // position of '.'
+	Method     string       // method name (e.g., "new", "copy")
+	MethodPos  Position     // position of method name
+	LeftParen  Position     // position of '('
+	Arguments  []Expression // list of argument expressions
+	RightParen Position     // position of ')'
+}
+
+func (m *MethodCallExpr) Pos() Position { return m.Object.Pos() }
+func (m *MethodCallExpr) End() Position { return m.RightParen }
+func (m *MethodCallExpr) exprNode()     {}
+
 // SafeCallExpr represents safe field access on nullable (e.g., person?.address, obj?.field)
 type SafeCallExpr struct {
 	Object      Expression // the nullable struct expression
@@ -421,8 +437,10 @@ type Declaration interface {
 	declNode() // marker method
 }
 
-// Parameter represents a function parameter (e.g., x: int)
+// Parameter represents a function parameter (e.g., x: int, var x: Ref<Point>)
 type Parameter struct {
+	Mutable  bool     // true if parameter has 'var' prefix (mutable reference)
+	VarPos   Position // position of 'var' keyword (if present)
 	Name     string   // parameter name
 	NamePos  Position // position of parameter name
 	Colon    Position // position of ':'
@@ -430,7 +448,12 @@ type Parameter struct {
 	TypePos  Position // position of type name
 }
 
-func (p *Parameter) Pos() Position { return p.NamePos }
+func (p *Parameter) Pos() Position {
+	if p.Mutable {
+		return p.VarPos
+	}
+	return p.NamePos
+}
 func (p *Parameter) End() Position {
 	return Position{Line: p.TypePos.Line, Column: p.TypePos.Column + len(p.TypeName), Offset: p.TypePos.Offset + len(p.TypeName)}
 }

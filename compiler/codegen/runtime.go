@@ -1,5 +1,277 @@
 package codegen
 
+// RuntimeHeapCode returns the ARM64 assembly code for the bump allocator runtime.
+// This provides:
+// - _sl_heap_init: Initialize the heap allocator (called at program start)
+// - _sl_alloc: Allocate memory from the bump allocator with size-class free lists
+// - _sl_free: Return memory to the appropriate size-class free list
+func RuntimeHeapCode() string {
+	return `
+// ============================================================================
+// Slang Runtime - Bump Allocator with Size Classes
+// ============================================================================
+
+.data
+.align 3
+
+// Free lists - one pointer per size class (8 classes)
+_sl_free_list:
+    .quad 0     // class 0: 16 bytes
+    .quad 0     // class 1: 32 bytes
+    .quad 0     // class 2: 64 bytes
+    .quad 0     // class 3: 128 bytes
+    .quad 0     // class 4: 256 bytes
+    .quad 0     // class 5: 512 bytes
+    .quad 0     // class 6: 1024 bytes
+    .quad 0     // class 7: 2048 bytes
+
+// Arena management
+_sl_arena_current:  .quad 0
+_sl_arena_bump:     .quad 0
+_sl_arena_end:      .quad 0
+
+.text
+.align 4
+
+// ----------------------------------------------------------------------------
+// _sl_heap_init: Initialize the heap allocator
+// ----------------------------------------------------------------------------
+_sl_heap_init:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+
+    // Allocate first arena via mmap (1MB = 0x100000)
+    mov x0, #0
+    movz x1, #0x10, lsl #16
+    mov x2, #3
+    mov x3, #0x1002
+    mov x4, #0
+    sub x4, x4, #1
+    mov x5, #0
+    mov x16, #197
+    svc #0
+
+    cmp x0, #0
+    b.lt _sl_heap_init_fail
+
+    str xzr, [x0]
+
+    adrp x1, _sl_arena_current@PAGE
+    add x1, x1, _sl_arena_current@PAGEOFF
+    str x0, [x1]
+
+    add x2, x0, #16
+    adrp x1, _sl_arena_bump@PAGE
+    add x1, x1, _sl_arena_bump@PAGEOFF
+    str x2, [x1]
+
+    movz x2, #0x10, lsl #16
+    add x2, x0, x2
+    adrp x1, _sl_arena_end@PAGE
+    add x1, x1, _sl_arena_end@PAGEOFF
+    str x2, [x1]
+
+    ldp x29, x30, [sp], #16
+    ret
+
+_sl_heap_init_fail:
+    mov x0, #1
+    mov x16, #1
+    svc #0
+
+// ----------------------------------------------------------------------------
+// _sl_get_size_class: Get size class for allocation
+// Input: x0 = size
+// Output: x0 = class size, x1 = class index (8 for large)
+// ----------------------------------------------------------------------------
+_sl_get_size_class:
+    cmp x0, #16
+    b.le _sl_class_16
+    cmp x0, #32
+    b.le _sl_class_32
+    cmp x0, #64
+    b.le _sl_class_64
+    cmp x0, #128
+    b.le _sl_class_128
+    cmp x0, #256
+    b.le _sl_class_256
+    cmp x0, #512
+    b.le _sl_class_512
+    cmp x0, #1024
+    b.le _sl_class_1024
+    cmp x0, #2048
+    b.le _sl_class_2048
+    b _sl_class_large
+
+_sl_class_16:
+    mov x0, #16
+    mov x1, #0
+    ret
+_sl_class_32:
+    mov x0, #32
+    mov x1, #1
+    ret
+_sl_class_64:
+    mov x0, #64
+    mov x1, #2
+    ret
+_sl_class_128:
+    mov x0, #128
+    mov x1, #3
+    ret
+_sl_class_256:
+    mov x0, #256
+    mov x1, #4
+    ret
+_sl_class_512:
+    mov x0, #512
+    mov x1, #5
+    ret
+_sl_class_1024:
+    mov x0, #1024
+    mov x1, #6
+    ret
+_sl_class_2048:
+    mov x0, #2048
+    mov x1, #7
+    ret
+_sl_class_large:
+    add x0, x0, #15
+    lsr x0, x0, #4
+    lsl x0, x0, #4
+    mov x1, #8
+    ret
+
+// ----------------------------------------------------------------------------
+// _sl_arena_grow: Allocate new arena
+// ----------------------------------------------------------------------------
+_sl_arena_grow:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+
+    // Allocate new arena (1MB = 0x100000)
+    mov x0, #0
+    movz x1, #0x10, lsl #16
+    mov x2, #3
+    mov x3, #0x1002
+    mov x4, #0
+    sub x4, x4, #1
+    mov x5, #0
+    mov x16, #197
+    svc #0
+
+    cmp x0, #0
+    b.lt _sl_arena_grow_fail
+
+    adrp x1, _sl_arena_current@PAGE
+    add x1, x1, _sl_arena_current@PAGEOFF
+    ldr x2, [x1]
+    str x2, [x0]
+    str x0, [x1]
+
+    add x2, x0, #16
+    adrp x1, _sl_arena_bump@PAGE
+    add x1, x1, _sl_arena_bump@PAGEOFF
+    str x2, [x1]
+
+    movz x2, #0x10, lsl #16
+    add x2, x0, x2
+    adrp x1, _sl_arena_end@PAGE
+    add x1, x1, _sl_arena_end@PAGEOFF
+    str x2, [x1]
+
+    ldp x29, x30, [sp], #16
+    ret
+
+_sl_arena_grow_fail:
+    mov x0, #1
+    mov x16, #1
+    svc #0
+
+// ----------------------------------------------------------------------------
+// _sl_alloc: Allocate memory
+// Input: x0 = size
+// Output: x0 = pointer
+// ----------------------------------------------------------------------------
+_sl_alloc:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    str x19, [sp, #16]
+    str x20, [sp, #24]
+
+    bl _sl_get_size_class
+    mov x19, x0
+    mov x20, x1
+
+    cmp x20, #8
+    b.ge _sl_bump_alloc
+
+    adrp x2, _sl_free_list@PAGE
+    add x2, x2, _sl_free_list@PAGEOFF
+    ldr x3, [x2, x20, lsl #3]
+    cbz x3, _sl_bump_alloc
+
+    ldr x4, [x3]
+    str x4, [x2, x20, lsl #3]
+    mov x0, x3
+    b _sl_alloc_done
+
+_sl_bump_alloc:
+    adrp x1, _sl_arena_bump@PAGE
+    add x1, x1, _sl_arena_bump@PAGEOFF
+    ldr x2, [x1]
+    add x3, x2, x19
+
+    adrp x4, _sl_arena_end@PAGE
+    add x4, x4, _sl_arena_end@PAGEOFF
+    ldr x5, [x4]
+    cmp x3, x5
+    b.gt _sl_need_grow
+
+    str x3, [x1]
+    mov x0, x2
+    b _sl_alloc_done
+
+_sl_need_grow:
+    bl _sl_arena_grow
+    b _sl_bump_alloc
+
+_sl_alloc_done:
+    ldr x20, [sp, #24]
+    ldr x19, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
+// ----------------------------------------------------------------------------
+// _sl_free: Free memory
+// Input: x0 = pointer, x1 = size
+// ----------------------------------------------------------------------------
+_sl_free:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    str x19, [sp, #-16]!
+
+    mov x19, x0
+    mov x0, x1
+    bl _sl_get_size_class
+
+    cmp x1, #8
+    b.ge _sl_free_done
+
+    adrp x2, _sl_free_list@PAGE
+    add x2, x2, _sl_free_list@PAGEOFF
+    ldr x3, [x2, x1, lsl #3]
+    str x3, [x19]
+    str x19, [x2, x1, lsl #3]
+
+_sl_free_done:
+    ldr x19, [sp], #16
+    ldp x29, x30, [sp], #16
+    ret
+
+`
+}
+
 // RuntimePanicCode returns the ARM64 assembly code for the runtime panic handler.
 // This code provides:
 // - _slang_panic: The main panic function that prints error message and stack trace

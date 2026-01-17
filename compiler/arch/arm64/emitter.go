@@ -89,6 +89,7 @@ func (e *Emitter) EmitProgramEntry() string {
 	b.WriteString(".global _start\n")
 	b.WriteString(".align 4\n")
 	b.WriteString("_start:\n")
+	b.WriteString("    bl _sl_heap_init\n") // Initialize heap allocator
 	b.WriteString("    bl _main\n")
 	b.WriteString("    mov x16, #1\n")
 	b.WriteString("    svc #0\n")

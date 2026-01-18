@@ -9,6 +9,7 @@ DRAFT, 2026-01-17
 | `class` keyword | ⏳ Pending | Lexer token needed |
 | `self` keyword | ⏳ Pending | Lexer token needed |
 | `object` keyword | ⏳ Pending | Lexer token needed |
+| `?:` Elvis operator | ⏳ Pending | Lexer token needed |
 | ClassDecl AST node | ⏳ Pending | Parser support needed |
 | ObjectDecl AST node | ⏳ Pending | Parser support needed |
 | MethodDecl AST node | ⏳ Pending | Parser support needed |
@@ -68,6 +69,8 @@ Add classes to Slang, extending structs with methods (functions bound to a type)
   val p2 = Point{ y: 20, x: 10 }     // named: any order, more explicit
   ```
 - `object` - Keyword for declaring a singleton with static methods only (cannot be instantiated).
+- `?.method()` - Safe navigation for method calls. Returns nullable type of the method's return type. If receiver is null, returns null (or no-op for void methods).
+- `?:` - Elvis operator (null coalescing). Returns left side if non-null, otherwise right side. Precedence is lower than arithmetic operators (follows Kotlin).
 
 ## Singleton Objects
 
@@ -134,6 +137,44 @@ main = () {
 
 The temporary exists for the duration of the expression and is automatically borrowed for the method call.
 
+## Safe Navigation with Method Calls
+
+The safe navigation operator `?.` can be used with method calls on nullable receivers:
+
+```slang
+Node = class {
+    val value: i64
+    var next: *Node?
+
+    getValue = (self: &Node) -> i64 {
+        self.value
+    }
+
+    printValue = (self: &Node) {
+        print(self.value)
+    }
+}
+
+main = () {
+    val node: *Node? = null
+
+    // Safe navigation with non-void method: returns nullable type
+    val result: i64? = node?.getValue()   // returns i64? (null if node is null)
+
+    // Safe navigation with void method: no-op if null
+    node?.printValue()                     // does nothing if node is null
+
+    // Using Elvis operator for default values
+    val value = node?.getValue() ?: 0      // returns 0 if node is null
+}
+```
+
+**Rules:**
+- `receiver?.method()` where method returns `T` yields `T?`
+- `receiver?.method()` where method returns void is a no-op when receiver is null
+- The Elvis operator `?:` can provide default values: `nullable ?: default`
+- Elvis precedence is lower than arithmetic: `a ?: b + c` parses as `a ?: (b + c)`
+
 ## Instance vs Static Methods
 
 Methods are distinguished by the presence of `self` as first parameter:
@@ -198,8 +239,36 @@ main = () {
 
 **Overloading rules:**
 - Methods are distinguished by parameter count and types (not return type)
-- The compiler selects the most specific matching overload
+- The compiler selects the most specific matching overload (follows Kotlin)
 - Ambiguous calls result in a compile-time error
+
+**Specificity rules (Kotlin-style):**
+- Non-nullable types are more specific than nullable types (`i64` > `i64?`)
+- When multiple overloads are applicable, the most specific one is selected
+- If no single most-specific overload exists, the call is ambiguous (compile error)
+
+```slang
+Printer = class {
+    // Overloaded by nullable vs non-nullable
+    print = (self: &Printer, x: i64) {
+        // handles non-null
+    }
+
+    print = (self: &Printer, x: i64?) {
+        // handles nullable
+    }
+}
+
+main = () {
+    val p = Printer{}
+    val num: i64 = 42
+    val maybe: i64? = 42
+
+    p.print(num)    // calls i64 version (more specific)
+    p.print(maybe)  // calls i64? version (only one applicable)
+    p.print(null)   // calls i64? version (only one applicable)
+}
+```
 
 ## Method Receiver Types (SEP 1)
 
@@ -1307,9 +1376,7 @@ Node = class {
     // Borrows to traverse
     printAll = (self: &Node) {
         print(self.value)
-        if (self.next != null) {
-            self.next?.printAll()
-        }
+        self.next?.printAll()              // no-op if next is null (void method)
     }
 }
 
@@ -1597,22 +1664,20 @@ main = () {
 }
 ```
 
-## Example 4: Method Chaining
+## Example 4: Mutating Methods
 
-Shows methods that return `self` for fluent interfaces.
+Shows methods that modify fields through mutable borrow.
 
 ```slang
 Builder = class {
     var value: i64
 
-    add = (self: &&Builder, n: i64) -> &&Builder {
+    add = (self: &&Builder, n: i64) {
         self.value = self.value + n
-        self
     }
 
-    multiply = (self: &&Builder, n: i64) -> &&Builder {
+    multiply = (self: &&Builder, n: i64) {
         self.value = self.value * n
-        self
     }
 
     getValue = (self: &Builder) -> i64 {
@@ -1622,10 +1687,14 @@ Builder = class {
 
 main = () {
     val builder = Builder{ 0 }
-    val result = builder.add(5).multiply(2).add(10).getValue()
-    print(result)                     // prints: 20 ((0+5)*2+10)
+    builder.add(5)
+    builder.multiply(2)
+    builder.add(10)
+    print(builder.getValue())         // prints: 20 ((0+5)*2+10)
 }
 ```
+
+Note: Methods cannot return borrowed references (`&T` or `&&T`). For mutation patterns, use void-returning methods with sequential calls as shown above.
 
 ## Example 5: Singleton Objects
 
@@ -1959,7 +2028,7 @@ Node = class {
     sum = (self: &Node) -> i64 {
         when {
             self.next == null -> self.value
-            else -> self.value + self.next?.sum()
+            else -> self.value + (self.next?.sum() ?: 0)
         }
     }
 }
@@ -2258,7 +2327,105 @@ Node = class {
 }
 ```
 
-## 12. Error Messages ✅
+## 12. Forward References Between Classes ✅
+
+**Decision:** Forward references are allowed for all types via two-pass resolution.
+
+The semantic analyzer performs two passes:
+1. **First pass:** Collect all class/struct/object names
+2. **Second pass:** Resolve field types and method signatures
+
+This allows mutual references regardless of declaration order:
+
+```slang
+// Person references Company before it's defined - OK
+Person = class {
+    val name: string
+    var employer: *Company?
+}
+
+// Company references Person - OK
+Company = class {
+    val name: string
+    var ceo: *Person?
+}
+
+// Works for embedded types too, not just pointers
+Line = class {
+    val start: Point    // Point defined later - OK
+    val end: Point
+}
+
+Point = class {
+    val x: i64
+    val y: i64
+}
+```
+
+## 13. Methods Cannot Return Borrowed References ✅
+
+**Decision:** Methods cannot return borrowed references (`&T` or `&&T`). Methods can only return owned values (`T` or `*T`).
+
+This simplifies lifetime analysis - borrowed references have scope constraints that would complicate return value handling. For mutation patterns, use void-returning methods with sequential calls:
+
+```slang
+Builder = class {
+    var value: i64
+
+    // Correct: void return, mutates self
+    add = (self: &&Builder, n: i64) {
+        self.value = self.value + n
+    }
+
+    // Correct: returns owned value
+    getValue = (self: &Builder) -> i64 {
+        self.value
+    }
+
+    // ERROR: cannot return borrowed reference
+    // getRef = (self: &Builder) -> &Builder { self }
+}
+
+main = () {
+    val b = Builder{ 0 }
+    b.add(5)           // sequential mutation calls
+    b.add(10)
+    print(b.getValue())  // prints: 15
+}
+```
+
+## 14. `val`/`var` Controls Reassignment Only ✅
+
+**Decision:** The `val`/`var` keywords control whether a binding can be reassigned, not whether the value's contents can be mutated.
+
+- `val p = Point{ 1, 2 }` - cannot reassign `p`, but can mutate `p`'s `var` fields
+- `var p = Point{ 1, 2 }` - can reassign `p` and mutate `p`'s `var` fields
+
+This means a `val` binding can still call `&&T` methods that modify `var` fields:
+
+```slang
+Point = class {
+    var x: i64
+    var y: i64
+
+    scale = (self: &&Point, factor: i64) {
+        self.x = self.x * factor
+        self.y = self.y * factor
+    }
+}
+
+main = () {
+    val p = Point{ 1, 2 }   // val = can't reassign p
+    p.scale(2)              // OK - can still mutate p's var fields
+    print(p.x)              // prints: 2
+
+    // p = Point{ 3, 4 }    // Error - can't reassign val binding
+}
+```
+
+This is consistent with SEP 1's ownership model where `val`/`var` controls binding reassignability, while `&T`/`&&T` controls borrow mutability.
+
+## 15. Error Messages ✅
 
 Clear error messages for invalid patterns:
 
@@ -2280,6 +2447,7 @@ Clear error messages for invalid patterns:
 | `self` parameter in object method | `object methods cannot have 'self' parameter` |
 | Duplicate method signature | `duplicate method signature for 'X'` |
 | No matching overload | `no matching overload for method 'X' with arguments (A, B)` |
+| Returning borrowed reference | `methods cannot return borrowed references (&T or &&T); return owned value instead` |
 
 # Risks and Limitations
 

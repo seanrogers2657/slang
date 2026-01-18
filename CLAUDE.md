@@ -40,18 +40,37 @@ This repository follows strict organizational rules:
 
 The compiler currently supports:
 - **Variables**: Immutable (`val`) and mutable (`var`) variables (e.g., `val x = 5`, `var y = 10`)
-- **Types**: `i64` (integer), `bool` (boolean), `string`, `void`
+- **Types**:
+  - Signed integers: `i8`, `i16`, `i32`, `i64`, `i128` (`int` is alias for `i64`)
+  - Unsigned integers: `u8`, `u16`, `u32`, `u64`, `u128`
+  - Other primitives: `bool`, `string`, `void`
+  - Arrays: `[1, 2, 3]` with index access and `len()`
+  - Structs: User-defined types with `val`/`var` fields
+  - Nullable types: `T?` (e.g., `i64?`) with `null` value
+  - Pointer types: `*T` (owned), `&T` (immutable borrow), `&&T` (mutable borrow)
 - **Expressions**: Binary and unary expressions
 - **Operators**:
   - Arithmetic: `+`, `-`, `*`, `/`, `%`
   - Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=` (return `bool`)
   - Logical: `&&` (and), `||` (or), `!` (not)
+  - Field access: `.` for struct fields
+  - Index access: `[]` for arrays
+  - Safe navigation: `?.` for nullable field access
 - **Boolean literals**: `true`, `false`
-- **Statements**: Expression statements, variable declarations
+- **Statements**: Expression statements, variable declarations, assignments
+- **Control Flow**:
+  - `if`/`else` statements and expressions
+  - `while` loops
+  - `for` loops (C-style: `for (var i = 0; i < 10; i = i + 1) { }`)
+  - `break` and `continue`
+  - `when` expressions (conditional branching)
 - **Functions**: Function declarations (e.g., `main = () { ... }`, `add = (a: int, b: int) -> int { ... }`)
 - **Built-in Functions**:
   - `print(value)` - print a value to stdout (accepts `i64`, `string`, or `bool`)
   - `exit(code)` - exit program with specified exit code
+  - `len(array)` - get array length
+  - `sleep(nanoseconds)` - sleep for specified duration
+  - `Heap.new(value)` - allocate a struct on the heap (returns `*T`)
 - **Comments**: Line comments with `//` (e.g., `// this is a comment`)
 
 ## Development Commands
@@ -96,8 +115,8 @@ go run cmd/sl/main.go build <source-file>
 go run cmd/sl/main.go run <source-file>
 
 # Examples
-./sl run _examples/slang/add.sl
-./sl run _examples/slang/subtract.sl
+./sl run _examples/slang/arithmetic/add.sl
+./sl run _examples/slang/arithmetic/subtract.sl
 ```
 
 The build tool (`slm`) also provides convenience commands:
@@ -377,7 +396,9 @@ Built-in functions are registered in a central registry and handled specially by
    ```go
    var Builtins = map[string]BuiltinFunc{
        "exit":  {ParamTypes: []Type{TypeI64}, ReturnType: TypeVoid, NoReturn: true},
-       "print": {ParamTypes: []Type{TypeI64}, ReturnType: TypeVoid, NoReturn: false},
+       "print": {ParamTypes: []Type{TypeI64}, ReturnType: TypeVoid, AcceptedTypes: map[int][]Type{0: {TypeI64, TypeString, TypeBoolean}}},
+       "len":   {ParamTypes: []Type{TypeError}, ReturnType: TypeI64, IsArrayLen: true},
+       "sleep": {ParamTypes: []Type{TypeI64}, ReturnType: TypeVoid},
        // Add new built-in here
    }
    ```
@@ -488,15 +509,15 @@ main = () {
 - Struct literals use braces: `Point{ 1, 2 }` (no space between name and `{`)
 - Anonymous struct literals require type annotation: `val p: Point = { x: 1, y: 2 }`
 
-### Pointer Syntax (Own<T>, Ref<T>, MutRef<T>)
+### Pointer Syntax (*T, &T, &&T)
 
 Slang uses an ownership-based memory model with three pointer types:
 
-- `Own<T>` - Owned pointer with unique ownership (move semantics)
-- `Ref<T>` - Immutable borrowed reference (read-only access)
-- `MutRef<T>` - Mutable borrowed reference (can mutate var fields)
+- `*T` - Owned pointer with unique ownership (move semantics)
+- `&T` - Immutable borrowed reference (read-only access)
+- `&&T` - Mutable borrowed reference (can mutate var fields)
 
-**Key principle**: `val`/`var` controls **reassignability** only. `Ref<T>` vs `MutRef<T>` controls **borrow mutability**.
+**Key principle**: `val`/`var` controls **reassignability** only. `&T` vs `&&T` controls **borrow mutability**.
 
 ```slang
 Point = struct {
@@ -506,7 +527,7 @@ Point = struct {
 
 // Allocate on the heap with Heap.new()
 main = () {
-    val p = Heap.new(Point{ 10, 20 })  // p: Own<Point>
+    val p = Heap.new(Point{ 10, 20 })  // p: *Point
     print(p.x)  // Auto-dereference: prints 10
     print(p.y)  // prints 20
 
@@ -518,13 +539,13 @@ main = () {
 
 **Ownership transfer (move semantics):**
 ```slang
-// Passing Own<T> to a function transfers ownership
-consumePoint = (p: Own<Point>) -> i64 {
+// Passing *T to a function transfers ownership
+consumePoint = (p: *Point) -> i64 {
     return p.x + p.y
 }
 
-// Returning Own<T> transfers ownership to caller
-createPoint = (x: i64, y: i64) -> Own<Point> {
+// Returning *T transfers ownership to caller
+createPoint = (x: i64, y: i64) -> *Point {
     return Heap.new(Point{ x, y })
 }
 
@@ -535,25 +556,25 @@ main = () {
 }
 ```
 
-**Borrowing with Ref<T> and MutRef<T>:**
+**Borrowing with &T and &&T:**
 ```slang
-// Ref<T> borrows without taking ownership (read-only)
-printPoint = (p: Ref<Point>) {
+// &T borrows without taking ownership (read-only)
+printPoint = (p: &Point) {
     print(p.x)
     print(p.y)
 }
 
-// MutRef<T> allows mutation through the reference
-doubleX = (p: MutRef<Point>) {
+// &&T allows mutation through the reference
+doubleX = (p: &&Point) {
     p.x = p.x * 2
 }
 
 main = () {
     val p = Heap.new(Point{ 10, 20 })
-    printPoint(p)  // Auto-borrow: Own<Point> -> Ref<Point>
+    printPoint(p)  // Auto-borrow: *Point -> &Point
     print(p.x)     // p still usable: prints 10
 
-    doubleX(p)     // Mutable borrow (val binding can still borrow as MutRef)
+    doubleX(p)     // Mutable borrow (val binding can still borrow as &&T)
     print(p.x)     // prints 20
 }
 ```
@@ -570,11 +591,11 @@ main = () {
 ```
 
 **Pointer rules:**
-- `Own<T>` values are move-only (assignment moves, not copies)
+- `*T` values are move-only (assignment moves, not copies)
 - Use `.copy()` to create an explicit deep copy
-- `Ref<T>` and `MutRef<T>` can only appear in function parameter position
-- `Ref<T>` is read-only; `MutRef<T>` can mutate var fields
-- Auto-borrow: `Own<T>` automatically converts to `Ref<T>` or `MutRef<T>` when passed to functions
+- `&T` and `&&T` can only appear in function parameter position
+- `&T` is read-only; `&&T` can mutate var fields
+- Auto-borrow: `*T` automatically converts to `&T` or `&&T` when passed to functions
 - `val`/`var` only controls reassignability, not mutation through the pointer
 - Multiple immutable borrows are allowed; multiple mutable borrows are not
 - Memory is automatically freed when owned pointers go out of scope
@@ -600,6 +621,11 @@ main = () {
     val isValid = true
     val isGreater = x > y    // comparison returns bool
     print(isValid && isGreater)  // prints "true" or "false"
+
+    // Explicit type annotations
+    val a: i16 = 1000        // explicitly typed as i16
+    val b: i32 = 50000       // explicitly typed as i32
+    val flag: bool = true    // explicitly typed as bool
 }
 ```
 
@@ -608,7 +634,7 @@ main = () {
 - `val` variables cannot be reassigned (immutable)
 - `var` variables can be reassigned
 - Variable names start with a letter, followed by letters, digits, or underscores
-- Type is inferred from the initializer expression
+- Type is inferred from the initializer expression, or can be explicitly annotated with `: Type`
 
 **Error examples:**
 ```slang
@@ -617,6 +643,221 @@ val x = 5
 val x = 10     // Error: variable 'x' is already declared in this scope
 x = 20         // Error: cannot assign to immutable variable 'x'
 ```
+
+### Control Flow
+
+Slang supports standard control flow constructs:
+
+**If/Else Statements:**
+```slang
+main = () {
+    val x = 10
+    if x > 5 {
+        print(1)
+    }
+
+    if x < 5 {
+        print(0)
+    } else {
+        print(1)
+    }
+
+    // Else-if chains
+    if x < 0 {
+        print(-1)
+    } else if x == 0 {
+        print(0)
+    } else {
+        print(1)
+    }
+}
+```
+
+**If Expressions** (returns a value):
+```slang
+main = () {
+    val x = 10
+    val result = if x > 5 { 1 } else { 0 }  // result = 1
+    print(result)
+
+    // If expressions require else branch and matching types
+    val sign = if x < 0 { -1 } else if x == 0 { 0 } else { 1 }
+}
+```
+
+**While Loops:**
+```slang
+main = () {
+    var i = 0
+    while i < 5 {
+        print(i)
+        i = i + 1
+    }
+    // prints: 0 1 2 3 4
+}
+```
+
+**For Loops** (C-style syntax with parentheses):
+```slang
+main = () {
+    for (var i = 0; i < 5; i = i + 1) {
+        print(i)
+    }
+    // prints: 0 1 2 3 4
+}
+```
+
+**Break and Continue:**
+```slang
+main = () {
+    var i = 0
+    while true {
+        if i >= 5 {
+            break
+        }
+        if i % 2 == 0 {
+            i = i + 1
+            continue
+        }
+        print(i)
+        i = i + 1
+    }
+    // prints: 1 3
+}
+```
+
+### When Expressions
+
+`when` expressions provide conditional branching similar to Kotlin's `when`:
+
+```slang
+main = () {
+    val x = 5
+    when {
+        x > 10 -> exit(0)
+        x > 3 -> exit(10)
+        else -> exit(20)
+    }
+    // exits with code 10
+}
+
+// When as expression (returns a value)
+getValue = (x: i64) -> i64 {
+    return when {
+        x < 0 -> -1
+        x == 0 -> 0
+        else -> 1
+    }
+}
+
+// When with blocks
+main = () {
+    val x = 5
+    when {
+        x > 10 -> {
+            print(1)
+            exit(0)
+        }
+        else -> {
+            print(0)
+            exit(1)
+        }
+    }
+}
+```
+
+**When rules:**
+- `when` expressions require an `else` branch when used as expression
+- All branches must return compatible types when used as expression
+- Conditions are evaluated top-to-bottom, first match wins
+
+### Array Syntax
+
+Arrays are fixed-size collections with type inference:
+
+```slang
+main = () {
+    // Array literal
+    val arr = [1, 2, 3]
+
+    // Index access (0-based)
+    print(arr[0])  // prints 1
+    print(arr[1])  // prints 2
+    print(arr[2])  // prints 3
+
+    // Array length
+    print(len(arr))  // prints 3
+
+    // Mutable array elements (requires var)
+    var nums = [10, 20, 30]
+    nums[0] = 100
+    print(nums[0])  // prints 100
+
+    // Arrays in loops
+    for (var i = 0; i < len(arr); i = i + 1) {
+        print(arr[i])
+    }
+
+    // Boolean arrays
+    val flags = [true, false, true]
+    print(flags[0])  // prints true
+}
+```
+
+**Array rules:**
+- Array type is inferred from element types (all elements must have same type)
+- Index access is bounds-checked at runtime
+- Negative indices cause runtime error
+- `val` arrays cannot have elements reassigned; use `var` for mutable arrays
+
+### Nullable Types
+
+Slang supports nullable types with the `T?` syntax (Kotlin-style):
+
+```slang
+main = () {
+    // Nullable variable with null
+    val x: i64? = null
+
+    // Nullable variable with value
+    val y: i64? = 42
+
+    // Null comparison
+    print(x == null)  // prints true
+    print(y == null)  // prints false
+    print(y != null)  // prints true
+
+    // Nullable struct fields
+    Point = struct {
+        val x: i64?
+        val y: i64?
+    }
+
+    val p = Point{ null, 42 }
+    print(p.y == null)  // prints false
+}
+
+// Functions can return nullable types
+findValue = (x: i64) -> i64? {
+    if x > 0 {
+        return x
+    }
+    return null
+}
+
+main = () {
+    val result = findValue(-5)
+    if result == null {
+        print(0)
+    }
+}
+```
+
+**Nullable rules:**
+- Only nullable types (`T?`) can hold `null`
+- Cannot assign `null` to non-nullable type
+- Nested nullables (`T??`) are not allowed
+- Use null comparison (`x == null`, `x != null`) for null checks
 
 ## Module Information
 

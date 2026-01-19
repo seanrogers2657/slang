@@ -3037,6 +3037,31 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 		return TypeError
 	}
 
+	// Elvis operator: left ?: right
+	// Left must be nullable T?, right must be compatible with T, result is T
+	if op == "?:" {
+		innerType, isNullable := UnwrapNullable(leftType)
+		if !isNullable {
+			a.addError(
+				fmt.Sprintf("operator '?:' requires nullable type on left, got '%s'", leftType.String()),
+				leftPos, leftPos,
+			).WithHint("elvis operator provides a default value for nullable types")
+			return TypeError
+		}
+
+		// Right operand must be compatible with unwrapped inner type
+		if !rightType.Equals(innerType) && !IsAssignableTo(rightType, innerType) {
+			a.addError(
+				fmt.Sprintf("operator '?:' requires right operand of type '%s', got '%s'",
+					innerType.String(), rightType.String()),
+				rightPos, rightPos,
+			)
+			return TypeError
+		}
+
+		return innerType
+	}
+
 	// Logical operators: &&, ||
 	// These require boolean operands and return boolean
 	if op == "&&" || op == "||" {

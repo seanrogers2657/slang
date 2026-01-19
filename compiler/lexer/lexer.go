@@ -79,6 +79,7 @@ const (
 	TokenTypeNull     // 'null' keyword
 	TokenTypeQuestion // '?' for nullable type syntax
 	TokenTypeSafeCall // '?.' safe call operator
+	TokenTypeElvis    // '?:' elvis operator
 )
 
 // String returns a human-readable name for the token type
@@ -182,6 +183,8 @@ func (t TokenType) String() string {
 		return "QUESTION"
 	case TokenTypeSafeCall:
 		return "SAFE_CALL"
+	case TokenTypeElvis:
+		return "ELVIS"
 	default:
 		return "UNKNOWN"
 	}
@@ -606,9 +609,13 @@ func (p *lexer) Parse() {
 				p.advance()
 			}
 		} else if b == '?' {
-			// Check for ?. (safe call) or standalone ? (nullable type)
+			// Check for ?: (elvis), ?. (safe call), or standalone ? (nullable type)
 			pos := p.currentPos()
-			if p.Index+1 < len(p.Source) && p.Source[p.Index+1] == '.' {
+			if p.Index+1 < len(p.Source) && p.Source[p.Index+1] == ':' {
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeElvis, Value: "?:", Pos: pos})
+				p.advance()
+				p.advance()
+			} else if p.Index+1 < len(p.Source) && p.Source[p.Index+1] == '.' {
 				p.Tokens = append(p.Tokens, Token{Type: TokenTypeSafeCall, Value: "?.", Pos: pos})
 				p.advance()
 				p.advance()

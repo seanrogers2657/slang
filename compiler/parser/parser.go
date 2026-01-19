@@ -13,6 +13,7 @@ type precedence int
 
 const (
 	precedenceLowest     precedence = iota
+	precedenceElvis                 // ?:
 	precedenceOr                    // ||
 	precedenceAnd                   // &&
 	precedenceComparison            // ==, !=, <, >, <=, >=
@@ -66,6 +67,8 @@ func (p *parser) addErrorWithSpan(message string, startPos, endPos ast.Position)
 // getPrecedence returns the precedence level for the current token
 func (p *parser) getPrecedence(tokenType lexer.TokenType) precedence {
 	switch tokenType {
+	case lexer.TokenTypeElvis:
+		return precedenceElvis
 	case lexer.TokenTypeOr:
 		return precedenceOr
 	case lexer.TokenTypeAnd:
@@ -272,6 +275,8 @@ func (p *parser) getOperatorString(tokenType lexer.TokenType) string {
 		return "&&"
 	case lexer.TokenTypeOr:
 		return "||"
+	case lexer.TokenTypeElvis:
+		return "?:"
 	default:
 		return ""
 	}

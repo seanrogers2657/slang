@@ -1869,6 +1869,9 @@ func (g *TypedCodeGenerator) generateIntBinaryExpr(expr *semantic.TypedBinaryExp
 	if expr.Op == "||" {
 		return g.generateLogicalOr(expr, ctx)
 	}
+	if expr.Op == "?:" {
+		return g.generateElvis(expr, ctx)
+	}
 
 	// Handle null comparison specially (x == null, x != null)
 	if expr.Op == "==" || expr.Op == "!=" {
@@ -1983,6 +1986,78 @@ func (g *TypedCodeGenerator) generateLogicalOr(expr *semantic.TypedBinaryExpr, c
 	// End label
 	builder.WriteString(fmt.Sprintf("%s:\n", endLabel))
 
+	return builder.String(), nil
+}
+
+// generateElvis generates code for ?: with short-circuit evaluation.
+// If the left operand is non-null, use its unwrapped value; otherwise evaluate right operand.
+func (g *TypedCodeGenerator) generateElvis(expr *semantic.TypedBinaryExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+	endLabel := ctx.NextLabel("elvis_end")
+
+	// Get the nullable type to determine if it's a reference or primitive
+	leftType := expr.Left.GetType()
+	innerType, isNullable := semantic.UnwrapNullable(leftType)
+	if !isNullable {
+		return "", fmt.Errorf("elvis operator requires nullable left operand, got %s", leftType.String())
+	}
+
+	isRef := semantic.IsReferenceType(innerType)
+
+	// Handle identifier expression (the common case)
+	if ident, ok := expr.Left.(*semantic.TypedIdentifierExpr); ok {
+		slot, found := ctx.GetVariable(ident.Name)
+		if !found {
+			return "", fmt.Errorf("undefined variable: %s", ident.Name)
+		}
+
+		if isRef {
+			// Reference type: load pointer, check if non-null
+			EmitLoadFromStack(&builder, "x2", slot.Offset)
+			builder.WriteString(fmt.Sprintf("    cbnz x2, %s\n", endLabel))
+		} else {
+			// Primitive type: check tag at offset - 8, load value into x2
+			tagOffset := slot.Offset - 8
+			builder.WriteString(fmt.Sprintf("    ldr x3, [x29, #-%d]\n", tagOffset))
+			EmitLoadFromStack(&builder, "x2", slot.Offset)
+			builder.WriteString(fmt.Sprintf("    cbnz x3, %s\n", endLabel))
+		}
+
+		// Null path: evaluate right operand (overwrites x2)
+		rightCode, err := g.generateExpr(expr.Right, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(rightCode)
+
+		builder.WriteString(fmt.Sprintf("%s:\n", endLabel))
+		return builder.String(), nil
+	}
+
+	// For complex expressions (function calls, field access, etc.)
+	// Generate the expression first
+	leftCode, err := g.generateExpr(expr.Left, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(leftCode)
+
+	if isRef {
+		// Reference type: x2 is the pointer, check if non-null
+		builder.WriteString(fmt.Sprintf("    cbnz x2, %s\n", endLabel))
+	} else {
+		// For primitive nullable, tag is in x3, value is in x2
+		builder.WriteString(fmt.Sprintf("    cbnz x3, %s\n", endLabel))
+	}
+
+	// Null path: evaluate right operand (overwrites x2)
+	rightCode, err := g.generateExpr(expr.Right, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(rightCode)
+
+	builder.WriteString(fmt.Sprintf("%s:\n", endLabel))
 	return builder.String(), nil
 }
 

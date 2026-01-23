@@ -1485,7 +1485,7 @@ func TestHeapNewTypeChecking(t *testing.T) {
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		result := test.analyzer.analyzeExpression(methodCallExpr(ident("Heap"), "new", structLiteral("Point", intLit("10"), intLit("20"))))
 		expectedType := OwnedPointerType{ElementType: pointType}
 		test.expectType(result, expectedType)
@@ -1518,7 +1518,7 @@ func TestFieldAccessThroughOwnedPointer(t *testing.T) {
 			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
 		// Declare p as Own<Point>
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		test.declare("p", ownPointType, false)
 
@@ -1533,7 +1533,7 @@ func TestFieldAccessThroughOwnedPointer(t *testing.T) {
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		test.declare("p", ownPointType, false)
 
@@ -1552,7 +1552,7 @@ func TestFieldAccessThroughOwnedPointer(t *testing.T) {
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		test.declare("p", ownPointType, false)
 
@@ -1610,7 +1610,7 @@ func TestOwnedPointerCopy(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		test.declare("p", ownPointType, false)
 
@@ -1623,7 +1623,7 @@ func TestOwnedPointerCopy(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		test.declare("p", ownPointType, false)
 
@@ -1635,7 +1635,7 @@ func TestOwnedPointerCopy(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		test.declare("p", ownPointType, false)
 
@@ -1785,7 +1785,7 @@ func TestRefTypeResolution(t *testing.T) {
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		result := test.analyzer.resolveTypeName("&Point", pos(1, 1))
-		expected := RefPointerType{ElementType: test.analyzer.structs["Point"]}
+		expected := RefPointerType{ElementType: test.analyzer.TypeRegistry.AllStructs()["Point"]}
 		if !result.Equals(expected) {
 			t.Errorf("expected %s, got %s", expected.String(), result.String())
 		}
@@ -1876,7 +1876,7 @@ func TestImplicitOwnToRefConversion(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 
 		// Register a function that takes Ref<Point>
 		test.analyzer.functions["readPoint"] = FunctionInfo{
@@ -1900,7 +1900,7 @@ func TestImplicitOwnToRefConversion(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 
 		// Register a function that takes var Ref<Point>
 		test.analyzer.functions["mutatePoint"] = FunctionInfo{
@@ -1923,7 +1923,7 @@ func TestImplicitOwnToRefConversion(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 
 		// Register a function that takes MutRef<Point>
 		test.analyzer.functions["mutatePoint"] = FunctionInfo{
@@ -1946,7 +1946,7 @@ func TestRefFieldAccess(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		refPointType := RefPointerType{ElementType: pointType}
 		test.declare("p", refPointType, false)
 
@@ -1959,15 +1959,15 @@ func TestRefFieldAccess(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Create Container with Own<Point> field
-		test.analyzer.structs["Container"] = StructType{
+		containerType := StructType{
 			Name:   "Container",
 			Fields: []StructFieldInfo{{Name: "data", Type: ownPointType, Mutable: false, Index: 0}},
 		}
-		containerType := test.analyzer.structs["Container"]
+		test.analyzer.TypeRegistry.RegisterStruct("Container", containerType)
 
 		// Declare c as Ref<Container>
 		refContainerType := RefPointerType{ElementType: containerType}
@@ -1987,7 +1987,7 @@ func TestRefFieldAccess(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		refPointType := RefPointerType{ElementType: pointType}
 		test.declare("p", refPointType, false)
 
@@ -2008,7 +2008,7 @@ func TestRefFieldAccess(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		refPointType := MutRefPointerType{ElementType: pointType}
 		test.declare("p", refPointType, false)
 
@@ -2206,7 +2206,7 @@ func TestUseAfterMove(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		test.declare("p", ownPointType, false)
 
@@ -2222,7 +2222,7 @@ func TestUseAfterMove(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		test.declare("p", ownPointType, false)
 
@@ -2237,7 +2237,7 @@ func TestMoveOnAssignment(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		test.declare("p", ownPointType, false)
 
@@ -2259,7 +2259,7 @@ func TestMoveOnAssignment(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		test.declare("p", ownPointType, false)
 
@@ -2295,7 +2295,7 @@ func TestBindingMutability(t *testing.T) {
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		// Declare as val
 		test.declare("p", ownPointType, false)
@@ -2312,7 +2312,7 @@ func TestBindingMutability(t *testing.T) {
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		// Declare as var (mutable=true)
 		test.declare("p", ownPointType, true)
@@ -2328,7 +2328,7 @@ func TestBindingMutability(t *testing.T) {
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		// Declare as var (mutable=true)
 		test.declare("p", ownPointType, true)
@@ -2346,14 +2346,14 @@ func TestBindingMutability(t *testing.T) {
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
-		pointType := test.analyzer.structs["Point"]
-		test.analyzer.structs["Rect"] = StructType{
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
+		rectType := StructType{
 			Name: "Rect",
 			Fields: []StructFieldInfo{
 				{Name: "topLeft", Type: OwnedPointerType{ElementType: pointType}, Mutable: true, Index: 0},
 			},
 		}
-		rectType := test.analyzer.structs["Rect"]
+		test.analyzer.TypeRegistry.RegisterStruct("Rect", rectType)
 		ownRectType := OwnedPointerType{ElementType: rectType}
 		// Declare as val
 		test.declare("r", ownRectType, false)
@@ -2371,7 +2371,7 @@ func TestBorrowExclusivity(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		refPointType := RefPointerType{ElementType: pointType}
 
@@ -2394,7 +2394,7 @@ func TestBorrowExclusivity(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		refPointTypeMut := MutRefPointerType{ElementType: pointType}
 
@@ -2417,7 +2417,7 @@ func TestBorrowExclusivity(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		refPointType := RefPointerType{ElementType: pointType}
 		refPointTypeMut := MutRefPointerType{ElementType: pointType}
@@ -2441,7 +2441,7 @@ func TestBorrowExclusivity(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		refPointTypeMut := MutRefPointerType{ElementType: pointType}
 
@@ -2467,7 +2467,7 @@ func TestConditionalMoves(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2494,7 +2494,7 @@ func TestConditionalMoves(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2522,7 +2522,7 @@ func TestConditionalMoves(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2552,7 +2552,7 @@ func TestConditionalMoves(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2582,7 +2582,7 @@ func TestConditionalMoves(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2616,7 +2616,7 @@ func TestConditionalMoves(t *testing.T) {
 func TestShortCircuitOperatorsWithMoves(t *testing.T) {
 	// Helper function to create a consume function that takes Own<Point>
 	setupConsumeFunction := func(test *analyzerTest) {
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		test.analyzer.functions["consume"] = FunctionInfo{
 			ParamTypes: []Type{ownPointType},
@@ -2629,7 +2629,7 @@ func TestShortCircuitOperatorsWithMoves(t *testing.T) {
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		setupConsumeFunction(test)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2654,7 +2654,7 @@ func TestShortCircuitOperatorsWithMoves(t *testing.T) {
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		setupConsumeFunction(test)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2679,7 +2679,7 @@ func TestShortCircuitOperatorsWithMoves(t *testing.T) {
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		setupConsumeFunction(test)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2704,7 +2704,7 @@ func TestShortCircuitOperatorsWithMoves(t *testing.T) {
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		setupConsumeFunction(test)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2727,7 +2727,7 @@ func TestConditionalExpressionMoves(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2766,7 +2766,7 @@ func TestConditionalExpressionMoves(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2804,7 +2804,7 @@ func TestConditionalExpressionMoves(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2831,7 +2831,7 @@ func TestConditionalExpressionMoves(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2871,7 +2871,7 @@ func TestLoopMoveRestrictions(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2891,7 +2891,7 @@ func TestLoopMoveRestrictions(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point> and i as s64
@@ -2914,7 +2914,7 @@ func TestLoopMoveRestrictions(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2941,7 +2941,7 @@ func TestLoopMoveRestrictions(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as Own<Point>
@@ -2983,7 +2983,7 @@ func TestSelfReferencePrevention(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as var Own<Point> (mutable so we can reassign)
@@ -2999,7 +2999,7 @@ func TestSelfReferencePrevention(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p as var Own<Point>
@@ -3033,8 +3033,8 @@ func TestSelfReferencePrevention(t *testing.T) {
 		ownContainerType := OwnedPointerType{ElementType: containerType}
 
 		test := newTest(t).withScope()
-		test.analyzer.structs["Child"] = childType
-		test.analyzer.structs["Container"] = containerType
+		test.analyzer.TypeRegistry.RegisterStruct("Child", childType)
+		test.analyzer.TypeRegistry.RegisterStruct("Container", containerType)
 
 		// Declare c as var Own<Container>
 		test.declare("c", ownContainerType, true)
@@ -3063,7 +3063,7 @@ func TestSelfReferencePrevention(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Declare p and q as var Own<Point>
@@ -3082,7 +3082,7 @@ func TestFunctionLevelOwnership(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Simulate being in a function with return type Own<Point>
@@ -3109,7 +3109,7 @@ func TestFunctionLevelOwnership(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Simulate being in a function with return type Own<Point>
@@ -3156,7 +3156,7 @@ func TestFunctionLevelOwnership(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Simulate being in a function with return type Own<Point>
@@ -3192,7 +3192,7 @@ func TestFunctionLevelOwnership(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
-		pointType := test.analyzer.structs["Point"]
+		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
 		// Simulate being in a function with return type Own<Point>

@@ -459,10 +459,10 @@ func fieldAssignStmt(object ast.Expression, field string, value ast.Expression) 
 
 // withStruct registers a struct type with the analyzer
 func (at *analyzerTest) withStruct(name string, fields ...StructFieldInfo) *analyzerTest {
-	at.analyzer.structs[name] = StructType{
+	at.analyzer.TypeRegistry.RegisterStruct(name, StructType{
 		Name:   name,
 		Fields: fields,
-	}
+	})
 	return at
 }
 

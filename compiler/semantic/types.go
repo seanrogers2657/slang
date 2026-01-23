@@ -752,6 +752,35 @@ var (
 	TypeFloat64 = F64Type{}
 )
 
+// primitiveTypes is the registry of primitive type names to types
+var primitiveTypes = map[string]Type{}
+
+// RegisterPrimitiveType adds a type name mapping to the registry.
+// This allows extensions to register custom type aliases.
+func RegisterPrimitiveType(name string, t Type) {
+	primitiveTypes[name] = t
+}
+
+func init() {
+	// Register standard types
+	RegisterPrimitiveType("int", TypeInteger)
+	RegisterPrimitiveType("s8", TypeS8)
+	RegisterPrimitiveType("s16", TypeS16)
+	RegisterPrimitiveType("s32", TypeS32)
+	RegisterPrimitiveType("s64", TypeS64)
+	RegisterPrimitiveType("s128", TypeS128)
+	RegisterPrimitiveType("u8", TypeU8)
+	RegisterPrimitiveType("u16", TypeU16)
+	RegisterPrimitiveType("u32", TypeU32)
+	RegisterPrimitiveType("u64", TypeU64)
+	RegisterPrimitiveType("u128", TypeU128)
+	RegisterPrimitiveType("f32", TypeFloat32)
+	RegisterPrimitiveType("f64", TypeFloat64)
+	RegisterPrimitiveType("string", TypeString)
+	RegisterPrimitiveType("bool", TypeBoolean)
+	RegisterPrimitiveType("void", TypeVoid)
+}
+
 // IsIntegerType checks if a type is any integer type
 func IsIntegerType(t Type) bool {
 	switch t.(type) {
@@ -777,50 +806,11 @@ func IsArrayType(t Type) bool {
 	return ok
 }
 
-// TypeFromName converts a type name string to a Type
+// TypeFromName converts a type name string to a Type.
+// It first looks up the type in the primitive registry.
 func TypeFromName(name string) Type {
-	switch name {
-	// Legacy/alias names
-	case "int":
-		return TypeInteger
-	case "string":
-		return TypeString
-	case "bool":
-		return TypeBoolean
-	case "void":
-		return TypeVoid
-
-	// Signed integers
-	case "s8":
-		return TypeS8
-	case "s16":
-		return TypeS16
-	case "s32":
-		return TypeS32
-	case "s64":
-		return TypeS64
-	case "s128":
-		return TypeS128
-
-	// Unsigned integers
-	case "u8":
-		return TypeU8
-	case "u16":
-		return TypeU16
-	case "u32":
-		return TypeU32
-	case "u64":
-		return TypeU64
-	case "u128":
-		return TypeU128
-
-	// Floating point
-	case "f32":
-		return TypeFloat32
-	case "f64":
-		return TypeFloat64
-
-	default:
-		return TypeError
+	if t, ok := primitiveTypes[name]; ok {
+		return t
 	}
+	return TypeError
 }

@@ -2,7 +2,6 @@ package semantic
 
 import (
 	"fmt"
-	"math/big"
 	"strconv"
 	"strings"
 
@@ -75,9 +74,7 @@ type Analyzer struct {
 	currentScope      *Scope
 	ownershipScope    *OwnershipScope         // tracks ownership state for move semantics
 	functions         map[string]FunctionInfo // function registry
-	structs           map[string]StructType   // struct registry
-	classes           map[string]ClassType    // class registry
-	objects           map[string]ObjectType   // object registry
+	TypeRegistry      *TypeRegistry           // centralized struct/class/object registry
 	currentReturnType Type                    // return type of current function being analyzed
 	loopDepth         int                     // tracks nested loop depth for break/continue validation
 	currentClass      *ClassType              // class being analyzed (for 'self' validation)
@@ -91,9 +88,7 @@ func NewAnalyzer(filename string) *Analyzer {
 		currentScope:      newScope(nil),           // global scope
 		ownershipScope:    newOwnershipScope(nil),  // global ownership scope
 		functions:         make(map[string]FunctionInfo),
-		structs:           make(map[string]StructType),
-		classes:           make(map[string]ClassType),
-		objects:           make(map[string]ObjectType),
+		TypeRegistry:      NewTypeRegistry(),
 		currentReturnType: nil,
 		currentClass:      nil,
 	}
@@ -296,16 +291,20 @@ func (a *Analyzer) registerFunction(fn *ast.FunctionDecl) {
 // registerStructName registers only the struct name (first pass for forward references)
 func (a *Analyzer) registerStructName(s *ast.StructDecl) {
 	// Check for duplicate struct
-	if _, exists := a.structs[s.Name]; exists {
-		a.addError(fmt.Sprintf("struct '%s' is already declared", s.Name), s.NamePos, s.NamePos)
+	if kind, exists := a.TypeRegistry.NameExists(s.Name); exists {
+		if kind == TypeKindStruct {
+			a.addError(fmt.Sprintf("struct '%s' is already declared", s.Name), s.NamePos, s.NamePos)
+		} else {
+			a.addError(fmt.Sprintf("type '%s' is already declared as %s", s.Name, kind), s.NamePos, s.NamePos)
+		}
 		return
 	}
 
 	// Register the struct with empty fields (will be resolved in second pass)
-	a.structs[s.Name] = StructType{
+	a.TypeRegistry.RegisterStruct(s.Name, StructType{
 		Name:   s.Name,
 		Fields: nil, // Placeholder until resolveStructFields is called
-	}
+	})
 }
 
 // resolveStructFields resolves field types for a registered struct (second pass)
@@ -329,16 +328,16 @@ func (a *Analyzer) resolveStructFields(s *ast.StructDecl) {
 	}
 
 	// Update the struct with resolved fields
-	a.structs[s.Name] = StructType{
+	a.TypeRegistry.UpdateStruct(s.Name, StructType{
 		Name:   s.Name,
 		Fields: fields,
-	}
+	})
 }
 
 // registerStruct registers a struct type in the struct registry (legacy - for testing)
 func (a *Analyzer) registerStruct(s *ast.StructDecl) {
 	// Check for duplicate struct
-	if _, exists := a.structs[s.Name]; exists {
+	if _, exists := a.TypeRegistry.LookupStruct(s.Name); exists {
 		a.addError(fmt.Sprintf("struct '%s' is already declared", s.Name), s.NamePos, s.NamePos)
 		return
 	}
@@ -361,62 +360,54 @@ func (a *Analyzer) registerStruct(s *ast.StructDecl) {
 		}
 	}
 
-	a.structs[s.Name] = StructType{
+	a.TypeRegistry.RegisterStruct(s.Name, StructType{
 		Name:   s.Name,
 		Fields: fields,
-	}
+	})
 }
 
 // registerClassName registers only the class name (first pass for forward references)
 func (a *Analyzer) registerClassName(c *ast.ClassDecl) {
 	// Check for duplicate type name
-	if _, exists := a.structs[c.Name]; exists {
-		a.addError(fmt.Sprintf("type '%s' is already declared as a struct", c.Name), c.NamePos, c.NamePos)
-		return
-	}
-	if _, exists := a.classes[c.Name]; exists {
-		a.addError(fmt.Sprintf("class '%s' is already declared", c.Name), c.NamePos, c.NamePos)
-		return
-	}
-	if _, exists := a.objects[c.Name]; exists {
-		a.addError(fmt.Sprintf("type '%s' is already declared as an object", c.Name), c.NamePos, c.NamePos)
+	if kind, exists := a.TypeRegistry.NameExists(c.Name); exists {
+		if kind == TypeKindClass {
+			a.addError(fmt.Sprintf("class '%s' is already declared", c.Name), c.NamePos, c.NamePos)
+		} else {
+			a.addError(fmt.Sprintf("type '%s' is already declared as %s", c.Name, kind), c.NamePos, c.NamePos)
+		}
 		return
 	}
 
 	// Register the class with empty fields/methods (will be resolved in second pass)
-	a.classes[c.Name] = ClassType{
+	a.TypeRegistry.RegisterClass(c.Name, ClassType{
 		Name:    c.Name,
 		Fields:  nil,                             // Placeholder until resolveClassFields is called
 		Methods: make(map[string][]*MethodInfo),  // Placeholder until resolveClassMethods is called
-	}
+	})
 }
 
 // registerObjectName registers only the object name (first pass for forward references)
 func (a *Analyzer) registerObjectName(o *ast.ObjectDecl) {
 	// Check for duplicate type name
-	if _, exists := a.structs[o.Name]; exists {
-		a.addError(fmt.Sprintf("type '%s' is already declared as a struct", o.Name), o.NamePos, o.NamePos)
-		return
-	}
-	if _, exists := a.classes[o.Name]; exists {
-		a.addError(fmt.Sprintf("type '%s' is already declared as a class", o.Name), o.NamePos, o.NamePos)
-		return
-	}
-	if _, exists := a.objects[o.Name]; exists {
-		a.addError(fmt.Sprintf("object '%s' is already declared", o.Name), o.NamePos, o.NamePos)
+	if kind, exists := a.TypeRegistry.NameExists(o.Name); exists {
+		if kind == TypeKindObject {
+			a.addError(fmt.Sprintf("object '%s' is already declared", o.Name), o.NamePos, o.NamePos)
+		} else {
+			a.addError(fmt.Sprintf("type '%s' is already declared as %s", o.Name, kind), o.NamePos, o.NamePos)
+		}
 		return
 	}
 
 	// Register the object with empty methods (will be resolved in second pass)
-	a.objects[o.Name] = ObjectType{
+	a.TypeRegistry.RegisterObject(o.Name, ObjectType{
 		Name:    o.Name,
 		Methods: make(map[string][]*MethodInfo),  // Placeholder until resolveObjectMethods is called
-	}
+	})
 }
 
 // resolveClassFieldsAndMethods resolves field and method types for a registered class (second pass)
 func (a *Analyzer) resolveClassFieldsAndMethods(c *ast.ClassDecl) {
-	classType, exists := a.classes[c.Name]
+	classType, exists := a.TypeRegistry.LookupClass(c.Name)
 	if !exists {
 		return // class was not registered (error already reported)
 	}
@@ -443,7 +434,7 @@ func (a *Analyzer) resolveClassFieldsAndMethods(c *ast.ClassDecl) {
 	// Update the class in the registry BEFORE resolving methods
 	// This ensures that when method parameters reference the class (e.g., &Counter),
 	// the lookup will find the ClassType with fields already populated
-	a.classes[c.Name] = classType
+	a.TypeRegistry.UpdateClass(c.Name, classType)
 
 	// Resolve methods
 	for _, method := range c.Methods {
@@ -464,12 +455,12 @@ func (a *Analyzer) resolveClassFieldsAndMethods(c *ast.ClassDecl) {
 	}
 
 	// Update the class again to include resolved methods
-	a.classes[c.Name] = classType
+	a.TypeRegistry.UpdateClass(c.Name, classType)
 }
 
 // resolveObjectMethods resolves method types for a registered object (second pass)
 func (a *Analyzer) resolveObjectMethods(o *ast.ObjectDecl) {
-	objectType, exists := a.objects[o.Name]
+	objectType, exists := a.TypeRegistry.LookupObject(o.Name)
 	if !exists {
 		return // object was not registered (error already reported)
 	}
@@ -493,7 +484,7 @@ func (a *Analyzer) resolveObjectMethods(o *ast.ObjectDecl) {
 	}
 
 	// Update the object in the registry
-	a.objects[o.Name] = objectType
+	a.TypeRegistry.UpdateObject(o.Name, objectType)
 }
 
 // methodOwnerKind distinguishes between class and object method contexts
@@ -718,19 +709,9 @@ func (a *Analyzer) resolveTypeNameCore(name string, pos ast.Position, reportErro
 		return t
 	}
 
-	// Try struct types
-	if structType, ok := a.structs[name]; ok {
-		return structType
-	}
-
-	// Try class types
-	if classType, ok := a.classes[name]; ok {
-		return classType
-	}
-
-	// Try object types (objects are types but cannot be instantiated)
-	if objectType, ok := a.objects[name]; ok {
-		return objectType
+	// Try user-defined types (struct, class, object)
+	if userType, ok := a.TypeRegistry.Lookup(name); ok {
+		return userType
 	}
 
 	// Unknown type
@@ -769,7 +750,7 @@ func (a *Analyzer) analyzeDeclaration(decl ast.Declaration) TypedDeclaration {
 // analyzeStructDecl analyzes a struct declaration
 func (a *Analyzer) analyzeStructDecl(s *ast.StructDecl) TypedDeclaration {
 	// The struct type was already registered in the first pass
-	structType := a.structs[s.Name]
+	structType, _ := a.TypeRegistry.LookupStruct(s.Name)
 
 	return &TypedStructDecl{
 		Name:          s.Name,
@@ -785,7 +766,7 @@ func (a *Analyzer) analyzeStructDecl(s *ast.StructDecl) TypedDeclaration {
 // analyzeClassDecl analyzes a class declaration
 func (a *Analyzer) analyzeClassDecl(c *ast.ClassDecl) TypedDeclaration {
 	// The class type was already registered in the first pass
-	classType := a.classes[c.Name]
+	classType, _ := a.TypeRegistry.LookupClass(c.Name)
 
 	// Analyze method bodies
 	typedMethods := make([]*TypedMethodDecl, 0, len(c.Methods))
@@ -809,7 +790,7 @@ func (a *Analyzer) analyzeClassDecl(c *ast.ClassDecl) TypedDeclaration {
 // analyzeObjectDecl analyzes a singleton object declaration
 func (a *Analyzer) analyzeObjectDecl(o *ast.ObjectDecl) TypedDeclaration {
 	// The object type was already registered in the first pass
-	objectType := a.objects[o.Name]
+	objectType, _ := a.TypeRegistry.LookupObject(o.Name)
 
 	// Analyze method bodies (all methods are static)
 	typedMethods := make([]*TypedMethodDecl, 0, len(o.Methods))
@@ -2272,7 +2253,7 @@ func (a *Analyzer) analyzeCallExpr(call *ast.CallExpr) TypedExpression {
 	}
 
 	// Check if this is a struct construction
-	if structType, ok := a.structs[call.Name]; ok {
+	if structType, ok := a.TypeRegistry.LookupStruct(call.Name); ok {
 		return a.analyzeStructLiteral(call, structType)
 	}
 
@@ -2633,7 +2614,7 @@ func (a *Analyzer) analyzeStructLiteralNamed(call *ast.CallExpr, structType Stru
 // Also handles class literals (e.g., Counter { 10 })
 func (a *Analyzer) analyzeStructLiteralExpr(lit *ast.StructLiteral) TypedExpression {
 	// Check if this is a known struct type
-	if structType, ok := a.structs[lit.Name]; ok {
+	if structType, ok := a.TypeRegistry.LookupStruct(lit.Name); ok {
 		// Handle named arguments
 		if lit.HasNamedArguments() {
 			return a.analyzeStructLiteralExprNamed(lit, structType)
@@ -2650,7 +2631,7 @@ func (a *Analyzer) analyzeStructLiteralExpr(lit *ast.StructLiteral) TypedExpress
 	}
 
 	// Check if this is a known class type
-	if classType, ok := a.classes[lit.Name]; ok {
+	if classType, ok := a.TypeRegistry.LookupClass(lit.Name); ok {
 		// Handle named arguments
 		if lit.HasNamedArguments() {
 			return a.analyzeClassLiteralExprNamed(lit, classType)
@@ -2667,7 +2648,7 @@ func (a *Analyzer) analyzeStructLiteralExpr(lit *ast.StructLiteral) TypedExpress
 	}
 
 	// Check if this is an object type (objects cannot be instantiated)
-	if _, ok := a.objects[lit.Name]; ok {
+	if _, ok := a.TypeRegistry.LookupObject(lit.Name); ok {
 		a.addError(
 			fmt.Sprintf("cannot instantiate object '%s' (objects are singletons)", lit.Name),
 			lit.NamePos, lit.RightBrace,
@@ -2712,153 +2693,24 @@ func (a *Analyzer) analyzeStructLiteralPositional(lit *ast.StructLiteral, fields
 
 // analyzeClassLiteralExprNamed analyzes a class literal with named arguments (e.g., Counter { count: 10 })
 func (a *Analyzer) analyzeClassLiteralExprNamed(lit *ast.StructLiteral, classType ClassType) TypedExpression {
-	// Build a map of field name -> index for quick lookup
-	fieldIndex := make(map[string]int)
-	for i, field := range classType.Fields {
-		fieldIndex[field.Name] = i
-	}
-
-	// Check argument count matches field count
-	if len(lit.NamedArguments) != len(classType.Fields) {
-		a.addError(
-			fmt.Sprintf("class '%s' has %d field(s), but %d argument(s) were provided",
-				classType.Name, len(classType.Fields), len(lit.NamedArguments)),
-			lit.LeftBrace, lit.RightBrace,
-		)
-	}
-
-	// Track which fields have been provided (for duplicate detection)
-	providedFields := make(map[string]ast.Position)
-
-	// Prepare args in field order
-	typedArgs := make([]TypedExpression, len(classType.Fields))
-	for i := range typedArgs {
-		typedArgs[i] = nil // will be filled in
-	}
-
-	// Process named arguments
-	for _, namedArg := range lit.NamedArguments {
-		// Check for duplicate field
-		if _, exists := providedFields[namedArg.Name]; exists {
-			a.addError(
-				fmt.Sprintf("duplicate field '%s' in class literal", namedArg.Name),
-				namedArg.NamePos, namedArg.NamePos,
-			)
-			continue
-		}
-		providedFields[namedArg.Name] = namedArg.NamePos
-
-		// Look up field index
-		idx, ok := fieldIndex[namedArg.Name]
-		if !ok {
-			a.addError(
-				fmt.Sprintf("class '%s' has no field '%s'", classType.Name, namedArg.Name),
-				namedArg.NamePos, namedArg.NamePos,
-			)
-			continue
-		}
-
-		// Analyze the value expression
-		typedValue := a.analyzeExpression(namedArg.Value)
-		typedArgs[idx] = typedValue
-
-		// Type check
-		fieldType := classType.Fields[idx].Type
-		a.checkTypeCompatibilityCore(fieldType, typedValue.GetType(), typedValue, namedArg.Value.Pos(), contextAssignment)
-	}
-
-	// Check all fields were provided
-	for i, field := range classType.Fields {
-		if typedArgs[i] == nil {
-			a.addError(
-				fmt.Sprintf("missing field '%s' in class literal", field.Name),
-				lit.RightBrace, lit.RightBrace,
-			)
-			// Fill with error expression
-			typedArgs[i] = &TypedLiteralExpr{Type: ErrorType{}}
-		}
-	}
-
+	result := a.analyzeNamedLiteral(classType, classType.Name, lit.NamedArguments, lit.LeftBrace, lit.RightBrace)
 	return &TypedClassLiteralExpr{
 		Type:       classType,
 		TypePos:    lit.NamePos,
 		LeftBrace:  lit.LeftBrace,
-		Args:       typedArgs,
+		Args:       result.args,
 		RightBrace: lit.RightBrace,
 	}
 }
 
 // analyzeStructLiteralExprNamed analyzes a struct literal with named arguments (e.g., Point { x: 10, y: 20 })
 func (a *Analyzer) analyzeStructLiteralExprNamed(lit *ast.StructLiteral, structType StructType) TypedExpression {
-	// Build a map of field name -> index for quick lookup
-	fieldIndex := make(map[string]int)
-	for i, field := range structType.Fields {
-		fieldIndex[field.Name] = i
-	}
-
-	// Check argument count matches field count
-	if len(lit.NamedArguments) != len(structType.Fields) {
-		a.addError(
-			fmt.Sprintf("struct '%s' has %d field(s), but %d argument(s) were provided",
-				structType.Name, len(structType.Fields), len(lit.NamedArguments)),
-			lit.LeftBrace, lit.RightBrace,
-		)
-	}
-
-	// Track which fields have been provided (for duplicate detection)
-	providedFields := make(map[string]ast.Position)
-
-	// Create typed arguments array in field order
-	typedArgs := make([]TypedExpression, len(structType.Fields))
-
-	for _, namedArg := range lit.NamedArguments {
-		// Check if field exists
-		idx, exists := fieldIndex[namedArg.Name]
-		if !exists {
-			a.addError(
-				fmt.Sprintf("struct '%s' has no field '%s'", structType.Name, namedArg.Name),
-				namedArg.NamePos, namedArg.NamePos,
-			)
-			continue
-		}
-
-		// Check for duplicate field
-		if prevPos, duplicate := providedFields[namedArg.Name]; duplicate {
-			a.addError(
-				fmt.Sprintf("field '%s' specified multiple times", namedArg.Name),
-				namedArg.NamePos, namedArg.NamePos,
-			).WithHint(fmt.Sprintf("first specified at line %d", prevPos.Line))
-			continue
-		}
-		providedFields[namedArg.Name] = namedArg.NamePos
-
-		// Analyze the argument value
-		typedArg := a.analyzeExpression(namedArg.Value)
-		typedArgs[idx] = typedArg
-
-		// Type check - use checkTypeCompatibilityCore to allow nullable coercions
-		fieldType := structType.Fields[idx].Type
-		a.checkTypeCompatibilityCore(fieldType, typedArg.GetType(), typedArg, namedArg.Value.Pos(), contextAssignment)
-	}
-
-	// Check for missing fields
-	for _, field := range structType.Fields {
-		if _, provided := providedFields[field.Name]; !provided {
-			// Only report if we haven't already reported a count mismatch
-			if len(lit.NamedArguments) == len(structType.Fields) {
-				a.addError(
-					fmt.Sprintf("missing field '%s' in struct '%s'", field.Name, structType.Name),
-					lit.LeftBrace, lit.RightBrace,
-				)
-			}
-		}
-	}
-
+	result := a.analyzeNamedLiteral(structType, structType.Name, lit.NamedArguments, lit.LeftBrace, lit.RightBrace)
 	return &TypedStructLiteralExpr{
 		Type:       structType,
 		TypePos:    lit.NamePos,
 		LeftBrace:  lit.LeftBrace,
-		Args:       typedArgs,
+		Args:       result.args,
 		RightBrace: lit.RightBrace,
 	}
 }
@@ -2905,75 +2757,12 @@ func (a *Analyzer) analyzeAnonStructLiteralWithType(lit *ast.AnonStructLiteral, 
 
 // analyzeAnonStructLiteralNamed analyzes an anonymous struct literal with named arguments
 func (a *Analyzer) analyzeAnonStructLiteralNamed(lit *ast.AnonStructLiteral, structType StructType) TypedExpression {
-	// Build a map of field name -> index for quick lookup
-	fieldIndex := make(map[string]int)
-	for i, field := range structType.Fields {
-		fieldIndex[field.Name] = i
-	}
-
-	// Check argument count matches field count
-	if len(lit.NamedArguments) != len(structType.Fields) {
-		a.addError(
-			fmt.Sprintf("struct '%s' has %d field(s), but %d argument(s) were provided",
-				structType.Name, len(structType.Fields), len(lit.NamedArguments)),
-			lit.LeftBrace, lit.RightBrace,
-		)
-	}
-
-	// Track which fields have been provided (for duplicate detection)
-	providedFields := make(map[string]ast.Position)
-
-	// Create typed arguments array in field order
-	typedArgs := make([]TypedExpression, len(structType.Fields))
-
-	for _, namedArg := range lit.NamedArguments {
-		// Check if field exists
-		idx, exists := fieldIndex[namedArg.Name]
-		if !exists {
-			a.addError(
-				fmt.Sprintf("struct '%s' has no field '%s'", structType.Name, namedArg.Name),
-				namedArg.NamePos, namedArg.NamePos,
-			)
-			continue
-		}
-
-		// Check for duplicate field
-		if prevPos, duplicate := providedFields[namedArg.Name]; duplicate {
-			a.addError(
-				fmt.Sprintf("field '%s' specified multiple times", namedArg.Name),
-				namedArg.NamePos, namedArg.NamePos,
-			).WithHint(fmt.Sprintf("first specified at line %d", prevPos.Line))
-			continue
-		}
-		providedFields[namedArg.Name] = namedArg.NamePos
-
-		// Analyze the argument value
-		typedArg := a.analyzeExpression(namedArg.Value)
-		typedArgs[idx] = typedArg
-
-		// Type check - use checkTypeCompatibilityCore to allow nullable coercions
-		fieldType := structType.Fields[idx].Type
-		a.checkTypeCompatibilityCore(fieldType, typedArg.GetType(), typedArg, namedArg.Value.Pos(), contextAssignment)
-	}
-
-	// Check for missing fields
-	for _, field := range structType.Fields {
-		if _, provided := providedFields[field.Name]; !provided {
-			// Only report if we haven't already reported a count mismatch
-			if len(lit.NamedArguments) == len(structType.Fields) {
-				a.addError(
-					fmt.Sprintf("missing field '%s' in struct '%s'", field.Name, structType.Name),
-					lit.LeftBrace, lit.RightBrace,
-				)
-			}
-		}
-	}
-
+	result := a.analyzeNamedLiteral(structType, structType.Name, lit.NamedArguments, lit.LeftBrace, lit.RightBrace)
 	return &TypedStructLiteralExpr{
 		Type:       structType,
 		TypePos:    lit.LeftBrace, // Use left brace position since there's no type name
 		LeftBrace:  lit.LeftBrace,
-		Args:       typedArgs,
+		Args:       result.args,
 		RightBrace: lit.RightBrace,
 	}
 }
@@ -3104,11 +2893,11 @@ func (a *Analyzer) analyzeMethodCallExpr(expr *ast.MethodCallExpr) TypedExpressi
 	// (Safe navigation doesn't apply to static method calls)
 	if ident, ok := expr.Object.(*ast.IdentifierExpr); ok && !expr.SafeNavigation {
 		// Check if it's a class name
-		if classType, isClass := a.classes[ident.Name]; isClass {
+		if classType, isClass := a.TypeRegistry.LookupClass(ident.Name); isClass {
 			return a.analyzeStaticMethodCall(&classType, ident.Name, expr)
 		}
 		// Check if it's an object name
-		if objectType, isObject := a.objects[ident.Name]; isObject {
+		if objectType, isObject := a.TypeRegistry.LookupObject(ident.Name); isObject {
 			return a.analyzeObjectStaticMethodCall(&objectType, ident.Name, expr)
 		}
 	}
@@ -3883,7 +3672,7 @@ func (a *Analyzer) analyzeSafeCallExpr(expr *ast.SafeCallExpr) TypedExpression {
 	// Re-lookup struct from registry to get the version with resolved fields
 	// This is needed because pointer types may store a stale copy from before fields were resolved
 	if st, isStruct := innerType.(StructType); isStruct {
-		if resolved, ok := a.structs[st.Name]; ok {
+		if resolved, ok := a.TypeRegistry.LookupStruct(st.Name); ok {
 			innerType = resolved
 		}
 	}
@@ -4432,87 +4221,13 @@ func (a *Analyzer) addError(message string, startPos, endPos ast.Position) *erro
 	return err
 }
 
-// Type bounds for integer types
-var (
-	minI8, _   = big.NewInt(0).SetString("-128", 10)
-	maxI8, _   = big.NewInt(0).SetString("127", 10)
-	minI16, _  = big.NewInt(0).SetString("-32768", 10)
-	maxI16, _  = big.NewInt(0).SetString("32767", 10)
-	minI32, _  = big.NewInt(0).SetString("-2147483648", 10)
-	maxI32, _  = big.NewInt(0).SetString("2147483647", 10)
-	minI64, _  = big.NewInt(0).SetString("-9223372036854775808", 10)
-	maxI64, _  = big.NewInt(0).SetString("9223372036854775807", 10)
-	minI128, _ = big.NewInt(0).SetString("-170141183460469231731687303715884105728", 10)
-	maxI128, _ = big.NewInt(0).SetString("170141183460469231731687303715884105727", 10)
-
-	maxU8, _   = big.NewInt(0).SetString("255", 10)
-	maxU16, _  = big.NewInt(0).SetString("65535", 10)
-	maxU32, _  = big.NewInt(0).SetString("4294967295", 10)
-	maxU64, _  = big.NewInt(0).SetString("18446744073709551615", 10)
-	maxU128, _ = big.NewInt(0).SetString("340282366920938463463374607431768211455", 10)
-)
-
-// checkIntegerBounds checks if an integer literal fits in the declared type
+// checkIntegerBounds checks if an integer literal fits in the declared type.
+// This delegates to the data-driven bounds checking in bounds.go.
 func (a *Analyzer) checkIntegerBounds(value string, targetType Type, pos ast.Position) bool {
-	val, ok := big.NewInt(0).SetString(value, 10)
-	if !ok {
-		a.addError(fmt.Sprintf("invalid integer literal: %s", value), pos, pos)
+	errMsg := checkIntegerBoundsCore(value, targetType)
+	if errMsg != "" {
+		a.addError(errMsg, pos, pos)
 		return false
-	}
-
-	zero := big.NewInt(0)
-
-	switch targetType.(type) {
-	case S8Type:
-		if val.Cmp(minI8) < 0 || val.Cmp(maxI8) > 0 {
-			a.addError(fmt.Sprintf("integer literal %s out of range for s8 (-128 to 127)", value), pos, pos)
-			return false
-		}
-	case S16Type:
-		if val.Cmp(minI16) < 0 || val.Cmp(maxI16) > 0 {
-			a.addError(fmt.Sprintf("integer literal %s out of range for s16 (-32768 to 32767)", value), pos, pos)
-			return false
-		}
-	case S32Type:
-		if val.Cmp(minI32) < 0 || val.Cmp(maxI32) > 0 {
-			a.addError(fmt.Sprintf("integer literal %s out of range for s32", value), pos, pos)
-			return false
-		}
-	case S64Type:
-		if val.Cmp(minI64) < 0 || val.Cmp(maxI64) > 0 {
-			a.addError(fmt.Sprintf("integer literal %s out of range for s64", value), pos, pos)
-			return false
-		}
-	case S128Type:
-		if val.Cmp(minI128) < 0 || val.Cmp(maxI128) > 0 {
-			a.addError(fmt.Sprintf("integer literal %s out of range for s128", value), pos, pos)
-			return false
-		}
-	case U8Type:
-		if val.Cmp(zero) < 0 || val.Cmp(maxU8) > 0 {
-			a.addError(fmt.Sprintf("integer literal %s out of range for u8 (0 to 255)", value), pos, pos)
-			return false
-		}
-	case U16Type:
-		if val.Cmp(zero) < 0 || val.Cmp(maxU16) > 0 {
-			a.addError(fmt.Sprintf("integer literal %s out of range for u16 (0 to 65535)", value), pos, pos)
-			return false
-		}
-	case U32Type:
-		if val.Cmp(zero) < 0 || val.Cmp(maxU32) > 0 {
-			a.addError(fmt.Sprintf("integer literal %s out of range for u32", value), pos, pos)
-			return false
-		}
-	case U64Type:
-		if val.Cmp(zero) < 0 || val.Cmp(maxU64) > 0 {
-			a.addError(fmt.Sprintf("integer literal %s out of range for u64", value), pos, pos)
-			return false
-		}
-	case U128Type:
-		if val.Cmp(zero) < 0 || val.Cmp(maxU128) > 0 {
-			a.addError(fmt.Sprintf("integer literal %s out of range for u128", value), pos, pos)
-			return false
-		}
 	}
 	return true
 }

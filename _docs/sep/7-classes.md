@@ -1,27 +1,28 @@
 # Status
 
-DRAFT, 2026-01-17
+IMPLEMENTED, 2026-01-22
 
 ## Implementation Status
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `class` keyword | ⏳ Pending | Lexer token needed |
-| `self` keyword | ⏳ Pending | Lexer token needed |
-| `object` keyword | ⏳ Pending | Lexer token needed |
-| `?:` Elvis operator | ⏳ Pending | Lexer token needed |
-| ClassDecl AST node | ⏳ Pending | Parser support needed |
-| ObjectDecl AST node | ⏳ Pending | Parser support needed |
-| MethodDecl AST node | ⏳ Pending | Parser support needed |
-| MethodCallExpr AST node | ⏳ Pending | Parser support needed |
-| SelfExpr AST node | ⏳ Pending | Parser support needed |
-| ClassType semantic type | ⏳ Pending | Type system support needed |
-| ObjectType semantic type | ⏳ Pending | Type system support needed |
-| TypedMethodCallExpr | ⏳ Pending | Typed AST for instance method calls |
-| TypedStaticMethodCallExpr | ⏳ Pending | Typed AST for static method calls |
-| Instance method codegen | ⏳ Pending | Code generation needed |
-| Static method codegen | ⏳ Pending | Code generation needed |
-| E2E tests | ⏳ Pending | Test files needed in `_examples/slang/classes/` |
+| `class` keyword | ✅ Implemented | |
+| `self` keyword | ✅ Implemented | |
+| `object` keyword | ✅ Implemented | |
+| `?:` Elvis operator | ✅ Implemented | |
+| ClassDecl AST node | ✅ Implemented | |
+| ObjectDecl AST node | ✅ Implemented | |
+| MethodDecl AST node | ✅ Implemented | |
+| MethodCallExpr AST node | ✅ Implemented | |
+| SelfExpr AST node | ✅ Implemented | |
+| ClassType semantic type | ✅ Implemented | |
+| ObjectType semantic type | ✅ Implemented | |
+| TypedMethodCallExpr | ✅ Implemented | Unified typed AST for both instance and static method calls |
+| Instance method codegen | ✅ Implemented | |
+| Static method codegen | ✅ Implemented | |
+| Safe navigation (?.) | ✅ Implemented | |
+| Method overloading | ✅ Implemented | |
+| E2E tests | ✅ Implemented | Test files in `_examples/slang/classes/` |
 
 **Prerequisite:** SEP 1 (Pointers and Memory) - ✅ IMPLEMENTED
 
@@ -655,7 +656,7 @@ Add class type representation:
 type ClassType struct {
     Name    string
     Fields  []FieldInfo
-    Methods map[string]*MethodInfo    // All methods (instance and static)
+    Methods map[string][]*MethodInfo  // All methods, grouped by name (supports overloading)
 }
 
 // MethodInfo contains method signature information
@@ -677,6 +678,24 @@ func (t ClassType) String() string {
 
 func (t ClassType) Equals(other Type) bool {
     o, ok := other.(ClassType)
+    if !ok {
+        return false
+    }
+    return t.Name == o.Name
+}
+
+// ObjectType represents a singleton object with static methods only
+type ObjectType struct {
+    Name    string
+    Methods map[string][]*MethodInfo  // All methods must be static (no self parameter)
+}
+
+func (t ObjectType) String() string {
+    return t.Name
+}
+
+func (t ObjectType) Equals(other Type) bool {
+    o, ok := other.(ObjectType)
     if !ok {
         return false
     }
@@ -711,22 +730,67 @@ func (a *Analyzer) registerClassType(decl *ast.ClassDecl) {
     }
 
     // Parse methods - determine static by checking first param
-    methods := make(map[string]*MethodInfo)
+    // Use slice per name to support overloading
+    methods := make(map[string][]*MethodInfo)
     for _, m := range decl.Methods {
         paramTypes := a.resolveParamTypes(m.Params)
         isStatic := len(m.Params) == 0 || m.Params[0].Name != "self"
 
-        methods[m.Name] = &MethodInfo{
+        methodInfo := &MethodInfo{
             Name:       m.Name,
             ParamTypes: paramTypes,
             ReturnType: a.resolveTypeName(m.ReturnType, m.ReturnPos),
             IsStatic:   isStatic,
         }
+        methods[m.Name] = append(methods[m.Name], methodInfo)
     }
 
     a.types[decl.Name] = ClassType{
         Name:    decl.Name,
         Fields:  fields,
+        Methods: methods,
+    }
+}
+```
+
+### Register Object Types
+
+During declaration phase, register object types with validation:
+
+```go
+func (a *Analyzer) registerObjectType(decl *ast.ObjectDecl) {
+    // Check for duplicate type name (shares namespace with classes, structs, functions)
+    if _, exists := a.types[decl.Name]; exists {
+        a.addError("type '%s' is already defined", decl.Name)
+        return
+    }
+
+    // Objects cannot have fields - this is enforced at parse time
+    // (ObjectDecl doesn't have a Fields member)
+
+    // Parse methods - all must be static (no self parameter)
+    methods := make(map[string][]*MethodInfo)
+    for _, m := range decl.Methods {
+        // Validate no self parameter
+        if len(m.Params) > 0 && m.Params[0].Name == "self" {
+            a.addError("object methods cannot have 'self' parameter; method '%s' in object '%s'",
+                m.Name, decl.Name)
+            continue
+        }
+
+        paramTypes := a.resolveParamTypes(m.Params)
+
+        methodInfo := &MethodInfo{
+            Name:       m.Name,
+            ParamTypes: paramTypes,
+            ReturnType: a.resolveTypeName(m.ReturnType, m.ReturnPos),
+            IsStatic:   true,  // Always static for objects
+        }
+        methods[m.Name] = append(methods[m.Name], methodInfo)
+    }
+
+    a.types[decl.Name] = ObjectType{
+        Name:    decl.Name,
         Methods: methods,
     }
 }
@@ -849,17 +913,26 @@ func (a *Analyzer) analyzeMethodCallExpr(expr *ast.MethodCallExpr) TypedExpressi
         }
     }
 
-    // Look up method
-    methodInfo, exists := classType.Methods[expr.Method]
-    if !exists {
+    // Look up method overloads
+    overloads, exists := classType.Methods[expr.Method]
+    if !exists || len(overloads) == 0 {
         a.addError("class %s has no method %s", classType.Name, expr.Method)
         return errorExpr(expr)
     }
 
-    // Verify it's an instance method (has self parameter)
-    if methodInfo.IsStatic {
+    // Filter to instance methods only (have self parameter)
+    instanceOverloads := filterInstanceMethods(overloads)
+    if len(instanceOverloads) == 0 {
         a.addError("cannot call static method '%s' on instance; use '%s.%s()'",
             expr.Method, classType.Name, expr.Method)
+        return errorExpr(expr)
+    }
+
+    // Resolve overload based on argument types (Kotlin-style specificity)
+    methodInfo := a.resolveOverload(instanceOverloads, expr.Args)
+    if methodInfo == nil {
+        a.addError("no matching overload for method '%s' with arguments (%s)\n  available overloads:\n%s",
+            expr.Method, formatArgTypes(expr.Args), formatOverloads(instanceOverloads))
         return errorExpr(expr)
     }
 
@@ -876,38 +949,244 @@ func (a *Analyzer) analyzeMethodCallExpr(expr *ast.MethodCallExpr) TypedExpressi
     typedArgs := a.analyzeArguments(expr.Args, methodInfo.ParamTypes[1:])
 
     return &TypedMethodCallExpr{
-        Type:   methodInfo.ReturnType,
-        Object: typedObject,
-        Method: expr.Method,
-        Args:   typedArgs,
+        Type:           methodInfo.ReturnType,
+        Object:         typedObject,
+        Method:         expr.Method,
+        Args:           typedArgs,
+        ResolvedMethod: methodInfo,
     }
 }
 
 // analyzeStaticMethodCall handles ClassName.method() calls
 func (a *Analyzer) analyzeStaticMethodCall(classType ClassType, expr *ast.MethodCallExpr) TypedExpression {
-    // Look up method
-    methodInfo, exists := classType.Methods[expr.Method]
-    if !exists {
+    // Look up method overloads
+    overloads, exists := classType.Methods[expr.Method]
+    if !exists || len(overloads) == 0 {
         a.addError("class %s has no method %s", classType.Name, expr.Method)
         return errorExpr(expr)
     }
 
-    // Verify it's a static method (no self parameter)
-    if !methodInfo.IsStatic {
+    // Filter to static methods only (no self parameter)
+    staticOverloads := filterStaticMethods(overloads)
+    if len(staticOverloads) == 0 {
         a.addError("cannot call instance method '%s' without a receiver; use 'instance.%s()'",
             expr.Method, expr.Method)
+        return errorExpr(expr)
+    }
+
+    // Resolve overload based on argument types (Kotlin-style specificity)
+    methodInfo := a.resolveOverload(staticOverloads, expr.Args)
+    if methodInfo == nil {
+        a.addError("no matching overload for method '%s' with arguments (%s)\n  available overloads:\n%s",
+            expr.Method, formatArgTypes(expr.Args), formatOverloads(staticOverloads))
         return errorExpr(expr)
     }
 
     // Type check all arguments (no self to skip)
     typedArgs := a.analyzeArguments(expr.Args, methodInfo.ParamTypes)
 
-    return &TypedStaticMethodCallExpr{
-        Type:      methodInfo.ReturnType,
-        ClassName: classType.Name,
-        Method:    expr.Method,
-        Args:      typedArgs,
+    // Create a TypedMethodCallExpr with the class name as the Object
+    // (static calls use the same struct as instance calls)
+    return &TypedMethodCallExpr{
+        Type:           methodInfo.ReturnType,
+        Object:         &TypedIdentifierExpr{Type: classType, Name: classType.Name},
+        Method:         expr.Method,
+        Arguments:      typedArgs,
+        ResolvedMethod: methodInfo,
     }
+}
+```
+
+### Overload Resolution
+
+Overload resolution follows Kotlin-style specificity rules:
+
+```go
+// resolveOverload finds the most specific matching overload for the given arguments
+// Returns nil if no match or ambiguous
+func (a *Analyzer) resolveOverload(overloads []*MethodInfo, args []ast.Expression) *MethodInfo {
+    // First, find all applicable overloads (correct arg count and compatible types)
+    applicable := []*MethodInfo{}
+
+    for _, method := range overloads {
+        // For instance methods, skip self parameter in count
+        expectedArgs := len(method.ParamTypes)
+        if !method.IsStatic && expectedArgs > 0 {
+            expectedArgs--  // don't count self
+        }
+
+        if len(args) != expectedArgs {
+            continue
+        }
+
+        if a.argsCompatible(args, method) {
+            applicable = append(applicable, method)
+        }
+    }
+
+    if len(applicable) == 0 {
+        return nil
+    }
+
+    if len(applicable) == 1 {
+        return applicable[0]
+    }
+
+    // Multiple applicable - find most specific
+    return a.mostSpecificOverload(applicable, args)
+}
+
+// argsCompatible checks if arguments are type-compatible with method parameters
+func (a *Analyzer) argsCompatible(args []ast.Expression, method *MethodInfo) bool {
+    paramTypes := method.ParamTypes
+    startIdx := 0
+    if !method.IsStatic && len(paramTypes) > 0 {
+        startIdx = 1  // skip self
+    }
+
+    for i, arg := range args {
+        paramType := paramTypes[startIdx+i]
+        argType := a.inferExprType(arg)
+
+        if !a.isAssignable(argType, paramType) {
+            return false
+        }
+    }
+    return true
+}
+
+// mostSpecificOverload applies Kotlin-style specificity rules
+// Non-nullable is more specific than nullable
+func (a *Analyzer) mostSpecificOverload(candidates []*MethodInfo, args []ast.Expression) *MethodInfo {
+    // Compare each pair of candidates
+    var best *MethodInfo = nil
+
+    for _, candidate := range candidates {
+        if best == nil {
+            best = candidate
+            continue
+        }
+
+        cmp := a.compareSpecificity(candidate, best)
+        if cmp > 0 {
+            best = candidate
+        } else if cmp == 0 {
+            // Ambiguous - neither is more specific
+            return nil
+        }
+    }
+
+    // Verify best is more specific than ALL others
+    for _, candidate := range candidates {
+        if candidate == best {
+            continue
+        }
+        if a.compareSpecificity(best, candidate) <= 0 {
+            return nil  // ambiguous
+        }
+    }
+
+    return best
+}
+
+// compareSpecificity returns:
+//   +1 if a is more specific than b
+//   -1 if b is more specific than a
+//    0 if neither is more specific (ambiguous)
+func (a *Analyzer) compareSpecificity(methodA, methodB *MethodInfo) int {
+    paramsA := methodA.ParamTypes
+    paramsB := methodB.ParamTypes
+
+    startA, startB := 0, 0
+    if !methodA.IsStatic { startA = 1 }
+    if !methodB.IsStatic { startB = 1 }
+
+    aMoreSpecific := false
+    bMoreSpecific := false
+
+    for i := 0; i < len(paramsA)-startA; i++ {
+        typeA := paramsA[startA+i]
+        typeB := paramsB[startB+i]
+
+        // Non-nullable is more specific than nullable
+        aNullable := isNullableType(typeA)
+        bNullable := isNullableType(typeB)
+
+        if !aNullable && bNullable {
+            aMoreSpecific = true
+        } else if aNullable && !bNullable {
+            bMoreSpecific = true
+        }
+    }
+
+    if aMoreSpecific && !bMoreSpecific {
+        return 1
+    } else if bMoreSpecific && !aMoreSpecific {
+        return -1
+    }
+    return 0
+}
+
+// Helper functions for filtering and formatting
+
+func filterInstanceMethods(methods []*MethodInfo) []*MethodInfo {
+    result := []*MethodInfo{}
+    for _, m := range methods {
+        if !m.IsStatic {
+            result = append(result, m)
+        }
+    }
+    return result
+}
+
+func filterStaticMethods(methods []*MethodInfo) []*MethodInfo {
+    result := []*MethodInfo{}
+    for _, m := range methods {
+        if m.IsStatic {
+            result = append(result, m)
+        }
+    }
+    return result
+}
+
+func formatArgTypes(args []ast.Expression) string {
+    // Returns comma-separated list of inferred arg types
+    // e.g., "i64, string, bool"
+    types := []string{}
+    for _, arg := range args {
+        types = append(types, inferType(arg).String())
+    }
+    return strings.Join(types, ", ")
+}
+
+func formatOverloads(methods []*MethodInfo) string {
+    // Returns formatted list of overload signatures
+    lines := []string{}
+    for _, m := range methods {
+        sig := formatMethodSignature(m)
+        lines = append(lines, "    "+sig)
+    }
+    return strings.Join(lines, "\n")
+}
+
+func formatMethodSignature(m *MethodInfo) string {
+    params := []string{}
+    for i, p := range m.ParamTypes {
+        if i == 0 && !m.IsStatic {
+            params = append(params, fmt.Sprintf("self: %s", p))
+        } else {
+            params = append(params, p.String())
+        }
+    }
+    if m.ReturnType != nil {
+        return fmt.Sprintf("%s(%s) -> %s", m.Name, strings.Join(params, ", "), m.ReturnType)
+    }
+    return fmt.Sprintf("%s(%s)", m.Name, strings.Join(params, ", "))
+}
+
+func isNullableType(t Type) bool {
+    _, ok := t.(NullableType)
+    return ok
 }
 ```
 
@@ -951,31 +1230,32 @@ type TypedMethodDecl struct {
     IsStatic   bool    // Derived from whether first param is 'self'
 }
 
-// TypedMethodCallExpr represents an instance method call (instance.method())
+// TypedMethodCallExpr represents both instance and static method calls.
+// For instance calls: Object is the receiver expression (e.g., p in p.method())
+// For static calls: Object is an identifier expression with the class/object name
 type TypedMethodCallExpr struct {
-    Type   Type
-    Object TypedExpression
-    Method string
-    Args   []TypedExpression
-}
-
-// TypedStaticMethodCallExpr represents a static method call (ClassName.method())
-type TypedStaticMethodCallExpr struct {
-    Type      Type
-    ClassName string
-    Method    string
-    Args      []TypedExpression
+    Type           Type              // the return type of the method
+    Object         TypedExpression   // the receiver expression (instance or class name)
+    Dot            ast.Position      // position of '.' or '?.'
+    Method         string            // method name
+    MethodPos      ast.Position      // position of method name
+    LeftParen      ast.Position      // position of '('
+    Arguments      []TypedExpression // typed argument expressions
+    RightParen     ast.Position      // position of ')'
+    ResolvedMethod *MethodInfo       // the resolved method (for overload resolution)
+    SafeNavigation bool              // true for ?.method() (safe navigation on nullable)
 }
 
 type TypedSelfExpr struct {
-    Type Type
-    Pos  ast.Position
+    Type    Type
+    SelfPos ast.Position
 }
 
-func (e *TypedMethodCallExpr) ExprType() Type       { return e.Type }
-func (e *TypedStaticMethodCallExpr) ExprType() Type { return e.Type }
-func (e *TypedSelfExpr) ExprType() Type             { return e.Type }
+func (e *TypedMethodCallExpr) ExprType() Type { return e.Type }
+func (e *TypedSelfExpr) ExprType() Type       { return e.Type }
 ```
+
+Note: The implementation uses a unified `TypedMethodCallExpr` for both static and instance method calls. Static calls are distinguished by `ResolvedMethod.IsStatic` being true, and the `Object` field contains an identifier expression with the class/object name.
 
 ## Step 7: Code Generation
 
@@ -994,6 +1274,64 @@ Class instances have the same memory layout as structs (just fields, no vtable n
 
 This is identical to struct layout. Methods are called by mangled name, not through a vtable.
 
+### Method Name Mangling
+
+To support overloading, method names are mangled to include parameter types:
+
+```go
+// mangleMethodName creates a unique label for a method including parameter types
+func (g *TypedCodeGenerator) mangleMethodName(className string, method *MethodInfo) string {
+    // Start with _ClassName_methodName
+    label := fmt.Sprintf("_%s_%s", className, method.Name)
+
+    // Append parameter types (skip self for instance methods)
+    startIdx := 0
+    if !method.IsStatic && len(method.ParamTypes) > 0 {
+        startIdx = 1  // skip self parameter
+    }
+
+    for i := startIdx; i < len(method.ParamTypes); i++ {
+        paramType := method.ParamTypes[i]
+        label += "_" + mangleType(paramType)
+    }
+
+    return label
+}
+
+// mangleType converts a type to a string suitable for name mangling
+func mangleType(t Type) string {
+    switch tt := t.(type) {
+    case IntegerType:
+        return tt.Name  // "i64", "i32", etc.
+    case BooleanType:
+        return "bool"
+    case StringType:
+        return "string"
+    case ClassType:
+        return tt.Name
+    case RefPointerType:
+        return "Ref" + mangleType(tt.Inner)
+    case MutRefPointerType:
+        return "MutRef" + mangleType(tt.Inner)
+    case OwnedPointerType:
+        return "Ptr" + mangleType(tt.Inner)
+    case NullableType:
+        return "Nullable_" + mangleType(tt.Inner)
+    default:
+        return "unknown"
+    }
+}
+```
+
+**Examples:**
+| Method Signature | Mangled Name |
+|------------------|--------------|
+| `distance(self: &Point)` | `_Point_distance` |
+| `distance(self: &Point, other: &Point)` | `_Point_distance_RefPoint` |
+| `process(self: &Printer, x: i64)` | `_Printer_process_i64` |
+| `process(self: &Printer, x: i64?)` | `_Printer_process_Nullable_i64` |
+| `create(x: i64, y: i64)` (static) | `_Point_create_i64_i64` |
+
 ### Generate Method Code
 
 Methods are generated as regular functions with mangled names. Instance methods receive `self` in x0, while static methods receive their first argument in x0:
@@ -1002,8 +1340,13 @@ Methods are generated as regular functions with mangled names. Instance methods 
 func (g *TypedCodeGenerator) generateMethodDecl(className string, method *TypedMethodDecl) string {
     builder := strings.Builder{}
 
-    // Method label: _ClassName_methodName
-    methodLabel := fmt.Sprintf("_%s_%s", className, method.Name)
+    // Method label: _ClassName_methodName_ParamTypes (for overload uniqueness)
+    // Examples:
+    //   distance(self: &Point) -> _Point_distance
+    //   distance(self: &Point, other: &Point) -> _Point_distance_RefPoint
+    //   process(self: &Printer, x: i64) -> _Point_process_i64
+    //   process(self: &Printer, x: i64?) -> _Point_process_Nullable_i64
+    methodLabel := g.mangleMethodName(className, method)
     builder.WriteString(fmt.Sprintf(".global %s\n", methodLabel))
     builder.WriteString(fmt.Sprintf("%s:\n", methodLabel))
 
@@ -1070,7 +1413,8 @@ func (g *TypedCodeGenerator) generateInstanceMethodCall(expr *TypedMethodCallExp
 
     // Get class type to find method (unwrap pointer types if needed)
     classType := getClassType(expr.Object.ExprType())
-    methodLabel := fmt.Sprintf("_%s_%s", classType.Name, expr.Method)
+    // Use mangled name that includes parameter types for overload resolution
+    methodLabel := g.mangleMethodName(classType.Name, expr.ResolvedMethod)
 
     // Call method
     builder.WriteString(fmt.Sprintf("    bl %s\n", methodLabel))
@@ -1098,16 +1442,25 @@ func getClassType(t Type) ClassType {
 }
 ```
 
-### Generate Static Method Call
+### Dispatching Method Calls
 
-Static method calls don't have a receiver, so arguments start at x0:
+In the code generator, `TypedMethodCallExpr` handles both static and instance calls. The dispatch is based on `ResolvedMethod.IsStatic`:
 
 ```go
-func (g *TypedCodeGenerator) generateStaticMethodCall(expr *TypedStaticMethodCallExpr, ctx *CodeGenContext) (string, error) {
+func (g *TypedCodeGenerator) generateMethodCall(expr *TypedMethodCallExpr, ctx *CodeGenContext) (string, error) {
+    if expr.ResolvedMethod.IsStatic {
+        return g.generateStaticMethodCall(expr, ctx)
+    }
+    return g.generateInstanceMethodCall(expr, ctx)
+}
+
+// generateStaticMethodCall handles static method calls (ClassName.method())
+// Arguments start at x0 (no receiver)
+func (g *TypedCodeGenerator) generateStaticMethodCall(expr *TypedMethodCallExpr, ctx *CodeGenContext) (string, error) {
     builder := strings.Builder{}
 
     // Evaluate arguments into x0, x1, x2, ... (no receiver)
-    for i, arg := range expr.Args {
+    for i, arg := range expr.Arguments {
         argCode, err := g.generateExpr(arg, ctx)
         if err != nil {
             return "", err
@@ -1117,8 +1470,9 @@ func (g *TypedCodeGenerator) generateStaticMethodCall(expr *TypedStaticMethodCal
         builder.WriteString(fmt.Sprintf("    mov %s, x2\n", reg))
     }
 
-    // Method label uses class name from the expression
-    methodLabel := fmt.Sprintf("_%s_%s", expr.ClassName, expr.Method)
+    // Get class name from the Object (which is a TypedIdentifierExpr for static calls)
+    className := expr.Object.GetType().(ClassType).Name
+    methodLabel := g.mangleMethodName(className, expr.ResolvedMethod)
 
     // Call method
     builder.WriteString(fmt.Sprintf("    bl %s\n", methodLabel))
@@ -1127,22 +1481,6 @@ func (g *TypedCodeGenerator) generateStaticMethodCall(expr *TypedStaticMethodCal
     builder.WriteString("    mov x2, x0\n")
 
     return builder.String(), nil
-}
-```
-
-### Dispatching Method Calls
-
-In the code generator, dispatch based on the typed expression type:
-
-```go
-func (g *TypedCodeGenerator) generateExpr(expr TypedExpression, ctx *CodeGenContext) (string, error) {
-    switch e := expr.(type) {
-    case *TypedMethodCallExpr:
-        return g.generateInstanceMethodCall(e, ctx)
-    case *TypedStaticMethodCallExpr:
-        return g.generateStaticMethodCall(e, ctx)
-    // ... other cases
-    }
 }
 ```
 
@@ -2195,30 +2533,62 @@ main = () {
 
 ## 5. Method Chaining ✅
 
-**Decision:** Method chaining is supported. Methods can return `self` or other values for chaining.
+**Decision:** Method chaining is supported via owned pointers (`*T`). Methods can return `*T` to enable chaining, but cannot return borrowed references (`&T` or `&&T`).
 
 ```slang
+Builder = class {
+    var value: i64
+
+    // Takes ownership, returns ownership - enables chaining
+    add = (self: *Builder, n: i64) -> *Builder {
+        self.value = self.value + n
+        self
+    }
+
+    multiply = (self: *Builder, n: i64) -> *Builder {
+        self.value = self.value * n
+        self
+    }
+
+    build = (self: *Builder) -> i64 {
+        self.value
+    }   // self freed here
+}
+
+main = () {
+    // Owned chaining - ownership flows through
+    val result = Heap.new(Builder{ 0 })
+        .add(5)
+        .multiply(2)
+        .add(10)
+        .build()    // returns 20, Builder freed
+
+    print(result)   // prints: 20
+}
+```
+
+**Chaining rules:**
+- **Owned chains** (`*T` → `*T`): Ownership flows through; original variable is moved after first call
+- **No borrow chains**: Methods cannot return `&T` or `&&T` (see Design Decision #13)
+- **Mutation without chaining**: For `&&T` methods, use sequential calls instead of chaining
+
+```slang
+// For mutable borrow methods, use sequential calls:
 Counter = class {
     var count: i64
-
-    increment = (self: &&Counter) -> &&Counter {
+    increment = (self: &&Counter) {  // void return
         self.count = self.count + 1
-        self
     }
 }
 
 main = () {
     val c = Counter{ 0 }
-    c.increment().increment().increment()
-    print(c.count)  // 3
+    c.increment()   // sequential
+    c.increment()   // calls
+    c.increment()
+    print(c.count)  // 3 - c still usable
 }
 ```
-
-**Chaining rules:**
-- **Mutable borrow chains** (`&&T` → `&&T`): Borrow held for entire expression
-- **Owned chains** (`*T` → `*T`): Ownership flows through; original variable is moved
-- **Temporaries**: Valid to chain on literals (`Counter{ 0 }.increment()`)
-- **Borrow conflicts**: Error if same variable used elsewhere in chain expression
 
 ## 6. Feature Interactions ✅
 
@@ -2425,7 +2795,154 @@ main = () {
 
 This is consistent with SEP 1's ownership model where `val`/`var` controls binding reassignability, while `&T`/`&&T` controls borrow mutability.
 
-## 15. Error Messages ✅
+## 15. Explicit `self.` Required for Field Access ✅
+
+**Decision:** Inside methods, fields must be accessed with explicit `self.` prefix.
+
+```slang
+Point = class {
+    val x: i64
+    val y: i64
+
+    magnitude = (self: &Point) -> i64 {
+        // Correct: explicit self
+        self.x * self.x + self.y * self.y
+
+        // Error: x is undefined
+        // x * x + y * y
+    }
+}
+```
+
+This avoids ambiguity with local variables and is consistent with Python and Rust.
+
+## 16. Borrow Conflict Rules ✅
+
+**Decision:** Borrowing rules prevent conflicts within expressions.
+
+```slang
+Point = class {
+    var x: i64
+
+    addTo = (self: &&Point, other: &Point) {
+        self.x = self.x + other.x
+    }
+
+    swap = (self: &&Point, other: &&Point) {
+        val temp = self.x
+        self.x = other.x
+        other.x = temp
+    }
+}
+
+main = () {
+    val p = Point{ 10 }
+
+    // Error: cannot borrow 'p' as immutable because it is already borrowed as mutable
+    p.addTo(p)
+
+    // Error: cannot borrow 'p' as mutable more than once
+    p.swap(p)
+}
+```
+
+## 17. Namespace Rules ✅
+
+**Decision:** Classes, structs, objects, and functions share the same namespace.
+
+```slang
+Point = class { val x: i64 }
+
+// Error: type 'Point' is already defined
+Point = struct { val y: i64 }
+
+// Error: type 'Point' is already defined
+Point = object { }
+
+// Error: 'Point' is already defined as a class
+Point = () -> i64 { 42 }
+```
+
+However, method names are scoped to their class and can match top-level function names:
+
+```slang
+print = (x: i64) { }    // top-level function
+
+Logger = class {
+    print = (self: &Logger, x: i64) { }   // OK: method name scoped to class
+}
+```
+
+## 18. Circular Dependency Detection ✅
+
+**Decision:** Circular dependencies via non-pointer fields are detected during semantic analysis.
+
+```slang
+// Error: circular dependency between 'A' and 'B' via non-pointer fields
+A = class {
+    val b: B
+}
+
+B = class {
+    val a: A
+}
+
+// OK: pointers break the cycle
+A = class {
+    val b: *B?
+}
+
+B = class {
+    val a: *A?
+}
+```
+
+## 19. Empty Classes and Objects ✅
+
+**Decision:** Empty classes and objects are allowed.
+
+```slang
+Empty = class { }           // OK: zero-size instance
+EmptyUtil = object { }      // OK: valid but useless
+
+main = () {
+    val e = Empty{}         // creates zero-size instance
+}
+```
+
+## 20. Parameter Shadowing ✅
+
+**Decision:** Local variables cannot shadow method parameters.
+
+```slang
+Point = class {
+    compute = (self: &Point, value: i64) -> i64 {
+        // Error: cannot shadow parameter 'value'
+        val value = value * 2
+        value
+    }
+}
+```
+
+## 21. Consuming Methods on Temporaries ✅
+
+**Decision:** Consuming methods (`self: *T`) cannot be called on temporaries.
+
+```slang
+Point = class {
+    consume = (self: *Point) -> i64 {
+        self.x + self.y
+    }
+}
+
+main = () {
+    // Error: cannot call consuming method 'consume' on temporary;
+    // use Heap.new(Point{ 3, 4 }).consume() instead
+    val result = Point{ 3, 4 }.consume()
+}
+```
+
+## 22. Error Messages ✅
 
 Clear error messages for invalid patterns:
 
@@ -2446,8 +2963,18 @@ Clear error messages for invalid patterns:
 | Field in object | `objects cannot have fields` |
 | `self` parameter in object method | `object methods cannot have 'self' parameter` |
 | Duplicate method signature | `duplicate method signature for 'X'` |
-| No matching overload | `no matching overload for method 'X' with arguments (A, B)` |
+| No matching overload | `no matching overload for method 'X' with arguments (A, B)` (lists available overloads) |
 | Returning borrowed reference | `methods cannot return borrowed references (&T or &&T); return owned value instead` |
+| Method call on struct | `cannot call method on struct type 'X'; structs do not have methods` |
+| Method call on null | `cannot call method on 'null'; type is unknown` |
+| Consuming method on temporary | `cannot call consuming method 'X' on temporary; use Heap.new(...).X() instead` |
+| Mutable borrow conflict | `cannot borrow 'X' as immutable because it is already borrowed as mutable` |
+| Multiple mutable borrows | `cannot borrow 'X' as mutable more than once` |
+| Implicit field access | `undefined variable 'X'` (must use `self.X` for field access in methods) |
+| Parameter shadowing | `cannot shadow parameter 'X'` |
+| Duplicate type name | `type 'X' is already defined` (classes, structs, objects share namespace) |
+| Function shadows type | `'X' is already defined as a class` |
+| Circular non-pointer dependency | `circular dependency between 'X' and 'Y' via non-pointer fields` |
 
 # Risks and Limitations
 

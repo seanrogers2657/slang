@@ -42,6 +42,16 @@ func (info *ProgramInfo) CollectFromTypedFunction(fn *semantic.TypedFunctionDecl
 	}
 }
 
+// CollectFromTypedMethod scans a typed method for literals and print calls.
+func (info *ProgramInfo) CollectFromTypedMethod(method *semantic.TypedMethodDecl) {
+	floatIndex := len(info.FloatLiterals)
+	stringIndex := len(info.StringLiterals)
+
+	for _, stmt := range method.Body.Statements {
+		info.collectFromTypedStatement(stmt, &floatIndex, &stringIndex)
+	}
+}
+
 func (info *ProgramInfo) collectFromTypedStatement(stmt semantic.TypedStatement, floatIdx, stringIdx *int) {
 	switch s := stmt.(type) {
 	case *semantic.TypedExprStmt:
@@ -183,6 +193,12 @@ func (info *ProgramInfo) collectFromTypedExpr(expr semantic.TypedExpression, flo
 			info.collectFromTypedExpr(arg, floatIdx, stringIdx)
 		}
 
+	case *semantic.TypedClassLiteralExpr:
+		// Collect literals from class arguments
+		for _, arg := range e.Args {
+			info.collectFromTypedExpr(arg, floatIdx, stringIdx)
+		}
+
 	case *semantic.TypedFieldAccessExpr:
 		// Collect from the object expression (though usually just identifiers)
 		info.collectFromTypedExpr(e.Object, floatIdx, stringIdx)
@@ -227,6 +243,9 @@ func (info *ProgramInfo) collectFromTypedExpr(expr semantic.TypedExpression, flo
 		if e.Object != nil {
 			info.collectFromTypedExpr(e.Object, floatIdx, stringIdx)
 		}
+
+	case *semantic.TypedSelfExpr:
+		// Self references don't contain literals - nothing to collect
 
 	default:
 		// Unknown expression type - panic to catch missing cases during development

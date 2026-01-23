@@ -31,12 +31,15 @@ type loopLabels struct {
 // BaseContext provides shared context functionality for code generation.
 // It tracks variable allocations, stack offsets, and source line information.
 type BaseContext struct {
-	variables    map[string]VariableInfo
-	stackOffset  int
-	sourceLines  []string
-	labelCounter int          // counter for generating unique labels
-	loopStack    []loopLabels // stack of active loop labels for break/continue
-	ownedVars    []OwnedVarInfo // owned pointers that need cleanup (in declaration order)
+	variables        map[string]VariableInfo
+	stackOffset      int
+	sourceLines      []string
+	labelCounter     int            // local counter (used if sharedCounter is nil)
+	sharedCounter    *int           // pointer to shared counter across methods (if not nil)
+	loopStack        []loopLabels   // stack of active loop labels for break/continue
+	ownedVars        []OwnedVarInfo // owned pointers that need cleanup (in declaration order)
+	classReturnType  semantic.Type  // if non-nil, function returns a class by value (x8 has dest addr)
+	x8SavedOffset    int            // stack offset where x8 (return destination) is saved
 }
 
 // NewBaseContext creates a new code generation context.
@@ -45,6 +48,17 @@ func NewBaseContext(sourceLines []string) *BaseContext {
 		variables:   make(map[string]VariableInfo),
 		stackOffset: 0,
 		sourceLines: sourceLines,
+	}
+}
+
+// NewBaseContextWithSharedCounter creates a context that shares a label counter
+// with other contexts (used for class methods to avoid duplicate labels).
+func NewBaseContextWithSharedCounter(sourceLines []string, sharedCounter *int) *BaseContext {
+	return &BaseContext{
+		variables:     make(map[string]VariableInfo),
+		stackOffset:   0,
+		sourceLines:   sourceLines,
+		sharedCounter: sharedCounter,
 	}
 }
 
@@ -90,6 +104,10 @@ func (ctx *BaseContext) GetSourceLineComment(pos ast.Position) string {
 // Used for generating branch targets in control flow (short-circuit evaluation, etc.)
 // Note: Labels use underscore prefix (not .L) for slasm compatibility.
 func (ctx *BaseContext) NextLabel(prefix string) string {
+	if ctx.sharedCounter != nil {
+		*ctx.sharedCounter++
+		return fmt.Sprintf("_%s_%d", prefix, *ctx.sharedCounter)
+	}
 	ctx.labelCounter++
 	return fmt.Sprintf("_%s_%d", prefix, ctx.labelCounter)
 }
@@ -97,6 +115,10 @@ func (ctx *BaseContext) NextLabel(prefix string) string {
 // NextLabelID returns the next unique label ID without a prefix.
 // Use this when you need multiple related labels to share the same ID.
 func (ctx *BaseContext) NextLabelID() int {
+	if ctx.sharedCounter != nil {
+		*ctx.sharedCounter++
+		return *ctx.sharedCounter
+	}
 	ctx.labelCounter++
 	return ctx.labelCounter
 }
@@ -153,4 +175,24 @@ func (ctx *BaseContext) MarkOwnedVarMoved(name string) {
 			return
 		}
 	}
+}
+
+// SetClassReturnType sets the return type for methods/functions returning class by value.
+// The offset is where x8 (caller's destination address) is saved on the stack.
+func (ctx *BaseContext) SetClassReturnType(typ semantic.Type, x8Offset int) {
+	ctx.classReturnType = typ
+	ctx.x8SavedOffset = x8Offset
+}
+
+// GetClassReturnType returns the class return type and x8 saved offset, if set.
+func (ctx *BaseContext) GetClassReturnType() (semantic.Type, int, bool) {
+	if ctx.classReturnType == nil {
+		return nil, 0, false
+	}
+	return ctx.classReturnType, ctx.x8SavedOffset, true
+}
+
+// ReturnsClassByValue returns true if this context is for a function returning a class by value.
+func (ctx *BaseContext) ReturnsClassByValue() bool {
+	return ctx.classReturnType != nil
 }

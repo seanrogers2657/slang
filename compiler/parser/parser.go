@@ -133,36 +133,45 @@ func (p *parser) peekToken(offset int) lexer.Token {
 	return p.Source[idx]
 }
 
+// looksLikeDecl returns true if the current position looks like a declaration.
+// Pattern: identifier = <keyword>
+// For functions, pass TokenTypeLParen as the keyword.
+func (p *parser) looksLikeDecl(keyword lexer.TokenType) bool {
+	return p.CurrentToken().Type == lexer.TokenTypeIdentifier &&
+		p.peekToken(1).Type == lexer.TokenTypeAssign &&
+		p.peekToken(2).Type == keyword
+}
+
 // looksLikeFunctionDecl returns true if the current position looks like a function declaration.
 // Pattern: identifier = (
 func (p *parser) looksLikeFunctionDecl() bool {
-	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-		return false
-	}
-	if p.peekToken(1).Type != lexer.TokenTypeAssign {
-		return false
-	}
-	return p.peekToken(2).Type == lexer.TokenTypeLParen
+	return p.looksLikeDecl(lexer.TokenTypeLParen)
 }
 
 // looksLikeStructDecl returns true if the current position looks like a struct declaration.
 // Pattern: identifier = struct
 func (p *parser) looksLikeStructDecl() bool {
-	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-		return false
-	}
-	if p.peekToken(1).Type != lexer.TokenTypeAssign {
-		return false
-	}
-	return p.peekToken(2).Type == lexer.TokenTypeStruct
+	return p.looksLikeDecl(lexer.TokenTypeStruct)
 }
 
-// skipUntilDecl skips tokens until we find a function or struct declaration or reach end of input.
+// looksLikeClassDecl returns true if the current position looks like a class declaration.
+// Pattern: identifier = class
+func (p *parser) looksLikeClassDecl() bool {
+	return p.looksLikeDecl(lexer.TokenTypeClass)
+}
+
+// looksLikeObjectDecl returns true if the current position looks like an object declaration.
+// Pattern: identifier = object
+func (p *parser) looksLikeObjectDecl() bool {
+	return p.looksLikeDecl(lexer.TokenTypeObject)
+}
+
+// skipUntilDecl skips tokens until we find a function, struct, class, or object declaration or reach end of input.
 // This is used for error recovery to continue parsing after a syntax error.
 func (p *parser) skipUntilDecl() {
 	for !p.isAtEnd() {
-		// If we find a declaration (identifier = ( or identifier = struct), stop
-		if p.looksLikeFunctionDecl() || p.looksLikeStructDecl() {
+		// If we find a declaration, stop
+		if p.looksLikeFunctionDecl() || p.looksLikeStructDecl() || p.looksLikeClassDecl() || p.looksLikeObjectDecl() {
 			return
 		}
 		p.Index++
@@ -299,15 +308,15 @@ func (p *parser) Parse() *ast.Program {
 	}
 
 	// Check if this is a declaration-based program or legacy statement-based program
-	if !p.isAtEnd() && (p.looksLikeFunctionDecl() || p.looksLikeStructDecl()) {
-		// New style: parse declarations (functions and structs)
+	if !p.isAtEnd() && (p.looksLikeFunctionDecl() || p.looksLikeStructDecl() || p.looksLikeClassDecl() || p.looksLikeObjectDecl()) {
+		// New style: parse declarations (functions, structs, classes, objects)
 		for !p.isAtEnd() {
 			p.skipNewlines()
 			if p.isAtEnd() {
 				break
 			}
 
-			// Check if current position looks like a function declaration or struct
+			// Check if current position looks like a declaration
 			if p.looksLikeFunctionDecl() {
 				fnDecl := p.ParseFunctionDecl()
 				if fnDecl != nil {
@@ -324,9 +333,25 @@ func (p *parser) Parse() *ast.Program {
 					// If parsing failed, try to recover by skipping to next declaration
 					p.skipUntilDecl()
 				}
+			} else if p.looksLikeClassDecl() {
+				classDecl := p.ParseClassDecl()
+				if classDecl != nil {
+					program.Declarations = append(program.Declarations, classDecl)
+				} else {
+					// If parsing failed, try to recover by skipping to next declaration
+					p.skipUntilDecl()
+				}
+			} else if p.looksLikeObjectDecl() {
+				objectDecl := p.ParseObjectDecl()
+				if objectDecl != nil {
+					program.Declarations = append(program.Declarations, objectDecl)
+				} else {
+					// If parsing failed, try to recover by skipping to next declaration
+					p.skipUntilDecl()
+				}
 			} else {
 				// Report error for unexpected token and try to recover
-				p.addError(fmt.Sprintf("expected declaration (Name = (...) or Name = struct {...}), got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+				p.addError(fmt.Sprintf("expected declaration (Name = (...) or Name = struct/class/object {...}), got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 				// Skip tokens until we find a declaration or reach end
 				p.skipUntilDecl()
 				continue
@@ -1002,7 +1027,7 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 
 			// Check if this is a method call (identifier followed by '(')
 			if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeLParen {
-				methodCall := p.parseMethodCall(left, dotPos, memberName, memberPos)
+				methodCall := p.parseMethodCall(left, dotPos, memberName, memberPos, false)
 				if methodCall == nil {
 					return nil
 				}
@@ -1020,26 +1045,37 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 			continue
 		}
 
-		// Handle safe call operator (?.) - same precedence as dot, for nullable field access
+		// Handle safe call operator (?.) - same precedence as dot, for nullable field/method access
 		if p.CurrentToken().Type == lexer.TokenTypeSafeCall {
 			safeCallPos := p.CurrentToken().Pos
 			p.advance() // consume '?.'
 
-			// Expect field name
+			// Expect field/method name
 			if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-				p.addError(fmt.Sprintf("expected field name after '?.', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+				p.addError(fmt.Sprintf("expected field or method name after '?.', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 				return nil
 			}
 
-			fieldName := p.CurrentToken().Value
-			fieldPos := p.CurrentToken().Pos
-			p.advance() // consume field name
+			memberName := p.CurrentToken().Value
+			memberPos := p.CurrentToken().Pos
+			p.advance() // consume field/method name
 
+			// Check if this is a method call (identifier followed by '(')
+			if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeLParen {
+				methodCall := p.parseMethodCall(left, safeCallPos, memberName, memberPos, true)
+				if methodCall == nil {
+					return nil
+				}
+				left = methodCall
+				continue
+			}
+
+			// Otherwise it's a safe field access
 			left = &ast.SafeCallExpr{
 				Object:      left,
 				SafeCallPos: safeCallPos,
-				Field:       fieldName,
-				FieldPos:    fieldPos,
+				Field:       memberName,
+				FieldPos:    memberPos,
 			}
 			continue
 		}
@@ -1158,6 +1194,13 @@ func (p *parser) parsePrimary() ast.Expression {
 	// Check for when expression
 	if p.CurrentToken().Type == lexer.TokenTypeWhen {
 		return p.parseWhenExpression()
+	}
+
+	// Check for self keyword (used inside method bodies)
+	if p.CurrentToken().Type == lexer.TokenTypeSelf {
+		selfPos := p.CurrentToken().Pos
+		p.advance() // consume 'self'
+		return &ast.SelfExpr{SelfPos: selfPos}
 	}
 
 	// Check for unary NOT operator
@@ -1304,9 +1347,9 @@ func (p *parser) parseCallExpr(name string, namePos ast.Position) ast.Expression
 }
 
 // parseMethodCall parses a method call after the object, dot, and method name have been consumed
-// Syntax: object.method(args...)
-// Used for patterns like Heap.new(expr), p.copy(), etc.
-func (p *parser) parseMethodCall(object ast.Expression, dotPos ast.Position, methodName string, methodPos ast.Position) ast.Expression {
+// Syntax: object.method(args...) or object?.method(args...)
+// Used for patterns like Heap.new(expr), p.copy(), obj?.method(), etc.
+func (p *parser) parseMethodCall(object ast.Expression, dotPos ast.Position, methodName string, methodPos ast.Position, safeNavigation bool) ast.Expression {
 	leftParen := p.CurrentToken().Pos
 	p.advance() // consume '('
 
@@ -1346,13 +1389,14 @@ func (p *parser) parseMethodCall(object ast.Expression, dotPos ast.Position, met
 	p.advance() // consume ')'
 
 	return &ast.MethodCallExpr{
-		Object:     object,
-		Dot:        dotPos,
-		Method:     methodName,
-		MethodPos:  methodPos,
-		LeftParen:  leftParen,
-		Arguments:  arguments,
-		RightParen: rightParen,
+		Object:         object,
+		Dot:            dotPos,
+		Method:         methodName,
+		MethodPos:      methodPos,
+		LeftParen:      leftParen,
+		Arguments:      arguments,
+		RightParen:     rightParen,
+		SafeNavigation: safeNavigation,
 	}
 }
 
@@ -1759,6 +1803,7 @@ func (p *parser) parseParameterList() []ast.Parameter {
 
 // parseParameter parses a single parameter: [var] name: type
 // The 'var' prefix indicates a mutable reference parameter.
+// Special case: 'self' keyword is allowed as parameter name for method receivers.
 func (p *parser) parseParameter() *ast.Parameter {
 	// Check for optional 'var' prefix (for mutable reference parameters)
 	var mutable bool
@@ -1769,15 +1814,16 @@ func (p *parser) parseParameter() *ast.Parameter {
 		p.advance() // consume 'var'
 	}
 
-	// Expect identifier (parameter name)
-	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+	// Expect identifier or 'self' keyword (parameter name)
+	// 'self' is a keyword but valid as a method parameter name
+	if p.CurrentToken().Type != lexer.TokenTypeIdentifier && p.CurrentToken().Type != lexer.TokenTypeSelf {
 		p.addError(fmt.Sprintf("expected parameter name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
 	name := p.CurrentToken().Value
 	namePos := p.CurrentToken().Pos
-	p.advance() // consume identifier
+	p.advance() // consume identifier or 'self'
 
 	// Expect ':'
 	if p.CurrentToken().Type != lexer.TokenTypeColon {
@@ -1883,11 +1929,21 @@ func (p *parser) parseTypeName() (string, ast.Position) {
 	return typeName, typePos
 }
 
-// ParseStructDecl parses a struct declaration: Name = struct { fields }
-func (p *parser) ParseStructDecl() *ast.StructDecl {
-	// Expect identifier (struct name)
+// typeDeclHeader holds the common parts of struct/class/object declaration headers
+type typeDeclHeader struct {
+	Name       string
+	NamePos    ast.Position
+	EqualsPos  ast.Position
+	KeywordPos ast.Position
+	LeftBrace  ast.Position
+}
+
+// parseTypeDeclHeader parses the common header pattern: Name = <keyword> {
+// Returns the header info, or nil if parsing failed.
+func (p *parser) parseTypeDeclHeader(kindName string, keywordType lexer.TokenType) *typeDeclHeader {
+	// Expect identifier (name)
 	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
-		p.addError(fmt.Sprintf("expected struct name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		p.addError(fmt.Sprintf("expected %s name, got '%s'", kindName, p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
@@ -1897,25 +1953,25 @@ func (p *parser) ParseStructDecl() *ast.StructDecl {
 
 	// Expect '='
 	if p.CurrentToken().Type != lexer.TokenTypeAssign {
-		p.addError(fmt.Sprintf("expected '=' after struct name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		p.addError(fmt.Sprintf("expected '=' after %s name, got '%s'", kindName, p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
 	equalsPos := p.CurrentToken().Pos
 	p.advance() // consume '='
 
-	// Expect 'struct' keyword
-	if p.CurrentToken().Type != lexer.TokenTypeStruct {
-		p.addError(fmt.Sprintf("expected 'struct' after '=', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+	// Expect keyword
+	if p.CurrentToken().Type != keywordType {
+		p.addError(fmt.Sprintf("expected '%s' after '=', got '%s'", kindName, p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
-	structKeyword := p.CurrentToken().Pos
-	p.advance() // consume 'struct'
+	keywordPos := p.CurrentToken().Pos
+	p.advance() // consume keyword
 
 	// Expect '{'
 	if p.CurrentToken().Type != lexer.TokenTypeLBrace {
-		p.addError(fmt.Sprintf("expected '{' after 'struct', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		p.addError(fmt.Sprintf("expected '{' after '%s', got '%s'", kindName, p.CurrentToken().Value), p.CurrentToken().Pos)
 		return nil
 	}
 
@@ -1925,24 +1981,49 @@ func (p *parser) ParseStructDecl() *ast.StructDecl {
 	// Skip newlines after opening brace
 	p.skipNewlines()
 
-	// Parse fields
-	fields := p.parseStructFields()
+	return &typeDeclHeader{
+		Name:       name,
+		NamePos:    namePos,
+		EqualsPos:  equalsPos,
+		KeywordPos: keywordPos,
+		LeftBrace:  leftBrace,
+	}
+}
 
-	// Expect '}'
+// parseTypeDeclFooter parses the closing brace and returns its position, or empty position if failed
+func (p *parser) parseTypeDeclFooter(kindName string) (ast.Position, bool) {
 	if p.CurrentToken().Type != lexer.TokenTypeRBrace {
-		p.addError(fmt.Sprintf("expected '}' after struct fields, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
-		return nil
+		p.addError(fmt.Sprintf("expected '}' after %s members, got '%s'", kindName, p.CurrentToken().Value), p.CurrentToken().Pos)
+		return ast.Position{}, false
 	}
 
 	rightBrace := p.CurrentToken().Pos
 	p.advance() // consume '}'
+	return rightBrace, true
+}
+
+// ParseStructDecl parses a struct declaration: Name = struct { fields }
+func (p *parser) ParseStructDecl() *ast.StructDecl {
+	header := p.parseTypeDeclHeader("struct", lexer.TokenTypeStruct)
+	if header == nil {
+		return nil
+	}
+
+	// Parse fields
+	fields := p.parseStructFields()
+
+	// Expect '}'
+	rightBrace, ok := p.parseTypeDeclFooter("struct")
+	if !ok {
+		return nil
+	}
 
 	return &ast.StructDecl{
-		Name:          name,
-		NamePos:       namePos,
-		EqualsPos:     equalsPos,
-		StructKeyword: structKeyword,
-		LeftBrace:     leftBrace,
+		Name:          header.Name,
+		NamePos:       header.NamePos,
+		EqualsPos:     header.EqualsPos,
+		StructKeyword: header.KeywordPos,
+		LeftBrace:     header.LeftBrace,
 		Fields:        fields,
 		RightBrace:    rightBrace,
 	}
@@ -2019,6 +2100,229 @@ func (p *parser) parseStructField() *ast.StructField {
 		Colon:      colonPos,
 		TypeName:   typeName,
 		TypePos:    typePos,
+	}
+}
+
+// ParseClassDecl parses a class declaration: Name = class { fields, methods }
+func (p *parser) ParseClassDecl() *ast.ClassDecl {
+	header := p.parseTypeDeclHeader("class", lexer.TokenTypeClass)
+	if header == nil {
+		return nil
+	}
+
+	// Parse fields and methods
+	fields, methods := p.parseClassMembers()
+
+	// Expect '}'
+	rightBrace, ok := p.parseTypeDeclFooter("class")
+	if !ok {
+		return nil
+	}
+
+	return &ast.ClassDecl{
+		Name:         header.Name,
+		NamePos:      header.NamePos,
+		EqualsPos:    header.EqualsPos,
+		ClassKeyword: header.KeywordPos,
+		LeftBrace:    header.LeftBrace,
+		Fields:       fields,
+		Methods:      methods,
+		RightBrace:   rightBrace,
+	}
+}
+
+// ParseObjectDecl parses an object declaration: Name = object { methods }
+func (p *parser) ParseObjectDecl() *ast.ObjectDecl {
+	header := p.parseTypeDeclHeader("object", lexer.TokenTypeObject)
+	if header == nil {
+		return nil
+	}
+
+	// Parse methods only (objects cannot have fields)
+	methods := p.parseObjectMethods()
+
+	// Expect '}'
+	rightBrace, ok := p.parseTypeDeclFooter("object")
+	if !ok {
+		return nil
+	}
+
+	return &ast.ObjectDecl{
+		Name:          header.Name,
+		NamePos:       header.NamePos,
+		EqualsPos:     header.EqualsPos,
+		ObjectKeyword: header.KeywordPos,
+		LeftBrace:     header.LeftBrace,
+		Methods:       methods,
+		RightBrace:    rightBrace,
+	}
+}
+
+// parseClassMembers parses class fields and methods
+// Fields start with 'val' or 'var', methods start with identifier = (
+func (p *parser) parseClassMembers() ([]ast.StructField, []ast.MethodDecl) {
+	fields := []ast.StructField{}
+	methods := []ast.MethodDecl{}
+
+	for p.CurrentToken().Type != lexer.TokenTypeRBrace && !p.isAtEnd() {
+		// Skip newlines
+		p.skipNewlines()
+		if p.CurrentToken().Type == lexer.TokenTypeRBrace {
+			break
+		}
+
+		// Check if it's a field (starts with val or var)
+		if p.CurrentToken().Type == lexer.TokenTypeVal || p.CurrentToken().Type == lexer.TokenTypeVar {
+			field := p.parseStructField()
+			if field != nil {
+				fields = append(fields, *field)
+			}
+		} else if p.CurrentToken().Type == lexer.TokenTypeIdentifier && p.peekToken(1).Type == lexer.TokenTypeAssign && p.peekToken(2).Type == lexer.TokenTypeLParen {
+			// It's a method: name = (params) ...
+			method := p.parseMethodDecl()
+			if method != nil {
+				methods = append(methods, *method)
+			}
+		} else {
+			p.addError(fmt.Sprintf("expected field (val/var) or method declaration, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+			// Skip to next line for error recovery
+			for !p.isAtEnd() && p.CurrentToken().Type != lexer.TokenTypeNewline && p.CurrentToken().Type != lexer.TokenTypeRBrace {
+				p.advance()
+			}
+		}
+
+		// Skip newlines after member
+		p.skipNewlines()
+	}
+
+	return fields, methods
+}
+
+// parseObjectMethods parses object methods (objects cannot have fields)
+func (p *parser) parseObjectMethods() []ast.MethodDecl {
+	methods := []ast.MethodDecl{}
+
+	for p.CurrentToken().Type != lexer.TokenTypeRBrace && !p.isAtEnd() {
+		// Skip newlines
+		p.skipNewlines()
+		if p.CurrentToken().Type == lexer.TokenTypeRBrace {
+			break
+		}
+
+		// Check if it's a field (val or var) - this is an error for objects
+		if p.CurrentToken().Type == lexer.TokenTypeVal || p.CurrentToken().Type == lexer.TokenTypeVar {
+			p.addError("objects cannot have fields, only methods", p.CurrentToken().Pos)
+			// Skip to next line for error recovery
+			for !p.isAtEnd() && p.CurrentToken().Type != lexer.TokenTypeNewline && p.CurrentToken().Type != lexer.TokenTypeRBrace {
+				p.advance()
+			}
+			p.skipNewlines()
+			continue
+		}
+
+		// It should be a method: name = (params) ...
+		if p.CurrentToken().Type == lexer.TokenTypeIdentifier && p.peekToken(1).Type == lexer.TokenTypeAssign && p.peekToken(2).Type == lexer.TokenTypeLParen {
+			method := p.parseMethodDecl()
+			if method != nil {
+				methods = append(methods, *method)
+			}
+		} else {
+			p.addError(fmt.Sprintf("expected method declaration, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+			// Skip to next line for error recovery
+			for !p.isAtEnd() && p.CurrentToken().Type != lexer.TokenTypeNewline && p.CurrentToken().Type != lexer.TokenTypeRBrace {
+				p.advance()
+			}
+		}
+
+		// Skip newlines after method
+		p.skipNewlines()
+	}
+
+	return methods
+}
+
+// parseMethodDecl parses a method declaration: name = (params) -> returnType { body }
+// Similar to ParseFunctionDecl but returns ast.MethodDecl
+func (p *parser) parseMethodDecl() *ast.MethodDecl {
+	// Expect identifier (method name)
+	if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+		p.addError(fmt.Sprintf("expected method name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	name := p.CurrentToken().Value
+	namePos := p.CurrentToken().Pos
+	p.advance() // consume identifier
+
+	// Expect '='
+	if p.CurrentToken().Type != lexer.TokenTypeAssign {
+		p.addError(fmt.Sprintf("expected '=' after method name, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	equalsPos := p.CurrentToken().Pos
+	p.advance() // consume '='
+
+	// Expect '('
+	if p.CurrentToken().Type != lexer.TokenTypeLParen {
+		p.addError(fmt.Sprintf("expected '(' after '=', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	leftParen := p.CurrentToken().Pos
+	p.advance() // consume '('
+
+	// Parse parameters
+	parameters := p.parseParameterList()
+
+	// Expect ')'
+	if p.CurrentToken().Type != lexer.TokenTypeRParen {
+		p.addError(fmt.Sprintf("expected ')' after parameters, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	rightParen := p.CurrentToken().Pos
+	p.advance() // consume ')'
+
+	// Check for optional return type: -> returnType
+	var arrowPos ast.Position
+	var returnType string
+	var returnPos ast.Position
+
+	if p.CurrentToken().Type == lexer.TokenTypeArrow {
+		arrowPos = p.CurrentToken().Pos
+		p.advance() // consume '->'
+
+		// Parse return type
+		returnType, returnPos = p.parseTypeName()
+		if returnType == "" {
+			return nil
+		}
+	} else {
+		// No return type specified - default to void
+		returnType = "void"
+	}
+
+	// Skip newlines before body
+	p.skipNewlines()
+
+	// Parse method body (block statement)
+	body := p.ParseBlockStmt()
+	if body == nil {
+		return nil
+	}
+
+	return &ast.MethodDecl{
+		Name:       name,
+		NamePos:    namePos,
+		EqualsPos:  equalsPos,
+		LeftParen:  leftParen,
+		Parameters: parameters,
+		RightParen: rightParen,
+		ArrowPos:   arrowPos,
+		ReturnType: returnType,
+		ReturnPos:  returnPos,
+		Body:       body,
 	}
 }
 

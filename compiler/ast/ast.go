@@ -170,13 +170,14 @@ func (f *FieldAccessExpr) exprNode() {}
 // MethodCallExpr represents a method call on an object (e.g., Heap.new(x), p.copy())
 // This is distinct from CallExpr which represents standalone function calls.
 type MethodCallExpr struct {
-	Object     Expression   // the receiver expression (e.g., Heap, p)
-	Dot        Position     // position of '.'
-	Method     string       // method name (e.g., "new", "copy")
-	MethodPos  Position     // position of method name
-	LeftParen  Position     // position of '('
-	Arguments  []Expression // list of argument expressions
-	RightParen Position     // position of ')'
+	Object         Expression   // the receiver expression (e.g., Heap, p)
+	Dot            Position     // position of '.' or '?.'
+	Method         string       // method name (e.g., "new", "copy")
+	MethodPos      Position     // position of method name
+	LeftParen      Position     // position of '('
+	Arguments      []Expression // list of argument expressions
+	RightParen     Position     // position of ')'
+	SafeNavigation bool         // true for ?.method() (safe navigation on nullable)
 }
 
 func (m *MethodCallExpr) Pos() Position { return m.Object.Pos() }
@@ -219,6 +220,17 @@ type IndexExpr struct {
 func (i *IndexExpr) Pos() Position { return i.Array.Pos() }
 func (i *IndexExpr) End() Position { return i.RightBracket }
 func (i *IndexExpr) exprNode()     {}
+
+// SelfExpr represents the 'self' keyword in method bodies
+type SelfExpr struct {
+	SelfPos Position // position of 'self' keyword
+}
+
+func (s *SelfExpr) Pos() Position { return s.SelfPos }
+func (s *SelfExpr) End() Position {
+	return Position{Line: s.SelfPos.Line, Column: s.SelfPos.Column + 4, Offset: s.SelfPos.Offset + 4}
+}
+func (s *SelfExpr) exprNode() {}
 
 // ============================================================================
 // Statements
@@ -509,6 +521,64 @@ type StructDecl struct {
 func (s *StructDecl) Pos() Position { return s.NamePos }
 func (s *StructDecl) End() Position { return s.RightBrace }
 func (s *StructDecl) declNode()     {}
+
+// MethodDecl represents a method declaration within a class
+// Syntax: methodName = (params) -> returnType { body }
+// Instance methods have 'self' as first parameter; static methods do not.
+type MethodDecl struct {
+	Name       string      // method name
+	NamePos    Position    // position of method name
+	EqualsPos  Position    // position of '='
+	LeftParen  Position    // position of '('
+	Parameters []Parameter // method parameters (first is 'self' for instance methods)
+	RightParen Position    // position of ')'
+	ArrowPos   Position    // position of '->' (zero if no return type specified)
+	ReturnType string      // return type (empty = void)
+	ReturnPos  Position    // position of return type (zero if no return type)
+	Body       *BlockStmt  // method body
+}
+
+func (m *MethodDecl) Pos() Position { return m.NamePos }
+func (m *MethodDecl) End() Position { return m.Body.End() }
+func (m *MethodDecl) declNode()     {}
+
+// IsInstance returns true if this is an instance method (has 'self' as first param)
+func (m *MethodDecl) IsInstance() bool {
+	return len(m.Parameters) > 0 && m.Parameters[0].Name == "self"
+}
+
+// ClassDecl represents a class declaration
+// Syntax: Name = class { fields, methods }
+type ClassDecl struct {
+	Name         string        // class name
+	NamePos      Position      // position of class name
+	EqualsPos    Position      // position of '='
+	ClassKeyword Position      // position of 'class' keyword
+	LeftBrace    Position      // position of '{'
+	Fields       []StructField // list of fields (same as struct fields)
+	Methods      []MethodDecl  // list of methods
+	RightBrace   Position      // position of '}'
+}
+
+func (c *ClassDecl) Pos() Position { return c.NamePos }
+func (c *ClassDecl) End() Position { return c.RightBrace }
+func (c *ClassDecl) declNode()     {}
+
+// ObjectDecl represents a singleton object declaration (static methods only)
+// Syntax: Name = object { methods }
+type ObjectDecl struct {
+	Name          string       // object name
+	NamePos       Position     // position of object name
+	EqualsPos     Position     // position of '='
+	ObjectKeyword Position     // position of 'object' keyword
+	LeftBrace     Position     // position of '{'
+	Methods       []MethodDecl // list of methods (all must be static - no 'self' param)
+	RightBrace    Position     // position of '}'
+}
+
+func (o *ObjectDecl) Pos() Position { return o.NamePos }
+func (o *ObjectDecl) End() Position { return o.RightBrace }
+func (o *ObjectDecl) declNode()     {}
 
 // ============================================================================
 // Program

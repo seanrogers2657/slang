@@ -25,6 +25,9 @@ var keywords = map[string]TokenType{
 	"when":     TokenTypeWhen,
 	"while":    TokenTypeWhile,
 	"null":     TokenTypeNull,
+	"class":    TokenTypeClass,
+	"self":     TokenTypeSelf,
+	"object":   TokenTypeObject,
 }
 
 type TokenType int
@@ -80,6 +83,9 @@ const (
 	TokenTypeQuestion // '?' for nullable type syntax
 	TokenTypeSafeCall // '?.' safe call operator
 	TokenTypeElvis    // '?:' elvis operator
+	TokenTypeClass    // 'class' keyword
+	TokenTypeSelf     // 'self' keyword
+	TokenTypeObject   // 'object' keyword
 )
 
 // String returns a human-readable name for the token type
@@ -185,6 +191,12 @@ func (t TokenType) String() string {
 		return "SAFE_CALL"
 	case TokenTypeElvis:
 		return "ELVIS"
+	case TokenTypeClass:
+		return "CLASS"
+	case TokenTypeSelf:
+		return "SELF"
+	case TokenTypeObject:
+		return "OBJECT"
 	default:
 		return "UNKNOWN"
 	}

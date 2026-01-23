@@ -2677,6 +2677,99 @@ func TestParserSafeCall(t *testing.T) {
 			t.Errorf("expected inner field 'b', got %q", innerSafeCall.Field)
 		}
 	})
+
+	t.Run("safe method call", func(t *testing.T) {
+		source := `main = () { x?.method() }`
+		l := lexer.NewLexer([]byte(source))
+		l.Parse()
+
+		p := NewParser(l.Tokens)
+		program := p.Parse()
+
+		if len(p.Errors) > 0 {
+			t.Fatalf("unexpected parser errors: %v", p.Errors)
+		}
+
+		funcDecl := program.Declarations[0].(*ast.FunctionDecl)
+		exprStmt := funcDecl.Body.Statements[0].(*ast.ExprStmt)
+		methodCall, ok := exprStmt.Expr.(*ast.MethodCallExpr)
+		if !ok {
+			t.Fatalf("expected MethodCallExpr, got %T", exprStmt.Expr)
+		}
+
+		if methodCall.Method != "method" {
+			t.Errorf("expected method name 'method', got %q", methodCall.Method)
+		}
+
+		if !methodCall.SafeNavigation {
+			t.Error("expected SafeNavigation to be true")
+		}
+
+		ident, ok := methodCall.Object.(*ast.IdentifierExpr)
+		if !ok {
+			t.Fatalf("expected IdentifierExpr as object, got %T", methodCall.Object)
+		}
+
+		if ident.Name != "x" {
+			t.Errorf("expected object name 'x', got %q", ident.Name)
+		}
+	})
+
+	t.Run("safe method call with args", func(t *testing.T) {
+		source := `main = () { x?.method(1, 2) }`
+		l := lexer.NewLexer([]byte(source))
+		l.Parse()
+
+		p := NewParser(l.Tokens)
+		program := p.Parse()
+
+		if len(p.Errors) > 0 {
+			t.Fatalf("unexpected parser errors: %v", p.Errors)
+		}
+
+		funcDecl := program.Declarations[0].(*ast.FunctionDecl)
+		exprStmt := funcDecl.Body.Statements[0].(*ast.ExprStmt)
+		methodCall, ok := exprStmt.Expr.(*ast.MethodCallExpr)
+		if !ok {
+			t.Fatalf("expected MethodCallExpr, got %T", exprStmt.Expr)
+		}
+
+		if methodCall.Method != "method" {
+			t.Errorf("expected method name 'method', got %q", methodCall.Method)
+		}
+
+		if !methodCall.SafeNavigation {
+			t.Error("expected SafeNavigation to be true")
+		}
+
+		if len(methodCall.Arguments) != 2 {
+			t.Errorf("expected 2 arguments, got %d", len(methodCall.Arguments))
+		}
+	})
+
+	t.Run("regular method call has SafeNavigation false", func(t *testing.T) {
+		source := `main = () { x.method() }`
+		l := lexer.NewLexer([]byte(source))
+		l.Parse()
+
+		p := NewParser(l.Tokens)
+		program := p.Parse()
+
+		if len(p.Errors) > 0 {
+			t.Fatalf("unexpected parser errors: %v", p.Errors)
+		}
+
+		funcDecl := program.Declarations[0].(*ast.FunctionDecl)
+		exprStmt := funcDecl.Body.Statements[0].(*ast.ExprStmt)
+		methodCall, ok := exprStmt.Expr.(*ast.MethodCallExpr)
+		if !ok {
+			t.Fatalf("expected MethodCallExpr, got %T", exprStmt.Expr)
+		}
+
+		if methodCall.SafeNavigation {
+			t.Error("expected SafeNavigation to be false for regular method call")
+		}
+	})
 }
 
 func TestParserNestedNullableError(t *testing.T) {
@@ -2917,5 +3010,335 @@ func TestParserMethodCall(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParserClassDecl(t *testing.T) {
+	tests := []struct {
+		name            string
+		source          string
+		expectedName    string
+		expectedFields  int
+		expectedMethods int
+	}{
+		{
+			name:            "empty class",
+			source:          "Point = class { }",
+			expectedName:    "Point",
+			expectedFields:  0,
+			expectedMethods: 0,
+		},
+		{
+			name: "class with one field",
+			source: `Point = class {
+				val x: i64
+			}`,
+			expectedName:    "Point",
+			expectedFields:  1,
+			expectedMethods: 0,
+		},
+		{
+			name: "class with multiple fields",
+			source: `Point = class {
+				val x: i64
+				var y: i64
+			}`,
+			expectedName:    "Point",
+			expectedFields:  2,
+			expectedMethods: 0,
+		},
+		{
+			name: "class with one method",
+			source: `Counter = class {
+				getCount = (self: &Counter) -> i64 {
+					self.count
+				}
+			}`,
+			expectedName:    "Counter",
+			expectedFields:  0,
+			expectedMethods: 1,
+		},
+		{
+			name: "class with fields and methods",
+			source: `Counter = class {
+				var count: i64
+				increment = (self: &&Counter) {
+					self.count = self.count + 1
+				}
+				getCount = (self: &Counter) -> i64 {
+					self.count
+				}
+			}`,
+			expectedName:    "Counter",
+			expectedFields:  1,
+			expectedMethods: 2,
+		},
+		{
+			name: "class with static method",
+			source: `Point = class {
+				val x: i64
+				val y: i64
+				origin = () -> Point {
+					Point{ 0, 0 }
+				}
+			}`,
+			expectedName:    "Point",
+			expectedFields:  2,
+			expectedMethods: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("unexpected parser errors: %v", p.Errors)
+			}
+
+			if len(program.Declarations) != 1 {
+				t.Fatalf("expected 1 declaration, got %d", len(program.Declarations))
+			}
+
+			classDecl, ok := program.Declarations[0].(*ast.ClassDecl)
+			if !ok {
+				t.Fatalf("expected ClassDecl, got %T", program.Declarations[0])
+			}
+
+			if classDecl.Name != tt.expectedName {
+				t.Errorf("expected class name %q, got %q", tt.expectedName, classDecl.Name)
+			}
+
+			if len(classDecl.Fields) != tt.expectedFields {
+				t.Errorf("expected %d fields, got %d", tt.expectedFields, len(classDecl.Fields))
+			}
+
+			if len(classDecl.Methods) != tt.expectedMethods {
+				t.Errorf("expected %d methods, got %d", tt.expectedMethods, len(classDecl.Methods))
+			}
+		})
+	}
+}
+
+func TestParserObjectDecl(t *testing.T) {
+	tests := []struct {
+		name            string
+		source          string
+		expectedName    string
+		expectedMethods int
+	}{
+		{
+			name:            "empty object",
+			source:          "Math = object { }",
+			expectedName:    "Math",
+			expectedMethods: 0,
+		},
+		{
+			name: "object with one method",
+			source: `Math = object {
+				max = (a: i64, b: i64) -> i64 {
+					if a > b { a } else { b }
+				}
+			}`,
+			expectedName:    "Math",
+			expectedMethods: 1,
+		},
+		{
+			name: "object with multiple methods",
+			source: `Math = object {
+				max = (a: i64, b: i64) -> i64 {
+					if a > b { a } else { b }
+				}
+				min = (a: i64, b: i64) -> i64 {
+					if a < b { a } else { b }
+				}
+			}`,
+			expectedName:    "Math",
+			expectedMethods: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("unexpected parser errors: %v", p.Errors)
+			}
+
+			if len(program.Declarations) != 1 {
+				t.Fatalf("expected 1 declaration, got %d", len(program.Declarations))
+			}
+
+			objectDecl, ok := program.Declarations[0].(*ast.ObjectDecl)
+			if !ok {
+				t.Fatalf("expected ObjectDecl, got %T", program.Declarations[0])
+			}
+
+			if objectDecl.Name != tt.expectedName {
+				t.Errorf("expected object name %q, got %q", tt.expectedName, objectDecl.Name)
+			}
+
+			if len(objectDecl.Methods) != tt.expectedMethods {
+				t.Errorf("expected %d methods, got %d", tt.expectedMethods, len(objectDecl.Methods))
+			}
+		})
+	}
+}
+
+func TestParserSelfExpr(t *testing.T) {
+	source := `Counter = class {
+		var count: i64
+		getCount = (self: &Counter) -> i64 {
+			self.count
+		}
+	}`
+
+	l := lexer.NewLexer([]byte(source))
+	l.Parse()
+
+	p := NewParser(l.Tokens)
+	program := p.Parse()
+
+	if len(p.Errors) > 0 {
+		t.Fatalf("unexpected parser errors: %v", p.Errors)
+	}
+
+	classDecl, ok := program.Declarations[0].(*ast.ClassDecl)
+	if !ok {
+		t.Fatal("expected ClassDecl")
+	}
+
+	if len(classDecl.Methods) != 1 {
+		t.Fatalf("expected 1 method, got %d", len(classDecl.Methods))
+	}
+
+	method := classDecl.Methods[0]
+	if method.Name != "getCount" {
+		t.Errorf("expected method name 'getCount', got %q", method.Name)
+	}
+
+	// Check that the method has 'self' as first parameter
+	if len(method.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(method.Parameters))
+	}
+
+	if method.Parameters[0].Name != "self" {
+		t.Errorf("expected parameter name 'self', got %q", method.Parameters[0].Name)
+	}
+
+	// Check IsInstance() helper
+	if !method.IsInstance() {
+		t.Error("expected method.IsInstance() to be true")
+	}
+
+	// Check the body contains a field access on self
+	if len(method.Body.Statements) != 1 {
+		t.Fatalf("expected 1 statement in body, got %d", len(method.Body.Statements))
+	}
+
+	exprStmt, ok := method.Body.Statements[0].(*ast.ExprStmt)
+	if !ok {
+		t.Fatalf("expected ExprStmt, got %T", method.Body.Statements[0])
+	}
+
+	fieldAccess, ok := exprStmt.Expr.(*ast.FieldAccessExpr)
+	if !ok {
+		t.Fatalf("expected FieldAccessExpr, got %T", exprStmt.Expr)
+	}
+
+	selfExpr, ok := fieldAccess.Object.(*ast.SelfExpr)
+	if !ok {
+		t.Fatalf("expected SelfExpr, got %T", fieldAccess.Object)
+	}
+
+	// Verify position is set
+	if selfExpr.SelfPos.Line == 0 {
+		t.Error("expected SelfExpr position to be set")
+	}
+
+	if fieldAccess.Field != "count" {
+		t.Errorf("expected field 'count', got %q", fieldAccess.Field)
+	}
+}
+
+func TestParserClassMethodIsInstance(t *testing.T) {
+	tests := []struct {
+		name             string
+		source           string
+		expectedInstance bool
+	}{
+		{
+			name: "instance method with self",
+			source: `Point = class {
+				getX = (self: &Point) -> i64 { 0 }
+			}`,
+			expectedInstance: true,
+		},
+		{
+			name: "static method without self",
+			source: `Point = class {
+				origin = () -> Point { Point{ 0, 0 } }
+			}`,
+			expectedInstance: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("unexpected parser errors: %v", p.Errors)
+			}
+
+			classDecl := program.Declarations[0].(*ast.ClassDecl)
+			method := classDecl.Methods[0]
+
+			if method.IsInstance() != tt.expectedInstance {
+				t.Errorf("expected IsInstance()=%v, got %v", tt.expectedInstance, method.IsInstance())
+			}
+		})
+	}
+}
+
+func TestParserObjectFieldError(t *testing.T) {
+	source := `Math = object {
+		val x: i64
+	}`
+
+	l := lexer.NewLexer([]byte(source))
+	l.Parse()
+
+	p := NewParser(l.Tokens)
+	p.Parse()
+
+	if len(p.Errors) == 0 {
+		t.Fatal("expected parser error for field in object")
+	}
+
+	// Check that error mentions fields not allowed
+	found := false
+	for _, err := range p.Errors {
+		if err.Error() == "objects cannot have fields, only methods" {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Errorf("expected error about objects not having fields, got: %v", p.Errors)
 	}
 }

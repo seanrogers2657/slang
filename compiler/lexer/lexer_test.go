@@ -1366,6 +1366,110 @@ func TestLexerWhileTokens(t *testing.T) {
 	}
 }
 
+func TestLexerClassKeywords(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []Token
+	}{
+		{
+			name:  "class keyword",
+			input: "class",
+			expected: []Token{
+				{Type: TokenTypeClass, Value: "class"},
+			},
+		},
+		{
+			name:  "self keyword",
+			input: "self",
+			expected: []Token{
+				{Type: TokenTypeSelf, Value: "self"},
+			},
+		},
+		{
+			name:  "object keyword",
+			input: "object",
+			expected: []Token{
+				{Type: TokenTypeObject, Value: "object"},
+			},
+		},
+		{
+			name:  "class declaration",
+			input: "Point = class {",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "Point"},
+				{Type: TokenTypeAssign, Value: "="},
+				{Type: TokenTypeClass, Value: "class"},
+				{Type: TokenTypeLBrace, Value: "{"},
+			},
+		},
+		{
+			name:  "object declaration",
+			input: "Math = object {",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "Math"},
+				{Type: TokenTypeAssign, Value: "="},
+				{Type: TokenTypeObject, Value: "object"},
+				{Type: TokenTypeLBrace, Value: "{"},
+			},
+		},
+		{
+			name:  "self in method body",
+			input: "self.x",
+			expected: []Token{
+				{Type: TokenTypeSelf, Value: "self"},
+				{Type: TokenTypeDot, Value: "."},
+				{Type: TokenTypeIdentifier, Value: "x"},
+			},
+		},
+		{
+			name:  "identifier starting with class",
+			input: "className",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "className"},
+			},
+		},
+		{
+			name:  "identifier starting with self",
+			input: "selfie",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "selfie"},
+			},
+		},
+		{
+			name:  "identifier starting with object",
+			input: "objectify",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "objectify"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("unexpected errors: %v", l.Errors)
+			}
+
+			if len(l.Tokens) != len(tt.expected) {
+				t.Fatalf("expected %d tokens, got %d: %v", len(tt.expected), len(l.Tokens), l.Tokens)
+			}
+
+			for i, token := range l.Tokens {
+				if token.Type != tt.expected[i].Type {
+					t.Errorf("token %d: expected type %v, got %v", i, tt.expected[i].Type, token.Type)
+				}
+				if token.Value != tt.expected[i].Value {
+					t.Errorf("token %d: expected value %q, got %q", i, tt.expected[i].Value, token.Value)
+				}
+			}
+		})
+	}
+}
+
 func TestLexerNullability(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -18,12 +18,13 @@ import (
 //   - Runtime boundary checks with panic on overflow/division-by-zero
 //   - Symbol table generation for stack traces
 type TypedCodeGenerator struct {
-	program     *semantic.TypedProgram
-	sourceLines []string
-	info        *ProgramInfo
-	filename    string
-	symtab      *SymbolTable
-	checkGen    *CheckGenerator
+	program            *semantic.TypedProgram
+	sourceLines        []string
+	info               *ProgramInfo
+	filename           string
+	symtab             *SymbolTable
+	checkGen           *CheckGenerator
+	globalLabelCounter int // shared label counter across all methods
 }
 
 // NewTypedCodeGenerator creates a new typed code generator.
@@ -44,8 +45,8 @@ func NewTypedCodeGeneratorWithFilename(program *semantic.TypedProgram, sourceLin
 
 // expressionHasNullableTag checks if a typed expression representing a nullable
 // primitive would have its tag loaded into x3 after generateExpr is called.
-// This is true for: identifiers, function calls, field access, and index access
-// that return nullable types.
+// This is true for: identifiers, function calls, field access, index access,
+// safe field access, and safe method calls that return nullable types.
 func expressionHasNullableTag(expr semantic.TypedExpression) bool {
 	switch e := expr.(type) {
 	case *semantic.TypedIdentifierExpr:
@@ -59,6 +60,13 @@ func expressionHasNullableTag(expr semantic.TypedExpression) bool {
 	case *semantic.TypedSafeCallExpr:
 		// Safe call always returns nullable, and sets tag in x3
 		return true
+	case *semantic.TypedMethodCallExpr:
+		// Safe navigation method call sets tag in x3
+		if e.SafeNavigation {
+			return true
+		}
+		// Regular method call returning nullable needs tag checking
+		return semantic.IsNullable(e.Type)
 	default:
 		return false
 	}
@@ -76,9 +84,17 @@ func (g *TypedCodeGenerator) Generate() (string, error) {
 
 func (g *TypedCodeGenerator) generateFunctionBasedProgram(builder *strings.Builder) (string, error) {
 	functions := make([]*semantic.TypedFunctionDecl, 0)
+	classes := make([]*semantic.TypedClassDecl, 0)
+	objects := make([]*semantic.TypedObjectDecl, 0)
+
 	for _, decl := range g.program.Declarations {
-		if fn, ok := decl.(*semantic.TypedFunctionDecl); ok {
-			functions = append(functions, fn)
+		switch d := decl.(type) {
+		case *semantic.TypedFunctionDecl:
+			functions = append(functions, d)
+		case *semantic.TypedClassDecl:
+			classes = append(classes, d)
+		case *semantic.TypedObjectDecl:
+			objects = append(objects, d)
 		}
 	}
 
@@ -86,15 +102,47 @@ func (g *TypedCodeGenerator) generateFunctionBasedProgram(builder *strings.Build
 		return "", fmt.Errorf("no functions found")
 	}
 
-	// Collect literals and detect print usage
+	// Collect literals and detect print usage from functions
 	g.info = NewProgramInfo()
 	for _, fn := range functions {
 		g.info.CollectFromTypedFunction(fn)
 	}
 
+	// Collect literals from class methods
+	for _, class := range classes {
+		for _, method := range class.Methods {
+			g.info.CollectFromTypedMethod(method)
+		}
+	}
+
+	// Collect literals from object methods
+	for _, obj := range objects {
+		for _, method := range obj.Methods {
+			g.info.CollectFromTypedMethod(method)
+		}
+	}
+
 	// Register functions in symbol table for stack traces
 	for _, fn := range functions {
 		g.symtab.AddFunction(fn.Name, fn.NamePos.Line)
+	}
+
+	// Register class methods in symbol table
+	for _, class := range classes {
+		for _, method := range class.Methods {
+			methodInfo := methodInfoFromTypedMethod(method)
+			mangledName := mangleMethodNameWithInfo(class.Name, methodInfo)
+			g.symtab.AddFunction(mangledName, method.NamePos.Line)
+		}
+	}
+
+	// Register object methods in symbol table
+	for _, obj := range objects {
+		for _, method := range obj.Methods {
+			methodInfo := methodInfoFromTypedMethod(method)
+			mangledName := mangleMethodNameWithInfo(obj.Name, methodInfo)
+			g.symtab.AddFunction(mangledName, method.NamePos.Line)
+		}
 	}
 
 	// Write .data section if needed
@@ -144,6 +192,30 @@ func (g *TypedCodeGenerator) generateFunctionBasedProgram(builder *strings.Build
 		builder.WriteString("\n")
 	}
 
+	// Generate class methods
+	for _, class := range classes {
+		for _, method := range class.Methods {
+			code, err := g.generateMethodDecl(class.Name, method)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(code)
+			builder.WriteString("\n")
+		}
+	}
+
+	// Generate object methods
+	for _, obj := range objects {
+		for _, method := range obj.Methods {
+			code, err := g.generateMethodDecl(obj.Name, method)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(code)
+			builder.WriteString("\n")
+		}
+	}
+
 	// Generate symbol table for stack traces
 	builder.WriteString(g.symtab.GenerateDataSection())
 
@@ -154,37 +226,29 @@ func (g *TypedCodeGenerator) generateFunctionBasedProgram(builder *strings.Build
 	return builder.String(), nil
 }
 
-func (g *TypedCodeGenerator) generateFunction(fn *semantic.TypedFunctionDecl) (string, error) {
-	builder := strings.Builder{}
-
-	EmitFunctionLabel(&builder, fn.Name)
-
-	ctx := NewBaseContext(g.sourceLines)
-
-	// Count stack slots needed for parameters (nullable primitives need 2 slots)
-	paramSlots := 0
-	for _, param := range fn.Parameters {
+// countParamSlots counts the number of stack slots needed for a set of parameters.
+// Nullable primitives need 2 slots (tag + value), others need 1.
+func countParamSlots(params []semantic.TypedParameter) int {
+	slots := 0
+	for _, param := range params {
 		if nullableType, isNullable := param.Type.(semantic.NullableType); isNullable {
 			if !semantic.IsReferenceType(nullableType.InnerType) {
-				paramSlots += 2 // tag + value
+				slots += 2 // tag + value
 			} else {
-				paramSlots += 1
+				slots++
 			}
 		} else {
-			paramSlots += 1
+			slots++
 		}
 	}
+	return slots
+}
 
-	varCount := CountTypedVariables(fn.Body.Statements)
-	totalLocals := paramSlots + varCount
-	stackSize := totalLocals * StackAlignment
-
-	EmitFunctionPrologue(&builder, stackSize)
-
-	// Store parameters from registers
-	// Nullable params use 2 consecutive registers (tag, value)
+// storeParamsFromRegisters generates code to store parameters from registers to stack.
+// Returns the final register index used.
+func storeParamsFromRegisters(builder *strings.Builder, params []semantic.TypedParameter, ctx *BaseContext) int {
 	regIdx := 0
-	for _, param := range fn.Parameters {
+	for _, param := range params {
 		offset := ctx.DeclareVariable(param.Name, param.Type)
 
 		if nullableType, isNullable := param.Type.(semantic.NullableType); isNullable {
@@ -194,28 +258,55 @@ func (g *TypedCodeGenerator) generateFunction(fn *semantic.TypedFunctionDecl) (s
 				tagOffset := offset - 8
 				builder.WriteString(fmt.Sprintf("    str x%d, [x29, #-%d]\n", regIdx, tagOffset))
 				regIdx++
-				EmitStoreToStack(&builder, fmt.Sprintf("x%d", regIdx), offset)
+				EmitStoreToStack(builder, fmt.Sprintf("x%d", regIdx), offset)
 				regIdx++
 			} else {
 				// Nullable reference: just one register
-				EmitStoreToStack(&builder, fmt.Sprintf("x%d", regIdx), offset)
+				EmitStoreToStack(builder, fmt.Sprintf("x%d", regIdx), offset)
 				regIdx++
 			}
 		} else {
 			// Non-nullable: single register
-			EmitStoreToStack(&builder, fmt.Sprintf("x%d", regIdx), offset)
+			EmitStoreToStack(builder, fmt.Sprintf("x%d", regIdx), offset)
 			regIdx++
 		}
 	}
+	return regIdx
+}
 
-	// Generate body
-	for _, stmt := range fn.Body.Statements {
+// generateBodyStatements generates code for a slice of statements.
+func (g *TypedCodeGenerator) generateBodyStatements(builder *strings.Builder, stmts []semantic.TypedStatement, ctx *BaseContext) error {
+	for _, stmt := range stmts {
 		builder.WriteString(ctx.GetSourceLineComment(stmt.Pos()))
 		code, err := g.generateStmt(stmt, ctx)
 		if err != nil {
-			return "", err
+			return err
 		}
 		builder.WriteString(code)
+	}
+	return nil
+}
+
+func (g *TypedCodeGenerator) generateFunction(fn *semantic.TypedFunctionDecl) (string, error) {
+	builder := strings.Builder{}
+
+	EmitFunctionLabel(&builder, fn.Name)
+
+	ctx := NewBaseContext(g.sourceLines)
+
+	paramSlots := countParamSlots(fn.Parameters)
+	varCount := CountTypedVariables(fn.Body.Statements)
+	totalLocals := paramSlots + varCount
+	stackSize := totalLocals * StackAlignment
+
+	EmitFunctionPrologue(&builder, stackSize)
+
+	// Store parameters from registers
+	storeParamsFromRegisters(&builder, fn.Parameters, ctx)
+
+	// Generate body
+	if err := g.generateBodyStatements(&builder, fn.Body.Statements, ctx); err != nil {
+		return "", err
 	}
 
 	// Cleanup owned pointers before function exit
@@ -233,6 +324,174 @@ func (g *TypedCodeGenerator) generateFunction(fn *semantic.TypedFunctionDecl) (s
 
 	// Emit function end label for symbol table
 	builder.WriteString(GenerateFunctionEndLabel(fn.Name))
+
+	return builder.String(), nil
+}
+
+// mangleMethodName generates a unique assembly label for a class/object method.
+// Format: _ClassName_methodName or _ClassName_methodName_ParamTypes for overloads.
+// If methodInfo is provided and the method has parameters (other than self),
+// parameter types are included to distinguish overloaded methods.
+func mangleMethodName(className, methodName string) string {
+	return fmt.Sprintf("_%s_%s", className, methodName)
+}
+
+// mangleMethodNameWithInfo generates a unique assembly label for a class/object method
+// with full type information for overload disambiguation.
+// Format: _ClassName_methodName_Type1_Type2_...
+func mangleMethodNameWithInfo(className string, methodInfo *semantic.MethodInfo) string {
+	if methodInfo == nil {
+		return fmt.Sprintf("_%s_unknown", className)
+	}
+
+	// For non-overloaded methods or methods without additional parameters,
+	// just use the simple name
+	baseName := fmt.Sprintf("_%s_%s", className, methodInfo.Name)
+
+	// Determine parameter offset (skip self for instance methods)
+	paramOffset := 0
+	if !methodInfo.IsStatic && len(methodInfo.ParamTypes) > 0 {
+		paramOffset = 1
+	}
+
+	// If no parameters after self, use simple name
+	if len(methodInfo.ParamTypes)-paramOffset == 0 {
+		return baseName
+	}
+
+	// Build mangled name with parameter types
+	var paramSuffix strings.Builder
+	for i := paramOffset; i < len(methodInfo.ParamTypes); i++ {
+		paramSuffix.WriteString("_")
+		paramSuffix.WriteString(mangleTypeName(methodInfo.ParamTypes[i]))
+	}
+
+	return baseName + paramSuffix.String()
+}
+
+// mangleTypeName converts a type to a string suitable for name mangling.
+func mangleTypeName(t semantic.Type) string {
+	switch ty := t.(type) {
+	case semantic.I8Type:
+		return "i8"
+	case semantic.I16Type:
+		return "i16"
+	case semantic.I32Type:
+		return "i32"
+	case semantic.I64Type:
+		return "i64"
+	case semantic.I128Type:
+		return "i128"
+	case semantic.U8Type:
+		return "u8"
+	case semantic.U16Type:
+		return "u16"
+	case semantic.U32Type:
+		return "u32"
+	case semantic.U64Type:
+		return "u64"
+	case semantic.U128Type:
+		return "u128"
+	case semantic.F32Type:
+		return "f32"
+	case semantic.F64Type:
+		return "f64"
+	case semantic.BooleanType:
+		return "bool"
+	case semantic.StringType:
+		return "str"
+	case semantic.VoidType:
+		return "void"
+	case semantic.NullableType:
+		return mangleTypeName(ty.InnerType) + "opt"
+	case semantic.OwnedPointerType:
+		return "ptr" + mangleTypeName(ty.ElementType)
+	case semantic.RefPointerType:
+		return "ref" + mangleTypeName(ty.ElementType)
+	case semantic.MutRefPointerType:
+		return "mut" + mangleTypeName(ty.ElementType)
+	case semantic.StructType:
+		return ty.Name
+	case semantic.ClassType:
+		return ty.Name
+	case semantic.ArrayType:
+		return fmt.Sprintf("arr%s%d", mangleTypeName(ty.ElementType), ty.Size)
+	default:
+		return "unknown"
+	}
+}
+
+// methodInfoFromTypedMethod constructs a MethodInfo from a TypedMethodDecl.
+// Used for name mangling and overload disambiguation.
+func methodInfoFromTypedMethod(method *semantic.TypedMethodDecl) *semantic.MethodInfo {
+	paramTypes := make([]semantic.Type, len(method.Parameters))
+	paramNames := make([]string, len(method.Parameters))
+	for i, param := range method.Parameters {
+		paramTypes[i] = param.Type
+		paramNames[i] = param.Name
+	}
+	return &semantic.MethodInfo{
+		Name:       method.Name,
+		ParamTypes: paramTypes,
+		ParamNames: paramNames,
+		ReturnType: method.ReturnType,
+		IsStatic:   method.IsStatic,
+	}
+}
+
+// generateMethodDecl generates ARM64 assembly for a class/object method.
+// Instance methods have 'self' as the first parameter (in x0).
+// Static methods don't have 'self'.
+// Methods returning ClassType use x8 for the return destination (caller passes address).
+func (g *TypedCodeGenerator) generateMethodDecl(className string, method *semantic.TypedMethodDecl) (string, error) {
+	builder := strings.Builder{}
+
+	methodInfo := methodInfoFromTypedMethod(method)
+	mangledName := mangleMethodNameWithInfo(className, methodInfo)
+	EmitFunctionLabel(&builder, mangledName)
+
+	ctx := NewBaseContextWithSharedCounter(g.sourceLines, &g.globalLabelCounter)
+
+	// Check if this method returns a class by value
+	_, returnsClass := method.ReturnType.(semantic.ClassType)
+
+	paramSlots := countParamSlots(method.Parameters)
+
+	// If returning class by value, need one extra slot to save x8
+	extraSlots := 0
+	if returnsClass {
+		extraSlots = 1
+	}
+
+	varCount := CountTypedVariables(method.Body.Statements)
+	totalLocals := paramSlots + varCount + extraSlots
+	stackSize := totalLocals * StackAlignment
+
+	EmitFunctionPrologue(&builder, stackSize)
+
+	// Store parameters from registers
+	storeParamsFromRegisters(&builder, method.Parameters, ctx)
+
+	// If returning class by value, save x8 (caller's destination address) to stack
+	if returnsClass {
+		x8Offset := ctx.stackOffset + StackAlignment
+		ctx.stackOffset = x8Offset
+		builder.WriteString(fmt.Sprintf("    str x8, [x29, #-%d]\n", x8Offset))
+		ctx.SetClassReturnType(method.ReturnType, x8Offset)
+	}
+
+	// Generate body
+	if err := g.generateBodyStatements(&builder, method.Body.Statements, ctx); err != nil {
+		return "", err
+	}
+
+	// Cleanup owned pointers before method exit
+	builder.WriteString(g.generateOwnedVarCleanup(ctx, ""))
+
+	EmitFunctionEpilogue(&builder, totalLocals > 0)
+
+	// Emit method end label for symbol table
+	builder.WriteString(GenerateFunctionEndLabel(mangledName))
 
 	return builder.String(), nil
 }
@@ -274,6 +533,11 @@ func (g *TypedCodeGenerator) generateVarDecl(stmt *semantic.TypedVarDeclStmt, ct
 	// Check if this is a struct type
 	if structType, ok := stmt.DeclaredType.(semantic.StructType); ok {
 		return g.generateStructVarDecl(stmt, structType, ctx)
+	}
+
+	// Check if this is a class type
+	if classType, ok := stmt.DeclaredType.(semantic.ClassType); ok {
+		return g.generateClassVarDecl(stmt, classType, ctx)
 	}
 
 	// Check if this is an array type
@@ -541,6 +805,95 @@ func (g *TypedCodeGenerator) getElementSlotCount(elementType semantic.Type) int 
 		}
 	}
 	return 1 // primitives take 1 slot
+}
+
+// generateClassVarDecl generates code for declaring a class variable on the stack.
+// Handles both class literal initializers and method calls returning class by value.
+func (g *TypedCodeGenerator) generateClassVarDecl(stmt *semantic.TypedVarDeclStmt, classType semantic.ClassType, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Calculate total size needed
+	totalSlots := g.countClassSlots(classType)
+
+	// Allocate space for all fields (we allocate first slot, then additional slots)
+	baseOffset := ctx.DeclareVariable(stmt.Name, stmt.DeclaredType)
+
+	// Allocate additional slots
+	for i := 1; i < totalSlots; i++ {
+		ctx.stackOffset += StackAlignment
+	}
+
+	// Check if initializer is a class literal - generate fields directly
+	if classLit, ok := stmt.Initializer.(*semantic.TypedClassLiteralExpr); ok {
+		code, err := g.generateClassFieldsInline(classLit, baseOffset, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+		return builder.String(), nil
+	}
+
+	// Check if initializer is a method call returning class by value
+	if methodCall, ok := stmt.Initializer.(*semantic.TypedMethodCallExpr); ok {
+		if _, isClass := methodCall.Type.(semantic.ClassType); isClass {
+			// Set x8 to point to the variable's stack space
+			builder.WriteString(fmt.Sprintf("    sub x8, x29, #%d\n", baseOffset))
+
+			// Generate the method call (it will write to [x8])
+			code, err := g.generateMethodCallWithDestination(methodCall, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(code)
+			return builder.String(), nil
+		}
+	}
+
+	return "", fmt.Errorf("class variable must be initialized with class literal or method returning class")
+}
+
+// countClassSlots counts the total number of 16-byte stack slots needed for a class type.
+// Classes use compact 8-byte field layout (matching heap allocation) to ensure method
+// compatibility between stack and heap allocated instances.
+func (g *TypedCodeGenerator) countClassSlots(classType semantic.ClassType) int {
+	// Calculate total bytes needed (8 bytes per field, matching heap layout)
+	totalBytes := len(classType.Fields) * 8
+	// Round up to 16-byte alignment
+	return (totalBytes + StackAlignment - 1) / StackAlignment
+}
+
+// generateClassFieldsInline generates code to store all class fields at the given base offset.
+// Uses 8-byte field offsets (matching heap layout) for compatibility with methods.
+// Fields are stored so that field i is at address (x29 - baseOffset + i*8), allowing
+// method code to access fields at positive offsets from the base pointer.
+func (g *TypedCodeGenerator) generateClassFieldsInline(classLit *semantic.TypedClassLiteralExpr, baseOffset int, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Stack layout (growing downward):
+	// Base pointer points to x29 - baseOffset
+	// Field 0 at [x29 - baseOffset] = [base + 0]
+	// Field 1 at [x29 - baseOffset + 8] = [base + 8]
+	// So the stack offset for field i is: baseOffset - i*8
+	for i, arg := range classLit.Args {
+		fieldStackOffset := baseOffset - i*8
+
+		// Generate the field value
+		code, err := g.generateExpr(arg, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+
+		// Store the value at the computed offset
+		fieldType := classLit.Type.Fields[i].Type
+		if semantic.IsFloatType(fieldType) {
+			builder.WriteString(fmt.Sprintf("    str d0, [x29, #-%d]\n", fieldStackOffset))
+		} else {
+			builder.WriteString(fmt.Sprintf("    str x2, [x29, #-%d]\n", fieldStackOffset))
+		}
+	}
+
+	return builder.String(), nil
 }
 
 // generateArrayVarDecl generates code for declaring an array variable.
@@ -1037,17 +1390,21 @@ func (g *TypedCodeGenerator) generateFieldAssignStmt(stmt *semantic.TypedFieldAs
 func (g *TypedCodeGenerator) generateFieldAssignThroughOwnedPointer(stmt *semantic.TypedFieldAssignStmt, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
-	// Get the struct type from the owned pointer
+	// Get the struct/class type from the owned pointer
 	ownedType := stmt.Object.GetType().(semantic.OwnedPointerType)
-	structType, ok := ownedType.ElementType.(semantic.StructType)
-	if !ok {
-		return "", fmt.Errorf("field assignment through owned pointer requires struct type, got %s", ownedType.ElementType.String())
+	var fields []semantic.StructFieldInfo
+	if structType, ok := ownedType.ElementType.(semantic.StructType); ok {
+		fields = structType.Fields
+	} else if classType, ok := ownedType.ElementType.(semantic.ClassType); ok {
+		fields = classType.Fields
+	} else {
+		return "", fmt.Errorf("field assignment through owned pointer requires struct or class type, got %s", ownedType.ElementType.String())
 	}
 
-	// Calculate the field byte offset within the struct (on heap, each field is 8 bytes)
+	// Calculate the field byte offset within the struct/class (on heap, each field is 8 bytes)
 	fieldByteOffset := 0
 	var fieldType semantic.Type
-	for _, field := range structType.Fields {
+	for _, field := range fields {
 		if field.Name == stmt.Field {
 			fieldType = field.Type
 			break
@@ -1118,15 +1475,20 @@ func (g *TypedCodeGenerator) generateFieldAssignThroughRefPointer(stmt *semantic
 		return "", fmt.Errorf("expected Ref<T> or MutRef<T>, got %s", objectType.String())
 	}
 
-	structType, ok := elementType.(semantic.StructType)
-	if !ok {
-		return "", fmt.Errorf("field assignment through ref pointer requires struct type, got %s", elementType.String())
+	// Get fields from either StructType or ClassType
+	var fields []semantic.StructFieldInfo
+	if structType, ok := elementType.(semantic.StructType); ok {
+		fields = structType.Fields
+	} else if classType, ok := elementType.(semantic.ClassType); ok {
+		fields = classType.Fields
+	} else {
+		return "", fmt.Errorf("field assignment through ref pointer requires struct or class type, got %s", elementType.String())
 	}
 
-	// Calculate the field byte offset within the struct (on heap, each field is 8 bytes)
+	// Calculate the field byte offset within the struct/class (on heap, each field is 8 bytes)
 	fieldByteOffset := 0
 	var fieldType semantic.Type
-	for _, field := range structType.Fields {
+	for _, field := range fields {
 		if field.Name == stmt.Field {
 			fieldType = field.Type
 			break
@@ -1308,6 +1670,11 @@ func (g *TypedCodeGenerator) getFieldType(object semantic.TypedExpression, field
 func (g *TypedCodeGenerator) generateReturnStmt(stmt *semantic.TypedReturnStmt, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
+	// Check if we're returning a class by value
+	if classType, x8Offset, ok := ctx.GetClassReturnType(); ok && stmt.Value != nil {
+		return g.generateClassReturn(stmt, classType.(semantic.ClassType), x8Offset, ctx)
+	}
+
 	// Determine if we're returning an owned pointer variable (ownership transfer)
 	// In that case, we skip cleanup for that variable
 	skipVar := ""
@@ -1383,6 +1750,57 @@ func (g *TypedCodeGenerator) generateReturnStmt(stmt *semantic.TypedReturnStmt, 
 
 	// Cleanup owned pointers before return
 	builder.WriteString(g.generateOwnedVarCleanup(ctx, skipVar))
+
+	EmitReturnEpilogue(&builder)
+	return builder.String(), nil
+}
+
+// generateClassReturn handles returning a class by value.
+// It writes the class fields to the destination address passed in x8.
+func (g *TypedCodeGenerator) generateClassReturn(stmt *semantic.TypedReturnStmt, classType semantic.ClassType, x8Offset int, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Load destination address from saved x8
+	builder.WriteString(fmt.Sprintf("    ldr x8, [x29, #-%d]\n", x8Offset))
+
+	// Check if returning a class literal - can write fields directly
+	if classLit, ok := stmt.Value.(*semantic.TypedClassLiteralExpr); ok {
+		// Write each field to the destination
+		for i, arg := range classLit.Args {
+			fieldOffset := i * 8 // 8-byte field spacing
+
+			// Generate the field value
+			code, err := g.generateExpr(arg, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(code)
+
+			// Store to destination + field offset
+			builder.WriteString(fmt.Sprintf("    str x2, [x8, #%d]\n", fieldOffset))
+		}
+	} else {
+		// Returning a variable or expression - need to copy
+		// Generate the expression (should produce address of class in x2)
+		code, err := g.generateExpr(stmt.Value, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+
+		// x2 now contains address of source class
+		// Copy all fields from source to destination
+		for i := range classType.Fields {
+			fieldOffset := i * 8
+			// Load from source
+			builder.WriteString(fmt.Sprintf("    ldr x3, [x2, #%d]\n", fieldOffset))
+			// Store to destination
+			builder.WriteString(fmt.Sprintf("    str x3, [x8, #%d]\n", fieldOffset))
+		}
+	}
+
+	// Cleanup owned pointers before return
+	builder.WriteString(g.generateOwnedVarCleanup(ctx, ""))
 
 	EmitReturnEpilogue(&builder)
 	return builder.String(), nil
@@ -1611,6 +2029,9 @@ func (g *TypedCodeGenerator) generateExpr(expr semantic.TypedExpression, ctx *Ba
 	case *semantic.TypedStructLiteralExpr:
 		return g.generateStructLiteral(e, ctx)
 
+	case *semantic.TypedClassLiteralExpr:
+		return g.generateClassLiteral(e, ctx)
+
 	case *semantic.TypedFieldAccessExpr:
 		return g.generateFieldAccess(e, ctx)
 
@@ -1643,9 +2064,24 @@ func (g *TypedCodeGenerator) generateExpr(expr semantic.TypedExpression, ctx *Ba
 	case *semantic.TypedMethodCallExpr:
 		return g.generateMethodCallExpr(e, ctx)
 
+	case *semantic.TypedSelfExpr:
+		return g.generateSelfExpr(e, ctx)
+
 	default:
 		return "", fmt.Errorf("unsupported expression type: %T", expr)
 	}
+}
+
+// generateSelfExpr generates code for a 'self' expression in a method body.
+// Self is stored on the stack like other parameters.
+func (g *TypedCodeGenerator) generateSelfExpr(expr *semantic.TypedSelfExpr, ctx *BaseContext) (string, error) {
+	slot, ok := ctx.GetVariable("self")
+	if !ok {
+		return "", fmt.Errorf("'self' not found in scope - are you inside a method?")
+	}
+	builder := strings.Builder{}
+	EmitLoadFromStack(&builder, "x2", slot.Offset)
+	return builder.String(), nil
 }
 
 func (g *TypedCodeGenerator) generateLiteral(lit *semantic.TypedLiteralExpr) (string, error) {
@@ -1739,7 +2175,7 @@ func (g *TypedCodeGenerator) generateUnaryExpr(expr *semantic.TypedUnaryExpr, ct
 // during binary expression evaluation (i.e., it may clobber x0/x1).
 func isComplexOperand(expr semantic.TypedExpression) bool {
 	switch expr.(type) {
-	case *semantic.TypedBinaryExpr, *semantic.TypedIfStmt, *semantic.TypedCallExpr:
+	case *semantic.TypedBinaryExpr, *semantic.TypedIfStmt, *semantic.TypedCallExpr, *semantic.TypedMethodCallExpr:
 		return true
 	default:
 		return false
@@ -2274,6 +2710,16 @@ func (g *TypedCodeGenerator) generateOperandToReg(expr semantic.TypedExpression,
 			EmitMoveReg(&builder, reg, "x2")
 		}
 
+	case *semantic.TypedMethodCallExpr:
+		code, err := g.generateMethodCallExpr(e, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(code)
+		if reg != "x2" {
+			EmitMoveReg(&builder, reg, "x2")
+		}
+
 	default:
 		return "", fmt.Errorf("unsupported operand type: %T", expr)
 	}
@@ -2285,11 +2731,53 @@ func (g *TypedCodeGenerator) generateOperandToReg(expr semantic.TypedExpression,
 // This is called when a struct is used as an expression (e.g., passed as argument).
 // Note: When used in variable declaration, generateStructVarDecl handles it directly.
 func (g *TypedCodeGenerator) generateStructLiteral(expr *semantic.TypedStructLiteralExpr, ctx *BaseContext) (string, error) {
-	// For struct literals used as expressions (not in variable declarations),
-	// we need to allocate temporary stack space and return a pointer or copy.
-	// For now, we return an error as structs as expressions (not var decl) aren't fully supported.
-	// The main use case (val p = Point(10, 20)) is handled by generateStructVarDecl.
-	return "", fmt.Errorf("struct literals as expressions are not yet supported; use in variable declaration")
+	builder := strings.Builder{}
+
+	// Calculate total slots needed
+	totalSlots := g.countStructSlots(expr.Type)
+
+	// Allocate temporary stack space
+	baseOffset := ctx.stackOffset + StackAlignment
+	ctx.stackOffset = baseOffset + (totalSlots-1)*StackAlignment
+
+	// Generate and store all fields
+	code, err := g.generateStructFieldsInline(expr, baseOffset, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(code)
+
+	// Store the stack address of the struct in x2 for use by field access or method calls
+	// Calculate address: x29 - baseOffset
+	builder.WriteString(fmt.Sprintf("    sub x2, x29, #%d\n", baseOffset))
+
+	return builder.String(), nil
+}
+
+// generateClassLiteral generates code for a class literal expression.
+// This is called when a class is used as an expression (e.g., for method calls on temporaries).
+func (g *TypedCodeGenerator) generateClassLiteral(expr *semantic.TypedClassLiteralExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Calculate total slots needed
+	totalSlots := g.countClassSlots(expr.Type)
+
+	// Allocate temporary stack space
+	baseOffset := ctx.stackOffset + StackAlignment
+	ctx.stackOffset = baseOffset + (totalSlots-1)*StackAlignment
+
+	// Generate and store all fields
+	code, err := g.generateClassFieldsInline(expr, baseOffset, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(code)
+
+	// Store the stack address of the class instance in x2 for use by method calls
+	// Calculate address: x29 - baseOffset
+	builder.WriteString(fmt.Sprintf("    sub x2, x29, #%d\n", baseOffset))
+
+	return builder.String(), nil
 }
 
 // generateFieldAccess generates code for accessing a struct field (e.g., p.x)
@@ -2359,6 +2847,12 @@ func (g *TypedCodeGenerator) generateFieldAccess(expr *semantic.TypedFieldAccess
 		return g.generateFieldAccessThroughRefPointer(expr, ctx)
 	}
 
+	// Check if this is a nested field access through a reference pointer (e.g., self.topLeft.x)
+	// This happens when expr.Object is a TypedFieldAccessExpr that ultimately derives from a pointer
+	if rootPtr, fields := g.getFieldAccessChainThroughPointer(expr); rootPtr != nil {
+		return g.generateChainedFieldAccess(rootPtr, fields, expr.Type, ctx)
+	}
+
 	// Static case: struct at known stack location
 	fieldOffset, err := g.getFieldOffset(expr.Object, expr.Field, ctx)
 	if err != nil {
@@ -2390,16 +2884,20 @@ func (g *TypedCodeGenerator) generateFieldAccess(expr *semantic.TypedFieldAccess
 func (g *TypedCodeGenerator) generateFieldAccessThroughOwnedPointer(expr *semantic.TypedFieldAccessExpr, ctx *BaseContext) (string, error) {
 	builder := strings.Builder{}
 
-	// Get the struct type from the owned pointer
+	// Get the struct/class type from the owned pointer
 	ownedType := expr.Object.GetType().(semantic.OwnedPointerType)
-	structType, ok := ownedType.ElementType.(semantic.StructType)
-	if !ok {
-		return "", fmt.Errorf("field access through owned pointer requires struct type, got %s", ownedType.ElementType.String())
+	var fields []semantic.StructFieldInfo
+	if structType, ok := ownedType.ElementType.(semantic.StructType); ok {
+		fields = structType.Fields
+	} else if classType, ok := ownedType.ElementType.(semantic.ClassType); ok {
+		fields = classType.Fields
+	} else {
+		return "", fmt.Errorf("field access through owned pointer requires struct or class type, got %s", ownedType.ElementType.String())
 	}
 
-	// Calculate the field byte offset within the struct (on heap, each field is 8 bytes)
+	// Calculate the field byte offset within the struct/class (on heap, each field is 8 bytes)
 	fieldByteOffset := 0
-	for _, field := range structType.Fields {
+	for _, field := range fields {
 		if field.Name == expr.Field {
 			break
 		}
@@ -2449,14 +2947,19 @@ func (g *TypedCodeGenerator) generateFieldAccessThroughRefPointer(expr *semantic
 		return "", fmt.Errorf("expected Ref<T> or MutRef<T>, got %s", objectType.String())
 	}
 
-	structType, ok := elementType.(semantic.StructType)
-	if !ok {
-		return "", fmt.Errorf("field access through ref pointer requires struct type, got %s", elementType.String())
+	// Get fields from either StructType or ClassType
+	var fields []semantic.StructFieldInfo
+	if structType, ok := elementType.(semantic.StructType); ok {
+		fields = structType.Fields
+	} else if classType, ok := elementType.(semantic.ClassType); ok {
+		fields = classType.Fields
+	} else {
+		return "", fmt.Errorf("field access through ref pointer requires struct or class type, got %s", elementType.String())
 	}
 
-	// Calculate the field byte offset within the struct (on heap, each field is 8 bytes)
+	// Calculate the field byte offset within the struct/class (on heap, each field is 8 bytes)
 	fieldByteOffset := 0
-	for _, field := range structType.Fields {
+	for _, field := range fields {
 		if field.Name == expr.Field {
 			break
 		}
@@ -2483,6 +2986,130 @@ func (g *TypedCodeGenerator) generateFieldAccessThroughRefPointer(expr *semantic
 			builder.WriteString("    ldr x2, [x2]\n")
 		} else {
 			builder.WriteString(fmt.Sprintf("    ldr x2, [x2, #%d]\n", fieldByteOffset))
+		}
+	}
+
+	return builder.String(), nil
+}
+
+// getFieldAccessChainThroughPointer checks if a field access expression is part of a chain
+// that ultimately accesses fields through a reference pointer (e.g., self.topLeft.x).
+// Returns the root pointer expression and the list of field names in the chain, or nil if not applicable.
+func (g *TypedCodeGenerator) getFieldAccessChainThroughPointer(expr *semantic.TypedFieldAccessExpr) (semantic.TypedExpression, []string) {
+	var fields []string
+	fields = append(fields, expr.Field)
+
+	current := expr.Object
+	for {
+		switch obj := current.(type) {
+		case *semantic.TypedFieldAccessExpr:
+			// Add field to the chain and continue up
+			fields = append([]string{obj.Field}, fields...)
+			current = obj.Object
+
+		case *semantic.TypedSelfExpr:
+			// Found self - this is a pointer type
+			return obj, fields
+
+		case *semantic.TypedIdentifierExpr:
+			// Check if this identifier is a reference pointer
+			if semantic.IsAnyRefPointer(obj.Type) || semantic.IsOwnedPointer(obj.Type) {
+				return obj, fields
+			}
+			// Not a pointer, return nil to fall back to static access
+			return nil, nil
+
+		default:
+			// Unknown object type, return nil
+			return nil, nil
+		}
+	}
+}
+
+// generateChainedFieldAccess generates code for accessing nested fields through a pointer.
+// rootPtr is the pointer expression (e.g., self or a pointer variable)
+// fields is the list of field names to access (e.g., ["topLeft", "x"])
+func (g *TypedCodeGenerator) generateChainedFieldAccess(rootPtr semantic.TypedExpression, fields []string, resultType semantic.Type, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Generate code to load the root pointer into x2
+	rootCode, err := g.generateExpr(rootPtr, ctx)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString(rootCode)
+
+	// Get the type of the struct/class pointed to by the root
+	rootType := rootPtr.GetType()
+	var currentFields []semantic.StructFieldInfo
+
+	switch rt := rootType.(type) {
+	case semantic.RefPointerType:
+		if st, ok := rt.ElementType.(semantic.StructType); ok {
+			currentFields = st.Fields
+		} else if ct, ok := rt.ElementType.(semantic.ClassType); ok {
+			currentFields = ct.Fields
+		}
+	case semantic.MutRefPointerType:
+		if st, ok := rt.ElementType.(semantic.StructType); ok {
+			currentFields = st.Fields
+		} else if ct, ok := rt.ElementType.(semantic.ClassType); ok {
+			currentFields = ct.Fields
+		}
+	case semantic.OwnedPointerType:
+		if st, ok := rt.ElementType.(semantic.StructType); ok {
+			currentFields = st.Fields
+		} else if ct, ok := rt.ElementType.(semantic.ClassType); ok {
+			currentFields = ct.Fields
+		}
+	default:
+		return "", fmt.Errorf("expected pointer type for chained field access, got %s", rootType.String())
+	}
+
+	// Calculate the combined offset for all fields in the chain
+	totalOffset := 0
+	for i, fieldName := range fields {
+		found := false
+		offset := 0
+		var nextFields []semantic.StructFieldInfo
+
+		for _, f := range currentFields {
+			if f.Name == fieldName {
+				found = true
+				// For the last field, we're done
+				// For intermediate fields, get the nested struct's fields
+				if i < len(fields)-1 {
+					if st, ok := f.Type.(semantic.StructType); ok {
+						nextFields = st.Fields
+					} else if ct, ok := f.Type.(semantic.ClassType); ok {
+						nextFields = ct.Fields
+					}
+				}
+				break
+			}
+			offset += 8 // Each field is 8-byte aligned on heap
+		}
+
+		if !found {
+			return "", fmt.Errorf("field '%s' not found in struct", fieldName)
+		}
+
+		totalOffset += offset
+		currentFields = nextFields
+	}
+
+	// Load the field value from [x2 + totalOffset]
+	if semantic.IsFloatType(resultType) {
+		if totalOffset == 0 {
+			builder.WriteString("    ldr d0, [x2]\n")
+		} else {
+			builder.WriteString(fmt.Sprintf("    ldr d0, [x2, #%d]\n", totalOffset))
+		}
+	} else {
+		if totalOffset == 0 {
+			builder.WriteString("    ldr x2, [x2]\n")
+		} else {
+			builder.WriteString(fmt.Sprintf("    ldr x2, [x2, #%d]\n", totalOffset))
 		}
 	}
 
@@ -3002,9 +3629,12 @@ func (g *TypedCodeGenerator) generateWhenCaseBody(body semantic.TypedStatement, 
 // ============================================================================
 
 // generateMethodCallExpr generates code for method call expressions.
-// Currently supports:
+// Supports:
 // - Heap.new(expr) - allocates memory on the heap and returns Own<T>
 // - p.copy() - creates a deep copy of an owned pointer (Phase 9)
+// - ClassName.method(args) - static method call on a class
+// - ObjectName.method(args) - method call on a singleton object
+// - instance.method(args) - instance method call on a class instance
 func (g *TypedCodeGenerator) generateMethodCallExpr(expr *semantic.TypedMethodCallExpr, ctx *BaseContext) (string, error) {
 	// Check if this is a Heap.new() call
 	if ident, ok := expr.Object.(*semantic.TypedIdentifierExpr); ok {
@@ -3015,10 +3645,355 @@ func (g *TypedCodeGenerator) generateMethodCallExpr(expr *semantic.TypedMethodCa
 
 	// Check if this is a .copy() call on an owned pointer
 	if expr.Method == "copy" {
-		return g.generateCopy(expr, ctx)
+		objectType := expr.Object.GetType()
+		if _, isOwned := objectType.(semantic.OwnedPointerType); isOwned {
+			return g.generateCopy(expr, ctx)
+		}
+	}
+
+	// Check if this is a static method call on a class or object
+	if ident, ok := expr.Object.(*semantic.TypedIdentifierExpr); ok {
+		// Check if this identifier is a variable in scope (instance method call)
+		// vs. a class/object type name (static method call)
+		_, isVariable := ctx.GetVariable(ident.Name)
+		if !isVariable {
+			// Not a variable - this is a static method call on the class/object type
+			switch t := ident.Type.(type) {
+			case semantic.ClassType:
+				return g.generateClassStaticMethodCall(t.Name, expr, ctx)
+			case semantic.ObjectType:
+				return g.generateObjectMethodCall(t.Name, expr, ctx)
+			}
+		}
+		// If it's a variable, fall through to instance method call below
+	}
+
+	// Check if this is an instance method call
+	objectType := expr.Object.GetType()
+	if className := g.getClassNameFromType(objectType); className != "" {
+		return g.generateClassInstanceMethodCall(className, expr, ctx)
 	}
 
 	return "", fmt.Errorf("unsupported method call: %s.%s", expr.Object.GetType().String(), expr.Method)
+}
+
+// getClassNameFromType extracts the class name from a type that contains a ClassType.
+// Returns empty string if the type is not a class or pointer to class.
+// Also handles nullable types by unwrapping them first.
+func (g *TypedCodeGenerator) getClassNameFromType(t semantic.Type) string {
+	// Handle nullable types by unwrapping them
+	if nullableType, ok := t.(semantic.NullableType); ok {
+		t = nullableType.InnerType
+	}
+
+	switch typ := t.(type) {
+	case semantic.ClassType:
+		return typ.Name
+	case semantic.OwnedPointerType:
+		if ct, ok := typ.ElementType.(semantic.ClassType); ok {
+			return ct.Name
+		}
+	case semantic.RefPointerType:
+		if ct, ok := typ.ElementType.(semantic.ClassType); ok {
+			return ct.Name
+		}
+	case semantic.MutRefPointerType:
+		if ct, ok := typ.ElementType.(semantic.ClassType); ok {
+			return ct.Name
+		}
+	}
+	return ""
+}
+
+// generateClassStaticMethodCall generates code for a static method call on a class.
+// Static methods don't have a receiver, so arguments go directly to x0, x1, ...
+func (g *TypedCodeGenerator) generateClassStaticMethodCall(className string, expr *semantic.TypedMethodCallExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Evaluate arguments and place in registers x0, x1, x2, ...
+	for i, arg := range expr.Arguments {
+		argCode, err := g.generateExpr(arg, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(argCode)
+		// Result is in x2, move to argument register
+		builder.WriteString(fmt.Sprintf("    mov x%d, x2\n", i))
+	}
+
+	// Call the method - use ResolvedMethod for overload disambiguation
+	var mangledName string
+	if expr.ResolvedMethod != nil {
+		mangledName = mangleMethodNameWithInfo(className, expr.ResolvedMethod)
+	} else {
+		mangledName = mangleMethodName(className, expr.Method)
+	}
+	builder.WriteString(fmt.Sprintf("    bl _%s\n", mangledName))
+
+	// Handle nullable return types: method returns x0 = tag, x1 = value
+	// For nullable returns, move value from x1 to x2 and tag from x0 to x3
+	if semantic.IsNullable(expr.Type) && !semantic.IsReferenceType(expr.Type.(semantic.NullableType).InnerType) {
+		EmitMoveReg(&builder, "x2", "x1")
+		EmitMoveReg(&builder, "x3", "x0")
+	} else {
+		// Non-nullable or reference-type nullable: just move x0 to x2
+		builder.WriteString("    mov x2, x0\n")
+	}
+
+	return builder.String(), nil
+}
+
+// generateMethodCallWithDestination generates a method call where x8 already contains
+// the destination address for a class return value. This is used when the caller has
+// pre-allocated space for the return value.
+func (g *TypedCodeGenerator) generateMethodCallWithDestination(expr *semantic.TypedMethodCallExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// Check if this is a static method call on a class
+	if ident, ok := expr.Object.(*semantic.TypedIdentifierExpr); ok {
+		_, isVariable := ctx.GetVariable(ident.Name)
+		if !isVariable {
+			if classType, isClass := ident.Type.(semantic.ClassType); isClass {
+				// Static method call - evaluate arguments and place in registers
+				for i, arg := range expr.Arguments {
+					argCode, err := g.generateExpr(arg, ctx)
+					if err != nil {
+						return "", err
+					}
+					builder.WriteString(argCode)
+					builder.WriteString(fmt.Sprintf("    mov x%d, x2\n", i))
+				}
+
+				// Call the method (x8 is already set by caller)
+				var mangledName string
+				if expr.ResolvedMethod != nil {
+					mangledName = mangleMethodNameWithInfo(classType.Name, expr.ResolvedMethod)
+				} else {
+					mangledName = mangleMethodName(classType.Name, expr.Method)
+				}
+				builder.WriteString(fmt.Sprintf("    bl _%s\n", mangledName))
+
+				return builder.String(), nil
+			}
+		}
+	}
+
+	// Instance method call
+	className := g.getClassNameFromType(expr.Object.GetType())
+	if className == "" {
+		return "", fmt.Errorf("cannot determine class name for method call")
+	}
+
+	// Save arguments to stack first
+	argCount := len(expr.Arguments)
+	if argCount > 0 {
+		builder.WriteString(fmt.Sprintf("    sub sp, sp, #%d\n", argCount*16))
+		for i, arg := range expr.Arguments {
+			argCode, err := g.generateExpr(arg, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(argCode)
+			builder.WriteString(fmt.Sprintf("    str x2, [sp, #%d]\n", i*16))
+		}
+	}
+
+	// Evaluate receiver - for stack-allocated class, compute address
+	if ident, isIdent := expr.Object.(*semantic.TypedIdentifierExpr); isIdent {
+		if _, isClass := ident.Type.(semantic.ClassType); isClass {
+			slot, ok := ctx.GetVariable(ident.Name)
+			if !ok {
+				return "", fmt.Errorf("undefined variable: %s", ident.Name)
+			}
+			builder.WriteString(fmt.Sprintf("    sub x2, x29, #%d\n", slot.Offset))
+		} else {
+			receiverCode, err := g.generateExpr(expr.Object, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(receiverCode)
+		}
+	} else {
+		receiverCode, err := g.generateExpr(expr.Object, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(receiverCode)
+	}
+
+	// Move receiver to x0
+	builder.WriteString("    mov x0, x2\n")
+
+	// Restore arguments from stack
+	if argCount > 0 {
+		for i := 0; i < argCount; i++ {
+			builder.WriteString(fmt.Sprintf("    ldr x%d, [sp, #%d]\n", i+1, i*16))
+		}
+		builder.WriteString(fmt.Sprintf("    add sp, sp, #%d\n", argCount*16))
+	}
+
+	// Call the method (x8 is already set by caller)
+	var mangledName string
+	if expr.ResolvedMethod != nil {
+		mangledName = mangleMethodNameWithInfo(className, expr.ResolvedMethod)
+	} else {
+		mangledName = mangleMethodName(className, expr.Method)
+	}
+	builder.WriteString(fmt.Sprintf("    bl _%s\n", mangledName))
+
+	return builder.String(), nil
+}
+
+// generateObjectMethodCall generates code for a method call on a singleton object.
+// Object methods are always static, so they work the same as class static methods.
+func (g *TypedCodeGenerator) generateObjectMethodCall(objectName string, expr *semantic.TypedMethodCallExpr, ctx *BaseContext) (string, error) {
+	// Object methods work exactly like class static methods
+	return g.generateClassStaticMethodCall(objectName, expr, ctx)
+}
+
+// generateClassInstanceMethodCall generates code for an instance method call.
+// Instance methods have 'self' as the first argument (in x0), other args in x1, x2, ...
+// Supports safe navigation (?.method()) where receiver is nullable.
+func (g *TypedCodeGenerator) generateClassInstanceMethodCall(className string, expr *semantic.TypedMethodCallExpr, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	// For safe navigation, we need labels for null checking
+	var nullLabel, doneLabel string
+	if expr.SafeNavigation {
+		nullLabel = ctx.NextLabel("safe_null")
+		doneLabel = ctx.NextLabel("safe_done")
+	}
+
+	// First, evaluate all arguments and save them to the stack
+	// We need to do this before evaluating the receiver since both may use x2
+	argCount := len(expr.Arguments)
+	if argCount > 0 {
+		// Pre-allocate stack space for arguments
+		builder.WriteString(fmt.Sprintf("    sub sp, sp, #%d\n", argCount*16))
+		for i, arg := range expr.Arguments {
+			argCode, err := g.generateExpr(arg, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(argCode)
+			// Save argument to pre-allocated stack slot
+			builder.WriteString(fmt.Sprintf("    str x2, [sp, #%d]\n", i*16))
+		}
+	}
+
+	// Evaluate the receiver (instance) - result in x2
+	// For stack-allocated class/struct variables, we need the address, not the value
+	if ident, isIdent := expr.Object.(*semantic.TypedIdentifierExpr); isIdent {
+		if _, isClass := ident.Type.(semantic.ClassType); isClass {
+			// Stack-allocated class: compute address
+			slot, ok := ctx.GetVariable(ident.Name)
+			if !ok {
+				return "", fmt.Errorf("undefined variable: %s", ident.Name)
+			}
+			builder.WriteString(fmt.Sprintf("    sub x2, x29, #%d\n", slot.Offset))
+		} else if _, isStruct := ident.Type.(semantic.StructType); isStruct {
+			// Stack-allocated struct: compute address
+			slot, ok := ctx.GetVariable(ident.Name)
+			if !ok {
+				return "", fmt.Errorf("undefined variable: %s", ident.Name)
+			}
+			builder.WriteString(fmt.Sprintf("    sub x2, x29, #%d\n", slot.Offset))
+		} else {
+			// Pointer type (heap-allocated): load the pointer value
+			receiverCode, err := g.generateExpr(expr.Object, ctx)
+			if err != nil {
+				return "", err
+			}
+			builder.WriteString(receiverCode)
+		}
+	} else if classLit, isClassLit := expr.Object.(*semantic.TypedClassLiteralExpr); isClassLit {
+		// Class literal as receiver (e.g., Point{ 3, 4 }.method())
+		// generateClassLiteral allocates stack space and puts address in x2
+		receiverCode, err := g.generateClassLiteral(classLit, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(receiverCode)
+	} else {
+		// Other expressions (e.g., pointer dereference, field access)
+		receiverCode, err := g.generateExpr(expr.Object, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(receiverCode)
+	}
+
+	// For safe navigation, check if receiver is null before proceeding
+	if expr.SafeNavigation {
+		// x2 contains the receiver (pointer). If null (0), skip the call
+		builder.WriteString(fmt.Sprintf("    cbz x2, %s\n", nullLabel))
+	}
+
+	// Move receiver to x0 (first argument for instance methods)
+	builder.WriteString("    mov x0, x2\n")
+
+	// Restore arguments from stack to registers x1, x2, ...
+	if argCount > 0 {
+		for i := 0; i < argCount; i++ {
+			builder.WriteString(fmt.Sprintf("    ldr x%d, [sp, #%d]\n", i+1, i*16))
+		}
+		// Restore stack pointer
+		builder.WriteString(fmt.Sprintf("    add sp, sp, #%d\n", argCount*16))
+	}
+
+	// Call the method - use ResolvedMethod for overload disambiguation
+	var mangledName string
+	if expr.ResolvedMethod != nil {
+		mangledName = mangleMethodNameWithInfo(className, expr.ResolvedMethod)
+	} else {
+		mangledName = mangleMethodName(className, expr.Method)
+	}
+	builder.WriteString(fmt.Sprintf("    bl _%s\n", mangledName))
+
+	// Handle nullable return types: method returns x0 = tag, x1 = value
+	// For nullable returns, move value from x1 to x2 and tag from x0 to x3
+	methodReturnsNullable := semantic.IsNullable(expr.Type) && !semantic.IsReferenceType(expr.Type.(semantic.NullableType).InnerType)
+	if methodReturnsNullable && !expr.SafeNavigation {
+		// Method itself returns nullable (not via safe navigation)
+		EmitMoveReg(&builder, "x2", "x1")
+		EmitMoveReg(&builder, "x3", "x0")
+	} else {
+		// Non-nullable or safe navigation handles it below
+		builder.WriteString("    mov x2, x0\n")
+	}
+
+	// For safe navigation, jump over the null path
+	if expr.SafeNavigation {
+		// Check if result is a primitive nullable (needs tag in x3)
+		resultIsPrimitiveNullable := false
+		if nullableResult, ok := expr.Type.(semantic.NullableType); ok {
+			resultIsPrimitiveNullable = !semantic.IsReferenceType(nullableResult.InnerType)
+		}
+
+		// Non-null path: set tag to 1 if result is primitive nullable
+		if resultIsPrimitiveNullable {
+			EmitMoveImm(&builder, "x3", "1")
+		}
+		builder.WriteString(fmt.Sprintf("    b %s\n", doneLabel))
+
+		// Null path: receiver was null, so result is null (0)
+		builder.WriteString(fmt.Sprintf("%s:\n", nullLabel))
+		// If we pre-allocated stack space for args, we need to clean it up
+		if argCount > 0 {
+			builder.WriteString(fmt.Sprintf("    add sp, sp, #%d\n", argCount*16))
+		}
+		// Set result to null (0)
+		EmitMoveImm(&builder, "x2", "0")
+		// Set tag to 0 if result is primitive nullable
+		if resultIsPrimitiveNullable {
+			EmitMoveImm(&builder, "x3", "0")
+		}
+
+		// Done label
+		builder.WriteString(fmt.Sprintf("%s:\n", doneLabel))
+	}
+
+	return builder.String(), nil
 }
 
 // generateHeapNew generates code for Heap.new(expr).
@@ -3040,6 +4015,11 @@ func (g *TypedCodeGenerator) generateHeapNew(expr *semantic.TypedMethodCallExpr,
 	// For struct types, we need to handle them specially
 	if structType, isStruct := argType.(semantic.StructType); isStruct {
 		return g.generateHeapNewStruct(expr, structType, allocSize, ctx)
+	}
+
+	// For class types, handle them similarly to structs
+	if classType, isClass := argType.(semantic.ClassType); isClass {
+		return g.generateHeapNewClass(expr, classType, allocSize, ctx)
 	}
 
 	// For primitive types: generate value, allocate, store, return pointer
@@ -3139,12 +4119,78 @@ func (g *TypedCodeGenerator) generateHeapNewStruct(expr *semantic.TypedMethodCal
 	return builder.String(), nil
 }
 
+// generateHeapNewClass generates code for Heap.new(ClassLiteral).
+// Allocates memory for the class instance and stores all fields.
+func (g *TypedCodeGenerator) generateHeapNewClass(expr *semantic.TypedMethodCallExpr, classType semantic.ClassType, allocSize int, ctx *BaseContext) (string, error) {
+	builder := strings.Builder{}
+
+	arg := expr.Arguments[0]
+	classLit, ok := arg.(*semantic.TypedClassLiteralExpr)
+	if !ok {
+		return "", fmt.Errorf("Heap.new() with class type requires class literal, got %T", arg)
+	}
+
+	// Step 1: Call mmap to allocate memory first
+	builder.WriteString(g.emitMmapAlloc(allocSize))
+
+	// x0 now contains the allocated pointer
+	// Save it to a callee-saved register or stack
+	builder.WriteString("    str x0, [sp, #-16]!\n") // save pointer
+
+	// Step 2: Generate and store each field
+	currentOffset := 0
+	for i, fieldArg := range classLit.Args {
+		fieldType := classType.Fields[i].Type
+
+		// Check if this field is an owned pointer being moved into the class
+		// If so, mark it as moved so it won't be freed at scope exit
+		if ident, isIdent := fieldArg.(*semantic.TypedIdentifierExpr); isIdent {
+			if semantic.IsOwnedPointer(ident.Type) || semantic.IsNullableOwnedPointer(ident.Type) {
+				ctx.MarkOwnedVarMoved(ident.Name)
+			}
+		}
+
+		// Generate the field value
+		fieldCode, err := g.generateExpr(fieldArg, ctx)
+		if err != nil {
+			return "", err
+		}
+		builder.WriteString(fieldCode)
+
+		// Load the base pointer back (it might have been clobbered)
+		builder.WriteString("    ldr x4, [sp]\n")
+
+		// Store the field value at the correct offset
+		if semantic.IsFloatType(fieldType) {
+			builder.WriteString(fmt.Sprintf("    str d0, [x4, #%d]\n", currentOffset))
+			currentOffset += 8
+		} else {
+			builder.WriteString(fmt.Sprintf("    str x2, [x4, #%d]\n", currentOffset))
+			currentOffset += 8 // All fields are 8-byte aligned on heap
+		}
+	}
+
+	// Step 3: Restore the pointer and return it in x2
+	builder.WriteString("    ldr x2, [sp], #16\n")
+
+	return builder.String(), nil
+}
+
 // calculateHeapAllocSize returns the number of bytes to allocate for a type on the heap.
 // For structs, each field uses 8 bytes (pointer-aligned).
 // Minimum allocation is 16 bytes for page alignment purposes.
 func (g *TypedCodeGenerator) calculateHeapAllocSize(t semantic.Type) int {
 	switch tt := t.(type) {
 	case semantic.StructType:
+		// Each field is 8 bytes on heap (pointer-aligned)
+		size := len(tt.Fields) * 8
+		// Minimum allocation size
+		if size < 16 {
+			return 16
+		}
+		// Round up to 16-byte alignment
+		return (size + 15) & ^15
+	case semantic.ClassType:
 		// Each field is 8 bytes on heap (pointer-aligned)
 		size := len(tt.Fields) * 8
 		// Minimum allocation size

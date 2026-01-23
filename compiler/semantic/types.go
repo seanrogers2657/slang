@@ -205,6 +205,50 @@ type StructFieldInfo struct {
 	Index   int    // field index (position in struct)
 }
 
+// ============================================================================
+// Shared field/method helpers for StructType, ClassType, and ObjectType
+// ============================================================================
+
+// getFieldFromList finds a field by name in a slice of StructFieldInfo.
+// Returns the field info and true if found, or empty info and false if not found.
+func getFieldFromList(fields []StructFieldInfo, name string) (StructFieldInfo, bool) {
+	for _, f := range fields {
+		if f.Name == name {
+			return f, true
+		}
+	}
+	return StructFieldInfo{}, false
+}
+
+// fieldOffsetFromList returns the byte offset of a field from the start of the struct/class.
+// Each field is 8 bytes (aligned). Returns -1 if field not found.
+func fieldOffsetFromList(fields []StructFieldInfo, name string) int {
+	offset := 0
+	for _, f := range fields {
+		if f.Name == name {
+			return offset
+		}
+		offset += 8 // all fields are 8-byte aligned
+	}
+	return -1 // field not found
+}
+
+// sizeFromFields returns the total size in bytes for a list of fields.
+func sizeFromFields(fields []StructFieldInfo) int {
+	total := 0
+	for _, field := range fields {
+		total += TypeByteSize(field.Type)
+	}
+	return total
+}
+
+// getMethodFromMap finds method overloads by name in a method map.
+// Returns the method list and true if found, or nil and false if not found.
+func getMethodFromMap(methods map[string][]*MethodInfo, name string) ([]*MethodInfo, bool) {
+	m, ok := methods[name]
+	return m, ok
+}
+
 // StructType represents a struct type with named fields
 type StructType struct {
 	Name   string            // struct name
@@ -226,34 +270,92 @@ func (t StructType) Equals(other Type) bool {
 
 // GetField returns field info by name
 func (t StructType) GetField(name string) (StructFieldInfo, bool) {
-	for _, f := range t.Fields {
-		if f.Name == name {
-			return f, true
-		}
-	}
-	return StructFieldInfo{}, false
+	return getFieldFromList(t.Fields, name)
 }
 
 // FieldOffset returns the byte offset of a field from the struct start
 // Each field is 8 bytes (aligned)
 func (t StructType) FieldOffset(name string) int {
-	offset := 0
-	for _, f := range t.Fields {
-		if f.Name == name {
-			return offset
-		}
-		offset += 8 // all fields are 8-byte aligned
-	}
-	return -1 // field not found
+	return fieldOffsetFromList(t.Fields, name)
 }
 
 // Size returns the total size of the struct in bytes
 func (t StructType) Size() int {
-	total := 0
-	for _, field := range t.Fields {
-		total += TypeByteSize(field.Type)
+	return sizeFromFields(t.Fields)
+}
+
+// MethodInfo holds information about a method in a class
+type MethodInfo struct {
+	Name       string // method name
+	ParamTypes []Type // parameter types (includes self type for instance methods)
+	ParamNames []string // parameter names (includes "self" for instance methods)
+	ReturnType Type   // return type (VoidType for void methods)
+	IsStatic   bool   // true if first param is not 'self'
+}
+
+// ClassType represents a class type with fields and methods
+type ClassType struct {
+	Name    string                     // class name
+	Fields  []StructFieldInfo          // list of fields (reuses struct field info)
+	Methods map[string][]*MethodInfo   // methods by name (slice for overloading support)
+}
+
+func (t ClassType) String() string {
+	return t.Name
+}
+
+func (t ClassType) Equals(other Type) bool {
+	o, ok := other.(ClassType)
+	if !ok {
+		return false
 	}
-	return total
+	// Nominal type equality - classes are equal if they have the same name
+	return t.Name == o.Name
+}
+
+// GetField returns field info by name
+func (t ClassType) GetField(name string) (StructFieldInfo, bool) {
+	return getFieldFromList(t.Fields, name)
+}
+
+// GetMethod returns all overloads for a method by name
+func (t ClassType) GetMethod(name string) ([]*MethodInfo, bool) {
+	return getMethodFromMap(t.Methods, name)
+}
+
+// FieldOffset returns the byte offset of a field from the class start
+// Each field is 8 bytes (aligned)
+func (t ClassType) FieldOffset(name string) int {
+	return fieldOffsetFromList(t.Fields, name)
+}
+
+// Size returns the total size of the class instance in bytes
+func (t ClassType) Size() int {
+	return sizeFromFields(t.Fields)
+}
+
+// ObjectType represents a singleton object type (static methods only, no fields)
+type ObjectType struct {
+	Name    string                   // object name
+	Methods map[string][]*MethodInfo // methods by name (all must be static)
+}
+
+func (t ObjectType) String() string {
+	return t.Name
+}
+
+func (t ObjectType) Equals(other Type) bool {
+	o, ok := other.(ObjectType)
+	if !ok {
+		return false
+	}
+	// Nominal type equality - objects are equal if they have the same name
+	return t.Name == o.Name
+}
+
+// GetMethod returns all overloads for a method by name
+func (t ObjectType) GetMethod(name string) ([]*MethodInfo, bool) {
+	return getMethodFromMap(t.Methods, name)
 }
 
 // ArraySizeUnknown indicates that an array's size is not yet known.
@@ -415,11 +517,11 @@ func UnwrapNullable(t Type) (Type, bool) {
 	return t, false
 }
 
-// IsReferenceType checks if a type is a reference type (struct, string, pointer).
+// IsReferenceType checks if a type is a reference type (struct, class, string, pointer).
 // Reference types use 8-byte nullable pointers; primitives use 16-byte tagged unions.
 func IsReferenceType(t Type) bool {
 	switch t.(type) {
-	case StructType, StringType, OwnedPointerType, RefPointerType, MutRefPointerType:
+	case StructType, ClassType, StringType, OwnedPointerType, RefPointerType, MutRefPointerType:
 		return true
 	default:
 		return false
@@ -497,6 +599,56 @@ func UnwrapAnyRefPointer(t Type) (Type, bool, bool) {
 	return t, false, false
 }
 
+// IsClassType checks if a type is a class type
+func IsClassType(t Type) bool {
+	_, ok := t.(ClassType)
+	return ok
+}
+
+// IsObjectType checks if a type is an object type (singleton)
+func IsObjectType(t Type) bool {
+	_, ok := t.(ObjectType)
+	return ok
+}
+
+// UnwrapClassFromPointer extracts the ClassType from any pointer type.
+// Returns (classType, true) if the pointer's element is a class, (ClassType{}, false) otherwise.
+func UnwrapClassFromPointer(t Type) (ClassType, bool) {
+	var elementType Type
+
+	switch pt := t.(type) {
+	case OwnedPointerType:
+		elementType = pt.ElementType
+	case RefPointerType:
+		elementType = pt.ElementType
+	case MutRefPointerType:
+		elementType = pt.ElementType
+	default:
+		return ClassType{}, false
+	}
+
+	if ct, ok := elementType.(ClassType); ok {
+		return ct, true
+	}
+	return ClassType{}, false
+}
+
+// GetUnderlyingType extracts the underlying type from pointer wrappers.
+// For *T, &T, &&T: returns T
+// For other types: returns the type itself
+func GetUnderlyingType(t Type) Type {
+	switch pt := t.(type) {
+	case OwnedPointerType:
+		return pt.ElementType
+	case RefPointerType:
+		return pt.ElementType
+	case MutRefPointerType:
+		return pt.ElementType
+	default:
+		return t
+	}
+}
+
 // IsAssignableTo checks if the source type can be assigned to the target type.
 // This includes exact equality plus:
 // - T -> T? coercion (non-nullable to nullable)
@@ -557,6 +709,8 @@ func TypeByteSize(t Type) int {
 	case NullableType:
 		return NullableSize(tt.InnerType)
 	case StructType:
+		return tt.Size()
+	case ClassType:
 		return tt.Size()
 	case ArrayType:
 		return tt.TotalSize()

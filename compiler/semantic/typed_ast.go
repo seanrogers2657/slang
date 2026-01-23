@@ -142,6 +142,20 @@ func (e *TypedStructLiteralExpr) End() ast.Position { return e.RightBrace }
 func (e *TypedStructLiteralExpr) GetType() Type     { return e.Type }
 func (e *TypedStructLiteralExpr) typedExprNode()    {}
 
+// TypedClassLiteralExpr represents a typed class literal (construction)
+type TypedClassLiteralExpr struct {
+	Type       ClassType         // the class type being constructed
+	TypePos    ast.Position      // position of class name
+	LeftBrace  ast.Position      // position of '{'
+	Args       []TypedExpression // typed argument expressions (in field order)
+	RightBrace ast.Position      // position of '}'
+}
+
+func (e *TypedClassLiteralExpr) Pos() ast.Position { return e.TypePos }
+func (e *TypedClassLiteralExpr) End() ast.Position { return e.RightBrace }
+func (e *TypedClassLiteralExpr) GetType() Type     { return e.Type }
+func (e *TypedClassLiteralExpr) typedExprNode()    {}
+
 // TypedArrayLiteralExpr represents a typed array literal (e.g., [1, 2, 3])
 type TypedArrayLiteralExpr struct {
 	Type         ArrayType         // the array type (with size and element type)
@@ -187,20 +201,33 @@ func (e *TypedLenExpr) typedExprNode()    {}
 
 // TypedMethodCallExpr represents a typed method call (e.g., Heap.new(x), p.copy())
 type TypedMethodCallExpr struct {
-	Type       Type              // the return type of the method
-	Object     TypedExpression   // the receiver expression (e.g., Heap, p)
-	Dot        ast.Position      // position of '.'
-	Method     string            // method name (e.g., "new", "copy")
-	MethodPos  ast.Position      // position of method name
-	LeftParen  ast.Position      // position of '('
-	Arguments  []TypedExpression // typed argument expressions
-	RightParen ast.Position      // position of ')'
+	Type           Type              // the return type of the method
+	Object         TypedExpression   // the receiver expression (e.g., Heap, p)
+	Dot            ast.Position      // position of '.' or '?.'
+	Method         string            // method name (e.g., "new", "copy")
+	MethodPos      ast.Position      // position of method name
+	LeftParen      ast.Position      // position of '('
+	Arguments      []TypedExpression // typed argument expressions
+	RightParen     ast.Position      // position of ')'
+	ResolvedMethod *MethodInfo       // the resolved method (for overload resolution)
+	SafeNavigation bool              // true for ?.method() (safe navigation on nullable)
 }
 
 func (e *TypedMethodCallExpr) Pos() ast.Position { return e.Object.Pos() }
 func (e *TypedMethodCallExpr) End() ast.Position { return e.RightParen }
 func (e *TypedMethodCallExpr) GetType() Type     { return e.Type }
 func (e *TypedMethodCallExpr) typedExprNode()    {}
+
+// TypedSelfExpr represents a typed 'self' expression within a method body
+type TypedSelfExpr struct {
+	Type    Type         // the type of self (e.g., &Point, &&Point, *Point)
+	SelfPos ast.Position // position of 'self' keyword
+}
+
+func (e *TypedSelfExpr) Pos() ast.Position { return e.SelfPos }
+func (e *TypedSelfExpr) End() ast.Position { return ast.Position{Line: e.SelfPos.Line, Column: e.SelfPos.Column + 4} }
+func (e *TypedSelfExpr) GetType() Type     { return e.Type }
+func (e *TypedSelfExpr) typedExprNode()    {}
 
 // ============================================================================
 // Typed Statements
@@ -474,6 +501,61 @@ func (d *TypedStructDecl) Pos() ast.Position { return d.NamePos }
 func (d *TypedStructDecl) End() ast.Position { return d.RightBrace }
 func (d *TypedStructDecl) GetType() Type     { return d.StructType }
 func (d *TypedStructDecl) typedDeclNode()    {}
+
+// TypedClassDecl represents a typed class declaration
+// Syntax: Name = class { fields, methods }
+type TypedClassDecl struct {
+	Name         string
+	NamePos      ast.Position
+	EqualsPos    ast.Position
+	ClassKeyword ast.Position
+	LeftBrace    ast.Position
+	ClassType    ClassType        // the full class type with field and method info
+	Methods      []*TypedMethodDecl // typed method declarations
+	RightBrace   ast.Position
+}
+
+func (d *TypedClassDecl) Pos() ast.Position { return d.NamePos }
+func (d *TypedClassDecl) End() ast.Position { return d.RightBrace }
+func (d *TypedClassDecl) GetType() Type     { return d.ClassType }
+func (d *TypedClassDecl) typedDeclNode()    {}
+
+// TypedMethodDecl represents a typed method declaration within a class
+type TypedMethodDecl struct {
+	Name       string
+	NamePos    ast.Position
+	EqualsPos  ast.Position
+	LeftParen  ast.Position
+	Parameters []TypedParameter
+	RightParen ast.Position
+	ArrowPos   ast.Position
+	ReturnType Type
+	ReturnPos  ast.Position
+	Body       *TypedBlockStmt
+	IsStatic   bool  // true if method has no 'self' parameter
+}
+
+func (d *TypedMethodDecl) Pos() ast.Position { return d.NamePos }
+func (d *TypedMethodDecl) End() ast.Position { return d.Body.End() }
+func (d *TypedMethodDecl) GetType() Type     { return d.ReturnType }
+
+// TypedObjectDecl represents a typed singleton object declaration
+// Syntax: Name = object { methods }
+type TypedObjectDecl struct {
+	Name          string
+	NamePos       ast.Position
+	EqualsPos     ast.Position
+	ObjectKeyword ast.Position
+	LeftBrace     ast.Position
+	ObjectType    ObjectType       // the full object type with method info
+	Methods       []*TypedMethodDecl // typed method declarations
+	RightBrace    ast.Position
+}
+
+func (d *TypedObjectDecl) Pos() ast.Position { return d.NamePos }
+func (d *TypedObjectDecl) End() ast.Position { return d.RightBrace }
+func (d *TypedObjectDecl) GetType() Type     { return d.ObjectType }
+func (d *TypedObjectDecl) typedDeclNode()    {}
 
 // ============================================================================
 // Typed Program

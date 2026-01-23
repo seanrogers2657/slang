@@ -76,8 +76,11 @@ type Analyzer struct {
 	ownershipScope    *OwnershipScope         // tracks ownership state for move semantics
 	functions         map[string]FunctionInfo // function registry
 	structs           map[string]StructType   // struct registry
+	classes           map[string]ClassType    // class registry
+	objects           map[string]ObjectType   // object registry
 	currentReturnType Type                    // return type of current function being analyzed
 	loopDepth         int                     // tracks nested loop depth for break/continue validation
+	currentClass      *ClassType              // class being analyzed (for 'self' validation)
 }
 
 // NewAnalyzer creates a new semantic analyzer
@@ -89,7 +92,10 @@ func NewAnalyzer(filename string) *Analyzer {
 		ownershipScope:    newOwnershipScope(nil),  // global ownership scope
 		functions:         make(map[string]FunctionInfo),
 		structs:           make(map[string]StructType),
+		classes:           make(map[string]ClassType),
+		objects:           make(map[string]ObjectType),
 		currentReturnType: nil,
+		currentClass:      nil,
 	}
 }
 
@@ -182,17 +188,27 @@ func (a *Analyzer) Analyze(program *ast.Program) ([]*errors.CompilerError, *Type
 
 	// Handle declaration-based programs
 	if len(program.Declarations) > 0 {
-		// First pass: register all struct names (so forward references work)
+		// First pass: register all type names (so forward references work)
 		for _, decl := range program.Declarations {
-			if structDecl, ok := decl.(*ast.StructDecl); ok {
-				a.registerStructName(structDecl)
+			switch d := decl.(type) {
+			case *ast.StructDecl:
+				a.registerStructName(d)
+			case *ast.ClassDecl:
+				a.registerClassName(d)
+			case *ast.ObjectDecl:
+				a.registerObjectName(d)
 			}
 		}
 
-		// Second pass: resolve struct field types (now all struct names are known)
+		// Second pass: resolve field/method types (now all type names are known)
 		for _, decl := range program.Declarations {
-			if structDecl, ok := decl.(*ast.StructDecl); ok {
-				a.resolveStructFields(structDecl)
+			switch d := decl.(type) {
+			case *ast.StructDecl:
+				a.resolveStructFields(d)
+			case *ast.ClassDecl:
+				a.resolveClassFieldsAndMethods(d)
+			case *ast.ObjectDecl:
+				a.resolveObjectMethods(d)
 			}
 		}
 
@@ -212,7 +228,7 @@ func (a *Analyzer) Analyze(program *ast.Program) ([]*errors.CompilerError, *Type
 			a.addError("program must have a 'main' function", program.EndPos, program.EndPos)
 		}
 
-		// Third pass: analyze all declarations
+		// Fourth pass: analyze all declarations
 		for _, decl := range program.Declarations {
 			typedDecl := a.analyzeDeclaration(decl)
 			typedProgram.Declarations = append(typedProgram.Declarations, typedDecl)
@@ -351,12 +367,279 @@ func (a *Analyzer) registerStruct(s *ast.StructDecl) {
 	}
 }
 
-// resolveTypeName converts a type name string to a Type, checking both primitive types and structs
+// registerClassName registers only the class name (first pass for forward references)
+func (a *Analyzer) registerClassName(c *ast.ClassDecl) {
+	// Check for duplicate type name
+	if _, exists := a.structs[c.Name]; exists {
+		a.addError(fmt.Sprintf("type '%s' is already declared as a struct", c.Name), c.NamePos, c.NamePos)
+		return
+	}
+	if _, exists := a.classes[c.Name]; exists {
+		a.addError(fmt.Sprintf("class '%s' is already declared", c.Name), c.NamePos, c.NamePos)
+		return
+	}
+	if _, exists := a.objects[c.Name]; exists {
+		a.addError(fmt.Sprintf("type '%s' is already declared as an object", c.Name), c.NamePos, c.NamePos)
+		return
+	}
+
+	// Register the class with empty fields/methods (will be resolved in second pass)
+	a.classes[c.Name] = ClassType{
+		Name:    c.Name,
+		Fields:  nil,                             // Placeholder until resolveClassFields is called
+		Methods: make(map[string][]*MethodInfo),  // Placeholder until resolveClassMethods is called
+	}
+}
+
+// registerObjectName registers only the object name (first pass for forward references)
+func (a *Analyzer) registerObjectName(o *ast.ObjectDecl) {
+	// Check for duplicate type name
+	if _, exists := a.structs[o.Name]; exists {
+		a.addError(fmt.Sprintf("type '%s' is already declared as a struct", o.Name), o.NamePos, o.NamePos)
+		return
+	}
+	if _, exists := a.classes[o.Name]; exists {
+		a.addError(fmt.Sprintf("type '%s' is already declared as a class", o.Name), o.NamePos, o.NamePos)
+		return
+	}
+	if _, exists := a.objects[o.Name]; exists {
+		a.addError(fmt.Sprintf("object '%s' is already declared", o.Name), o.NamePos, o.NamePos)
+		return
+	}
+
+	// Register the object with empty methods (will be resolved in second pass)
+	a.objects[o.Name] = ObjectType{
+		Name:    o.Name,
+		Methods: make(map[string][]*MethodInfo),  // Placeholder until resolveObjectMethods is called
+	}
+}
+
+// resolveClassFieldsAndMethods resolves field and method types for a registered class (second pass)
+func (a *Analyzer) resolveClassFieldsAndMethods(c *ast.ClassDecl) {
+	classType, exists := a.classes[c.Name]
+	if !exists {
+		return // class was not registered (error already reported)
+	}
+
+	// Resolve fields (same as struct fields)
+	fields := make([]StructFieldInfo, len(c.Fields))
+	for i, field := range c.Fields {
+		fieldType := a.resolveTypeName(field.TypeName, field.TypePos)
+
+		// Ref<T> cannot be used as class field type
+		if IsRefPointer(fieldType) {
+			a.addError("&T cannot be used as a class field type; use *T instead", field.TypePos, field.TypePos)
+		}
+
+		fields[i] = StructFieldInfo{
+			Name:    field.Name,
+			Type:    fieldType,
+			Mutable: field.Mutable,
+			Index:   i,
+		}
+	}
+	classType.Fields = fields
+
+	// Update the class in the registry BEFORE resolving methods
+	// This ensures that when method parameters reference the class (e.g., &Counter),
+	// the lookup will find the ClassType with fields already populated
+	a.classes[c.Name] = classType
+
+	// Resolve methods
+	for _, method := range c.Methods {
+		methodInfo := a.resolveMethodDecl(c.Name, &classType, &method)
+		if methodInfo != nil {
+			// Check for duplicate method signature
+			if existingMethods, ok := classType.Methods[method.Name]; ok {
+				if duplicate := findDuplicateSignature(existingMethods, methodInfo); duplicate != nil {
+					a.addError(
+						fmt.Sprintf("duplicate method signature: '%s' already has an overload with parameters (%s)",
+							method.Name, formatParamTypes(methodInfo.ParamTypes)),
+						method.NamePos, method.NamePos)
+					continue
+				}
+			}
+			classType.Methods[method.Name] = append(classType.Methods[method.Name], methodInfo)
+		}
+	}
+
+	// Update the class again to include resolved methods
+	a.classes[c.Name] = classType
+}
+
+// resolveObjectMethods resolves method types for a registered object (second pass)
+func (a *Analyzer) resolveObjectMethods(o *ast.ObjectDecl) {
+	objectType, exists := a.objects[o.Name]
+	if !exists {
+		return // object was not registered (error already reported)
+	}
+
+	// Resolve methods (all must be static)
+	for _, method := range o.Methods {
+		methodInfo := a.resolveObjectMethodDecl(o.Name, &method)
+		if methodInfo != nil {
+			// Check for duplicate method signature
+			if existingMethods, ok := objectType.Methods[method.Name]; ok {
+				if duplicate := findDuplicateSignature(existingMethods, methodInfo); duplicate != nil {
+					a.addError(
+						fmt.Sprintf("duplicate method signature: '%s' already has an overload with parameters (%s)",
+							method.Name, formatParamTypes(methodInfo.ParamTypes)),
+						method.NamePos, method.NamePos)
+					continue
+				}
+			}
+			objectType.Methods[method.Name] = append(objectType.Methods[method.Name], methodInfo)
+		}
+	}
+
+	// Update the object in the registry
+	a.objects[o.Name] = objectType
+}
+
+// methodOwnerKind distinguishes between class and object method contexts
+type methodOwnerKind int
+
+const (
+	methodOwnerClass  methodOwnerKind = iota // class method (can have 'self')
+	methodOwnerObject                        // object method (always static)
+)
+
+// resolveMethodDecl resolves a class method declaration and returns MethodInfo
+func (a *Analyzer) resolveMethodDecl(className string, classType *ClassType, method *ast.MethodDecl) *MethodInfo {
+	return a.resolveMethodDeclCore(className, method, methodOwnerClass)
+}
+
+// resolveObjectMethodDecl resolves an object method declaration and returns MethodInfo
+func (a *Analyzer) resolveObjectMethodDecl(objectName string, method *ast.MethodDecl) *MethodInfo {
+	return a.resolveMethodDeclCore(objectName, method, methodOwnerObject)
+}
+
+// resolveMethodDeclCore is the shared implementation for resolving method declarations.
+// ownerKind determines whether 'self' parameters are allowed (class) or forbidden (object).
+func (a *Analyzer) resolveMethodDeclCore(ownerName string, method *ast.MethodDecl, ownerKind methodOwnerKind) *MethodInfo {
+	paramTypes := make([]Type, len(method.Parameters))
+	paramNames := make([]string, len(method.Parameters))
+
+	// Check if this is an instance method (first param is 'self')
+	// Only meaningful for class methods; objects don't support instance methods
+	isInstance := ownerKind == methodOwnerClass &&
+		len(method.Parameters) > 0 &&
+		method.Parameters[0].Name == "self"
+
+	for i, param := range method.Parameters {
+		paramNames[i] = param.Name
+		paramType := a.resolveTypeName(param.TypeName, param.TypePos)
+
+		// Handle 'self' parameter based on owner kind
+		if param.Name == "self" {
+			if ownerKind == methodOwnerObject {
+				// Object methods cannot have 'self'
+				a.addError("object methods cannot have 'self' parameter; objects only support static methods", param.NamePos, param.NamePos)
+				paramTypes[i] = TypeError
+				continue
+			} else if i == 0 {
+				// Class method: validate self type
+				if !a.validateSelfType(ownerName, paramType, param.TypePos) {
+					paramType = TypeError
+				}
+			} else {
+				// 'self' must be the first parameter
+				a.addError("'self' must be the first parameter", param.NamePos, param.NamePos)
+			}
+		}
+
+		paramTypes[i] = paramType
+	}
+
+	// Resolve return type
+	var returnType Type = TypeVoid
+	if method.ReturnType != "" {
+		returnType = a.resolveTypeName(method.ReturnType, method.ReturnPos)
+	}
+
+	// References cannot be used as return type
+	if IsAnyRefPointer(returnType) {
+		a.addError("references cannot be used as return types; use *T instead", method.ReturnPos, method.ReturnPos)
+	}
+
+	return &MethodInfo{
+		Name:       method.Name,
+		ParamTypes: paramTypes,
+		ParamNames: paramNames,
+		ReturnType: returnType,
+		IsStatic:   !isInstance,
+	}
+}
+
+// validateSelfType validates that the self parameter type is correct for the class
+func (a *Analyzer) validateSelfType(className string, selfType Type, pos ast.Position) bool {
+	// Self type must be a pointer type: &ClassName, &&ClassName, or *ClassName
+	var elementType Type
+
+	switch t := selfType.(type) {
+	case RefPointerType:
+		elementType = t.ElementType
+	case MutRefPointerType:
+		elementType = t.ElementType
+	case OwnedPointerType:
+		elementType = t.ElementType
+	default:
+		a.addError(fmt.Sprintf("'self' must have a pointer type (&%s, &&%s, or *%s)", className, className, className), pos, pos)
+		return false
+	}
+
+	// Check that the element type is the enclosing class
+	if ct, ok := elementType.(ClassType); ok {
+		if ct.Name != className {
+			a.addError(fmt.Sprintf("'self' type must reference the enclosing class '%s', not '%s'", className, ct.Name), pos, pos)
+			return false
+		}
+		return true
+	}
+
+	// At this point, element type should be looked up by name since ClassType might not be registered yet
+	// In the second pass, we might have the class registered but not fully resolved
+	// For now, check if it's the class name string
+	if elementType == nil {
+		a.addError(fmt.Sprintf("'self' type must reference the enclosing class '%s'", className), pos, pos)
+		return false
+	}
+
+	// The element type string should match the class name
+	if elementType.String() != className {
+		a.addError(fmt.Sprintf("'self' type must reference the enclosing class '%s', not '%s'", className, elementType.String()), pos, pos)
+		return false
+	}
+
+	return true
+}
+
+// resolveTypeName converts a type name string to a Type, checking both primitive types and structs.
+// Reports errors for unknown types or invalid type constructs.
 func (a *Analyzer) resolveTypeName(name string, pos ast.Position) Type {
+	return a.resolveTypeNameCore(name, pos, true)
+}
+
+// resolveTypeNameNoError converts a type name string to a Type without adding errors
+// (used when caller wants to handle errors itself)
+func (a *Analyzer) resolveTypeNameNoError(name string) Type {
+	return a.resolveTypeNameCore(name, ast.Position{}, false)
+}
+
+// resolveTypeNameCore is the shared implementation for type name resolution.
+// If reportErrors is true, errors are reported at the given position.
+func (a *Analyzer) resolveTypeNameCore(name string, pos ast.Position, reportErrors bool) Type {
+	// Helper to optionally report an error
+	maybeError := func(msg string) {
+		if reportErrors {
+			a.addError(msg, pos, pos)
+		}
+	}
+
 	// Check for nullable type T?
 	if strings.HasSuffix(name, "?") {
 		innerName := name[:len(name)-1]
-		innerType := a.resolveTypeName(innerName, pos)
+		innerType := a.resolveTypeNameCore(innerName, pos, reportErrors)
 		if _, isErr := innerType.(ErrorType); isErr {
 			return TypeError
 		}
@@ -364,7 +647,7 @@ func (a *Analyzer) resolveTypeName(name string, pos ast.Position) Type {
 		// The parser already catches this at parse time, but this check remains
 		// for programmatically constructed ASTs (e.g., in tests)
 		if IsNullable(innerType) {
-			a.addError("nested nullable types are not allowed", pos, pos)
+			maybeError("nested nullable types are not allowed")
 			return TypeError
 		}
 		return NullableType{InnerType: innerType}
@@ -376,13 +659,13 @@ func (a *Analyzer) resolveTypeName(name string, pos ast.Position) Type {
 	// Check for &&T syntax (mutable borrow)
 	if strings.HasPrefix(name, "&&") {
 		elementTypeName := strings.TrimPrefix(name, "&&")
-		elementType := a.resolveTypeName(elementTypeName, pos)
+		elementType := a.resolveTypeNameCore(elementTypeName, pos, reportErrors)
 		if _, isErr := elementType.(ErrorType); isErr {
 			return TypeError
 		}
 		// &&T? is invalid - the element type cannot be nullable
 		if IsNullable(elementType) {
-			a.addError("&&T cannot contain nullable type; use &&T? for nullable mutable references", pos, pos)
+			maybeError("&&T cannot contain nullable type; use &&T? for nullable mutable references")
 			return TypeError
 		}
 		return MutRefPointerType{ElementType: elementType}
@@ -391,13 +674,13 @@ func (a *Analyzer) resolveTypeName(name string, pos ast.Position) Type {
 	// Check for &T syntax (immutable borrow)
 	if strings.HasPrefix(name, "&") {
 		elementTypeName := strings.TrimPrefix(name, "&")
-		elementType := a.resolveTypeName(elementTypeName, pos)
+		elementType := a.resolveTypeNameCore(elementTypeName, pos, reportErrors)
 		if _, isErr := elementType.(ErrorType); isErr {
 			return TypeError
 		}
 		// &T? is invalid - the element type cannot be nullable
 		if IsNullable(elementType) {
-			a.addError("&T cannot contain nullable type; use &T? for nullable references", pos, pos)
+			maybeError("&T cannot contain nullable type; use &T? for nullable references")
 			return TypeError
 		}
 		return RefPointerType{ElementType: elementType}
@@ -406,13 +689,13 @@ func (a *Analyzer) resolveTypeName(name string, pos ast.Position) Type {
 	// Check for *T syntax (owned pointer)
 	if strings.HasPrefix(name, "*") {
 		elementTypeName := strings.TrimPrefix(name, "*")
-		elementType := a.resolveTypeName(elementTypeName, pos)
+		elementType := a.resolveTypeNameCore(elementTypeName, pos, reportErrors)
 		if _, isErr := elementType.(ErrorType); isErr {
 			return TypeError
 		}
 		// *T? is invalid - the element type cannot be nullable
 		if IsNullable(elementType) {
-			a.addError("*T cannot contain nullable type; use *T? for nullable owned pointers", pos, pos)
+			maybeError("*T cannot contain nullable type; use *T? for nullable owned pointers")
 			return TypeError
 		}
 		return OwnedPointerType{ElementType: elementType}
@@ -421,7 +704,7 @@ func (a *Analyzer) resolveTypeName(name string, pos ast.Position) Type {
 	// Check for Array<T> syntax
 	if strings.HasPrefix(name, "Array<") && strings.HasSuffix(name, ">") {
 		elementTypeName := name[6 : len(name)-1] // extract T from Array<T>
-		elementType := a.resolveTypeName(elementTypeName, pos)
+		elementType := a.resolveTypeNameCore(elementTypeName, pos, reportErrors)
 		if _, isErr := elementType.(ErrorType); isErr {
 			return TypeError
 		}
@@ -438,97 +721,20 @@ func (a *Analyzer) resolveTypeName(name string, pos ast.Position) Type {
 	// Try struct types
 	if structType, ok := a.structs[name]; ok {
 		return structType
+	}
+
+	// Try class types
+	if classType, ok := a.classes[name]; ok {
+		return classType
+	}
+
+	// Try object types (objects are types but cannot be instantiated)
+	if objectType, ok := a.objects[name]; ok {
+		return objectType
 	}
 
 	// Unknown type
-	a.addError(fmt.Sprintf("unknown type '%s'", name), pos, pos)
-	return TypeError
-}
-
-// resolveTypeNameNoError converts a type name string to a Type without adding errors
-// (used when caller wants to handle errors itself)
-func (a *Analyzer) resolveTypeNameNoError(name string) Type {
-	// Check for nullable type T?
-	if strings.HasSuffix(name, "?") {
-		innerName := name[:len(name)-1]
-		innerType := a.resolveTypeNameNoError(innerName)
-		if _, isErr := innerType.(ErrorType); isErr {
-			return TypeError
-		}
-		// Nested nullables are error - defense-in-depth (parser catches this at parse time)
-		if IsNullable(innerType) {
-			return TypeError
-		}
-		return NullableType{InnerType: innerType}
-	}
-
-	// Check for symbol-based pointer syntax: *T, &&T, &T
-	// IMPORTANT: Check "&&" before "&" to avoid wrong prefix match
-
-	// Check for &&T syntax (mutable borrow)
-	if strings.HasPrefix(name, "&&") {
-		elementTypeName := strings.TrimPrefix(name, "&&")
-		elementType := a.resolveTypeNameNoError(elementTypeName)
-		if _, isErr := elementType.(ErrorType); isErr {
-			return TypeError
-		}
-		// &&T? is invalid - the element type cannot be nullable
-		if IsNullable(elementType) {
-			return TypeError
-		}
-		return MutRefPointerType{ElementType: elementType}
-	}
-
-	// Check for &T syntax (immutable borrow)
-	if strings.HasPrefix(name, "&") {
-		elementTypeName := strings.TrimPrefix(name, "&")
-		elementType := a.resolveTypeNameNoError(elementTypeName)
-		if _, isErr := elementType.(ErrorType); isErr {
-			return TypeError
-		}
-		// &T? is invalid - the element type cannot be nullable
-		if IsNullable(elementType) {
-			return TypeError
-		}
-		return RefPointerType{ElementType: elementType}
-	}
-
-	// Check for *T syntax (owned pointer)
-	if strings.HasPrefix(name, "*") {
-		elementTypeName := strings.TrimPrefix(name, "*")
-		elementType := a.resolveTypeNameNoError(elementTypeName)
-		if _, isErr := elementType.(ErrorType); isErr {
-			return TypeError
-		}
-		// *T? is invalid - the element type cannot be nullable
-		if IsNullable(elementType) {
-			return TypeError
-		}
-		return OwnedPointerType{ElementType: elementType}
-	}
-
-	// Check for Array<T> syntax
-	if strings.HasPrefix(name, "Array<") && strings.HasSuffix(name, ">") {
-		elementTypeName := name[6 : len(name)-1] // extract T from Array<T>
-		elementType := a.resolveTypeNameNoError(elementTypeName)
-		if _, isErr := elementType.(ErrorType); isErr {
-			return TypeError
-		}
-		// Return ArrayType with unknown size (will be inferred from literal)
-		return ArrayType{ElementType: elementType, Size: ArraySizeUnknown}
-	}
-
-	// Try primitive types first
-	t := TypeFromName(name)
-	if _, isErr := t.(ErrorType); !isErr {
-		return t
-	}
-
-	// Try struct types
-	if structType, ok := a.structs[name]; ok {
-		return structType
-	}
-
+	maybeError(fmt.Sprintf("unknown type '%s'", name))
 	return TypeError
 }
 
@@ -539,6 +745,10 @@ func (a *Analyzer) analyzeDeclaration(decl ast.Declaration) TypedDeclaration {
 		return a.analyzeFunctionDecl(d)
 	case *ast.StructDecl:
 		return a.analyzeStructDecl(d)
+	case *ast.ClassDecl:
+		return a.analyzeClassDecl(d)
+	case *ast.ObjectDecl:
+		return a.analyzeObjectDecl(d)
 	default:
 		a.addError("unknown declaration type", decl.Pos(), decl.End())
 		return &TypedFunctionDecl{
@@ -569,6 +779,235 @@ func (a *Analyzer) analyzeStructDecl(s *ast.StructDecl) TypedDeclaration {
 		LeftBrace:     s.LeftBrace,
 		StructType:    structType,
 		RightBrace:    s.RightBrace,
+	}
+}
+
+// analyzeClassDecl analyzes a class declaration
+func (a *Analyzer) analyzeClassDecl(c *ast.ClassDecl) TypedDeclaration {
+	// The class type was already registered in the first pass
+	classType := a.classes[c.Name]
+
+	// Analyze method bodies
+	typedMethods := make([]*TypedMethodDecl, 0, len(c.Methods))
+	for _, method := range c.Methods {
+		typedMethod := a.analyzeMethodDecl(&classType, &method)
+		typedMethods = append(typedMethods, typedMethod)
+	}
+
+	return &TypedClassDecl{
+		Name:         c.Name,
+		NamePos:      c.NamePos,
+		EqualsPos:    c.EqualsPos,
+		ClassKeyword: c.ClassKeyword,
+		LeftBrace:    c.LeftBrace,
+		ClassType:    classType,
+		Methods:      typedMethods,
+		RightBrace:   c.RightBrace,
+	}
+}
+
+// analyzeObjectDecl analyzes a singleton object declaration
+func (a *Analyzer) analyzeObjectDecl(o *ast.ObjectDecl) TypedDeclaration {
+	// The object type was already registered in the first pass
+	objectType := a.objects[o.Name]
+
+	// Analyze method bodies (all methods are static)
+	typedMethods := make([]*TypedMethodDecl, 0, len(o.Methods))
+	for _, method := range o.Methods {
+		typedMethod := a.analyzeObjectMethodDecl(&objectType, &method)
+		typedMethods = append(typedMethods, typedMethod)
+	}
+
+	return &TypedObjectDecl{
+		Name:          o.Name,
+		NamePos:       o.NamePos,
+		EqualsPos:     o.EqualsPos,
+		ObjectKeyword: o.ObjectKeyword,
+		LeftBrace:     o.LeftBrace,
+		ObjectType:    objectType,
+		Methods:       typedMethods,
+		RightBrace:    o.RightBrace,
+	}
+}
+
+// findMatchingMethodInfo finds the MethodInfo that matches the given method declaration.
+// This is used for overloaded methods where multiple MethodInfos exist with the same name.
+// We match by parameter count and type name strings for precise matching.
+func findMatchingMethodInfo(methodInfos []*MethodInfo, method *ast.MethodDecl) *MethodInfo {
+	for _, mi := range methodInfos {
+		// Check if parameter count matches
+		if len(mi.ParamTypes) != len(method.Parameters) {
+			continue
+		}
+		// Check if parameter type names match
+		match := true
+		for i, param := range method.Parameters {
+			// Compare the resolved type's string representation with the AST type name
+			// This handles cases like "i64" vs "i64?"
+			typeStr := mi.ParamTypes[i].String()
+			if typeStr != param.TypeName {
+				match = false
+				break
+			}
+		}
+		if match {
+			return mi
+		}
+	}
+	// Fallback: return first if no exact match (shouldn't happen normally)
+	if len(methodInfos) > 0 {
+		return methodInfos[0]
+	}
+	return nil
+}
+
+// findDuplicateSignature checks if newMethod has the same signature as any existing method.
+// Returns the duplicate if found, nil otherwise.
+func findDuplicateSignature(existingMethods []*MethodInfo, newMethod *MethodInfo) *MethodInfo {
+	for _, existing := range existingMethods {
+		if methodSignaturesEqual(existing, newMethod) {
+			return existing
+		}
+	}
+	return nil
+}
+
+// methodSignaturesEqual checks if two methods have the same signature.
+// Signatures are equal if they have the same number of parameters with identical types.
+func methodSignaturesEqual(a, b *MethodInfo) bool {
+	if len(a.ParamTypes) != len(b.ParamTypes) {
+		return false
+	}
+	for i := range a.ParamTypes {
+		if !a.ParamTypes[i].Equals(b.ParamTypes[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// formatParamTypes formats a list of parameter types for error messages.
+func formatParamTypes(types []Type) string {
+	if len(types) == 0 {
+		return ""
+	}
+	strs := make([]string, len(types))
+	for i, t := range types {
+		strs[i] = t.String()
+	}
+	return strings.Join(strs, ", ")
+}
+
+// analyzeMethodDecl analyzes a class method body and returns a typed method declaration
+func (a *Analyzer) analyzeMethodDecl(classType *ClassType, method *ast.MethodDecl) *TypedMethodDecl {
+	return a.analyzeMethodDeclCore(classType, nil, method)
+}
+
+// analyzeObjectMethodDecl analyzes an object method body and returns a typed method declaration
+func (a *Analyzer) analyzeObjectMethodDecl(objectType *ObjectType, method *ast.MethodDecl) *TypedMethodDecl {
+	return a.analyzeMethodDeclCore(nil, objectType, method)
+}
+
+// analyzeMethodDeclCore is the shared implementation for analyzing class and object method bodies.
+// Pass classType for class methods, or objectType for object methods (exactly one must be non-nil).
+func (a *Analyzer) analyzeMethodDeclCore(classType *ClassType, objectType *ObjectType, method *ast.MethodDecl) *TypedMethodDecl {
+	// Determine method owner kind and get method map
+	var methodMap map[string][]*MethodInfo
+	isClassMethod := classType != nil
+
+	if isClassMethod {
+		// Set current class for 'self' validation
+		a.currentClass = classType
+		methodMap = classType.Methods
+	} else {
+		methodMap = objectType.Methods
+	}
+
+	// Save state for restoration
+	prevClass := a.currentClass
+	if !isClassMethod {
+		a.currentClass = nil
+	}
+
+	// Check if this is an instance method (only applies to class methods)
+	isInstance := isClassMethod &&
+		len(method.Parameters) > 0 &&
+		method.Parameters[0].Name == "self"
+
+	// Get method info - find the matching overload
+	methodInfos, ok := methodMap[method.Name]
+	var methodInfo *MethodInfo
+	if ok && len(methodInfos) > 0 {
+		if isClassMethod {
+			// Class methods may be overloaded - find matching one
+			methodInfo = findMatchingMethodInfo(methodInfos, method)
+		} else {
+			// Object methods - just use first (overloading still supported)
+			methodInfo = findMatchingMethodInfo(methodInfos, method)
+		}
+	}
+
+	// Enter a new scope for the method body
+	a.enterScope()
+
+	// Add parameters to scope
+	typedParams := make([]TypedParameter, len(method.Parameters))
+	for i, param := range method.Parameters {
+		var paramType Type = TypeError
+		if methodInfo != nil && i < len(methodInfo.ParamTypes) {
+			paramType = methodInfo.ParamTypes[i]
+		}
+
+		typedParams[i] = TypedParameter{
+			Name:    param.Name,
+			NamePos: param.NamePos,
+			Colon:   param.Colon,
+			Type:    paramType,
+			TypePos: param.TypePos,
+		}
+
+		// Add parameter to scope
+		// For class methods, 'self' with &&T allows mutation
+		isMutable := param.Mutable
+		if isClassMethod && param.Name == "self" && IsMutRefPointer(paramType) {
+			isMutable = true
+		}
+		a.currentScope.declare(param.Name, paramType, isMutable)
+	}
+
+	// Set return type for return statement checking
+	prevReturnType := a.currentReturnType
+	if methodInfo != nil {
+		a.currentReturnType = methodInfo.ReturnType
+	} else {
+		a.currentReturnType = TypeVoid
+	}
+
+	// Analyze method body
+	typedBody := a.analyzeBlockStmt(method.Body)
+
+	// Restore previous state
+	a.currentReturnType = prevReturnType
+	a.exitScope()
+	a.currentClass = prevClass
+
+	var returnType Type = TypeVoid
+	if methodInfo != nil {
+		returnType = methodInfo.ReturnType
+	}
+
+	return &TypedMethodDecl{
+		Name:       method.Name,
+		NamePos:    method.NamePos,
+		EqualsPos:  method.EqualsPos,
+		LeftParen:  method.LeftParen,
+		Parameters: typedParams,
+		RightParen: method.RightParen,
+		ArrowPos:   method.ArrowPos,
+		ReturnType: returnType,
+		ReturnPos:  method.ReturnPos,
+		Body:       typedBody,
+		IsStatic:   !isInstance,
 	}
 }
 
@@ -1118,9 +1557,17 @@ func (a *Analyzer) analyzeFieldAssignStatement(stmt *ast.FieldAssignStmt) TypedS
 	}
 	_ = accessingThroughMutableRef // used for documentation, mutation is allowed
 
-	// Check that the object is a struct type
-	structType, isStruct := objectType.(StructType)
-	if !isStruct {
+	// Check that the object is a struct or class type
+	var fields []StructFieldInfo
+	var typeName string
+
+	if structType, isStruct := objectType.(StructType); isStruct {
+		fields = structType.Fields
+		typeName = structType.Name
+	} else if classType, isClass := objectType.(ClassType); isClass {
+		fields = classType.Fields
+		typeName = classType.Name
+	} else {
 		if _, isErr := objectType.(ErrorType); !isErr {
 			a.addError(
 				fmt.Sprintf("cannot access field '%s' on non-struct type '%s'", stmt.Field, objectType.String()),
@@ -1140,10 +1587,18 @@ func (a *Analyzer) analyzeFieldAssignStatement(stmt *ast.FieldAssignStmt) TypedS
 	}
 
 	// Look up the field
-	fieldInfo, found := structType.GetField(stmt.Field)
+	var fieldInfo StructFieldInfo
+	var found bool
+	for _, f := range fields {
+		if f.Name == stmt.Field {
+			fieldInfo = f
+			found = true
+			break
+		}
+	}
 	if !found {
 		a.addError(
-			fmt.Sprintf("struct '%s' has no field '%s'", structType.Name, stmt.Field),
+			fmt.Sprintf("type '%s' has no field '%s'", typeName, stmt.Field),
 			stmt.FieldPos, stmt.FieldPos,
 		)
 		typedValue := a.analyzeExpression(stmt.Value)
@@ -1795,6 +2250,8 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 	case *ast.WhenExpr:
 		// When can be used as an expression
 		return a.analyzeWhenExpression(e)
+	case *ast.SelfExpr:
+		return a.analyzeSelfExpr(e)
 	default:
 		a.addError("unknown expression type", expr.Pos(), expr.End())
 		return &TypedLiteralExpr{
@@ -2173,28 +2630,66 @@ func (a *Analyzer) analyzeStructLiteralNamed(call *ast.CallExpr, structType Stru
 }
 
 // analyzeStructLiteralExpr analyzes a struct literal expression with braces (e.g., Point { 10, 20 } or Point { x: 10, y: 20 })
+// Also handles class literals (e.g., Counter { 10 })
 func (a *Analyzer) analyzeStructLiteralExpr(lit *ast.StructLiteral) TypedExpression {
 	// Check if this is a known struct type
-	structType, ok := a.structs[lit.Name]
-	if !ok {
+	if structType, ok := a.structs[lit.Name]; ok {
+		// Handle named arguments
+		if lit.HasNamedArguments() {
+			return a.analyzeStructLiteralExprNamed(lit, structType)
+		}
+		return a.analyzeStructLiteralPositional(lit, structType.Fields, structType.Name, func(args []TypedExpression) TypedExpression {
+			return &TypedStructLiteralExpr{
+				Type:       structType,
+				TypePos:    lit.NamePos,
+				LeftBrace:  lit.LeftBrace,
+				Args:       args,
+				RightBrace: lit.RightBrace,
+			}
+		})
+	}
+
+	// Check if this is a known class type
+	if classType, ok := a.classes[lit.Name]; ok {
+		// Handle named arguments
+		if lit.HasNamedArguments() {
+			return a.analyzeClassLiteralExprNamed(lit, classType)
+		}
+		return a.analyzeStructLiteralPositional(lit, classType.Fields, classType.Name, func(args []TypedExpression) TypedExpression {
+			return &TypedClassLiteralExpr{
+				Type:       classType,
+				TypePos:    lit.NamePos,
+				LeftBrace:  lit.LeftBrace,
+				Args:       args,
+				RightBrace: lit.RightBrace,
+			}
+		})
+	}
+
+	// Check if this is an object type (objects cannot be instantiated)
+	if _, ok := a.objects[lit.Name]; ok {
 		a.addError(
-			fmt.Sprintf("undefined struct '%s'", lit.Name),
-			lit.NamePos, lit.NamePos,
+			fmt.Sprintf("cannot instantiate object '%s' (objects are singletons)", lit.Name),
+			lit.NamePos, lit.RightBrace,
 		)
 		return &TypedLiteralExpr{Type: ErrorType{}}
 	}
 
-	// Handle named arguments
-	if lit.HasNamedArguments() {
-		return a.analyzeStructLiteralExprNamed(lit, structType)
-	}
+	// Unknown type
+	a.addError(
+		fmt.Sprintf("undefined type '%s'", lit.Name),
+		lit.NamePos, lit.NamePos,
+	)
+	return &TypedLiteralExpr{Type: ErrorType{}}
+}
 
-	// Handle positional arguments
+// analyzeStructLiteralPositional analyzes a struct/class literal with positional arguments
+func (a *Analyzer) analyzeStructLiteralPositional(lit *ast.StructLiteral, fields []StructFieldInfo, typeName string, makeResult func([]TypedExpression) TypedExpression) TypedExpression {
 	// Check argument count matches field count
-	if len(lit.Arguments) != len(structType.Fields) {
+	if len(lit.Arguments) != len(fields) {
 		a.addError(
-			fmt.Sprintf("struct '%s' has %d field(s), but %d argument(s) were provided",
-				structType.Name, len(structType.Fields), len(lit.Arguments)),
+			fmt.Sprintf("type '%s' has %d field(s), but %d argument(s) were provided",
+				typeName, len(fields), len(lit.Arguments)),
 			lit.LeftBrace, lit.RightBrace,
 		)
 	}
@@ -2206,14 +2701,86 @@ func (a *Analyzer) analyzeStructLiteralExpr(lit *ast.StructLiteral) TypedExpress
 
 		// Type check if we have a corresponding field
 		// Use checkTypeCompatibilityCore to allow nullable coercions (i64 -> i64?, null -> T?)
-		if i < len(structType.Fields) {
-			fieldType := structType.Fields[i].Type
+		if i < len(fields) {
+			fieldType := fields[i].Type
 			a.checkTypeCompatibilityCore(fieldType, typedArgs[i].GetType(), typedArgs[i], arg.Pos(), contextAssignment)
 		}
 	}
 
-	return &TypedStructLiteralExpr{
-		Type:       structType,
+	return makeResult(typedArgs)
+}
+
+// analyzeClassLiteralExprNamed analyzes a class literal with named arguments (e.g., Counter { count: 10 })
+func (a *Analyzer) analyzeClassLiteralExprNamed(lit *ast.StructLiteral, classType ClassType) TypedExpression {
+	// Build a map of field name -> index for quick lookup
+	fieldIndex := make(map[string]int)
+	for i, field := range classType.Fields {
+		fieldIndex[field.Name] = i
+	}
+
+	// Check argument count matches field count
+	if len(lit.NamedArguments) != len(classType.Fields) {
+		a.addError(
+			fmt.Sprintf("class '%s' has %d field(s), but %d argument(s) were provided",
+				classType.Name, len(classType.Fields), len(lit.NamedArguments)),
+			lit.LeftBrace, lit.RightBrace,
+		)
+	}
+
+	// Track which fields have been provided (for duplicate detection)
+	providedFields := make(map[string]ast.Position)
+
+	// Prepare args in field order
+	typedArgs := make([]TypedExpression, len(classType.Fields))
+	for i := range typedArgs {
+		typedArgs[i] = nil // will be filled in
+	}
+
+	// Process named arguments
+	for _, namedArg := range lit.NamedArguments {
+		// Check for duplicate field
+		if _, exists := providedFields[namedArg.Name]; exists {
+			a.addError(
+				fmt.Sprintf("duplicate field '%s' in class literal", namedArg.Name),
+				namedArg.NamePos, namedArg.NamePos,
+			)
+			continue
+		}
+		providedFields[namedArg.Name] = namedArg.NamePos
+
+		// Look up field index
+		idx, ok := fieldIndex[namedArg.Name]
+		if !ok {
+			a.addError(
+				fmt.Sprintf("class '%s' has no field '%s'", classType.Name, namedArg.Name),
+				namedArg.NamePos, namedArg.NamePos,
+			)
+			continue
+		}
+
+		// Analyze the value expression
+		typedValue := a.analyzeExpression(namedArg.Value)
+		typedArgs[idx] = typedValue
+
+		// Type check
+		fieldType := classType.Fields[idx].Type
+		a.checkTypeCompatibilityCore(fieldType, typedValue.GetType(), typedValue, namedArg.Value.Pos(), contextAssignment)
+	}
+
+	// Check all fields were provided
+	for i, field := range classType.Fields {
+		if typedArgs[i] == nil {
+			a.addError(
+				fmt.Sprintf("missing field '%s' in class literal", field.Name),
+				lit.RightBrace, lit.RightBrace,
+			)
+			// Fill with error expression
+			typedArgs[i] = &TypedLiteralExpr{Type: ErrorType{}}
+		}
+	}
+
+	return &TypedClassLiteralExpr{
+		Type:       classType,
 		TypePos:    lit.NamePos,
 		LeftBrace:  lit.LeftBrace,
 		Args:       typedArgs,
@@ -2436,9 +3003,17 @@ func (a *Analyzer) analyzeFieldAccessExpr(expr *ast.FieldAccessExpr) TypedExpres
 		accessingThroughMutableRef = true
 	}
 
-	// Check that the object is a struct type
-	structType, isStruct := objectType.(StructType)
-	if !isStruct {
+	// Check that the object is a struct or class type
+	var fields []StructFieldInfo
+	var typeName string
+
+	if structType, isStruct := objectType.(StructType); isStruct {
+		fields = structType.Fields
+		typeName = structType.Name
+	} else if classType, isClass := objectType.(ClassType); isClass {
+		fields = classType.Fields
+		typeName = classType.Name
+	} else {
 		if _, isErr := objectType.(ErrorType); !isErr {
 			a.addError(
 				fmt.Sprintf("cannot access field '%s' on non-struct type '%s'", expr.Field, objectType.String()),
@@ -2456,10 +3031,18 @@ func (a *Analyzer) analyzeFieldAccessExpr(expr *ast.FieldAccessExpr) TypedExpres
 	}
 
 	// Look up the field
-	fieldInfo, found := structType.GetField(expr.Field)
+	var fieldInfo StructFieldInfo
+	var found bool
+	for _, f := range fields {
+		if f.Name == expr.Field {
+			fieldInfo = f
+			found = true
+			break
+		}
+	}
 	if !found {
 		a.addError(
-			fmt.Sprintf("struct '%s' has no field '%s'", structType.Name, expr.Field),
+			fmt.Sprintf("type '%s' has no field '%s'", typeName, expr.Field),
 			expr.FieldPos, expr.FieldPos,
 		)
 		return &TypedFieldAccessExpr{
@@ -2510,16 +3093,58 @@ func (a *Analyzer) analyzeFieldAccessExpr(expr *ast.FieldAccessExpr) TypedExpres
 	}
 }
 
-// analyzeMethodCallExpr analyzes a method call expression (e.g., Heap.new(x), p.copy())
+// analyzeMethodCallExpr analyzes a method call expression (e.g., Heap.new(x), p.copy(), instance.method())
 func (a *Analyzer) analyzeMethodCallExpr(expr *ast.MethodCallExpr) TypedExpression {
 	// Check if this is a Heap.new() call
 	if ident, ok := expr.Object.(*ast.IdentifierExpr); ok && ident.Name == "Heap" {
 		return a.analyzeHeapMethodCall(expr)
 	}
 
+	// Check if this is a static method call on a class or object name
+	// (Safe navigation doesn't apply to static method calls)
+	if ident, ok := expr.Object.(*ast.IdentifierExpr); ok && !expr.SafeNavigation {
+		// Check if it's a class name
+		if classType, isClass := a.classes[ident.Name]; isClass {
+			return a.analyzeStaticMethodCall(&classType, ident.Name, expr)
+		}
+		// Check if it's an object name
+		if objectType, isObject := a.objects[ident.Name]; isObject {
+			return a.analyzeObjectStaticMethodCall(&objectType, ident.Name, expr)
+		}
+	}
+
 	// Analyze the object expression
 	typedObject := a.analyzeExpression(expr.Object)
 	objectType := typedObject.GetType()
+
+	// Handle safe navigation: receiver must be nullable, unwrap it for method resolution
+	unwrappedType := objectType
+	if expr.SafeNavigation {
+		if nullableType, isNullable := objectType.(NullableType); isNullable {
+			unwrappedType = nullableType.InnerType
+		} else if _, isErr := objectType.(ErrorType); !isErr {
+			a.addError(
+				fmt.Sprintf("safe navigation '?.' can only be used on nullable types, got '%s'", objectType.String()),
+				expr.Dot, expr.Dot,
+			)
+			// Still type the arguments to avoid nil TypedExpressions
+			typedArgs := make([]TypedExpression, len(expr.Arguments))
+			for i, arg := range expr.Arguments {
+				typedArgs[i] = a.analyzeExpression(arg)
+			}
+			return &TypedMethodCallExpr{
+				Type:           TypeError,
+				Object:         typedObject,
+				Dot:            expr.Dot,
+				Method:         expr.Method,
+				MethodPos:      expr.MethodPos,
+				LeftParen:      expr.LeftParen,
+				Arguments:      typedArgs,
+				RightParen:     expr.RightParen,
+				SafeNavigation: true,
+			}
+		}
+	}
 
 	// Type arguments
 	typedArgs := make([]TypedExpression, len(expr.Arguments))
@@ -2529,7 +3154,7 @@ func (a *Analyzer) analyzeMethodCallExpr(expr *ast.MethodCallExpr) TypedExpressi
 
 	// Check if this is a .copy() call on an owned pointer
 	if expr.Method == "copy" {
-		if ownedType, isOwned := objectType.(OwnedPointerType); isOwned {
+		if ownedType, isOwned := unwrappedType.(OwnedPointerType); isOwned {
 			// .copy() on Own<T> returns a new Own<T> (deep copy)
 			if len(expr.Arguments) != 0 {
 				a.addError(
@@ -2537,37 +3162,599 @@ func (a *Analyzer) analyzeMethodCallExpr(expr *ast.MethodCallExpr) TypedExpressi
 					expr.LeftParen, expr.RightParen,
 				)
 			}
+			resultType := Type(ownedType)
+			// For safe navigation, wrap result in nullable
+			if expr.SafeNavigation {
+				resultType = NullableType{InnerType: ownedType}
+			}
 			return &TypedMethodCallExpr{
-				Type:       ownedType, // returns same type
-				Object:     typedObject,
-				Dot:        expr.Dot,
-				Method:     expr.Method,
-				MethodPos:  expr.MethodPos,
-				LeftParen:  expr.LeftParen,
-				Arguments:  typedArgs,
-				RightParen: expr.RightParen,
+				Type:           resultType,
+				Object:         typedObject,
+				Dot:            expr.Dot,
+				Method:         expr.Method,
+				MethodPos:      expr.MethodPos,
+				LeftParen:      expr.LeftParen,
+				Arguments:      typedArgs,
+				RightParen:     expr.RightParen,
+				SafeNavigation: expr.SafeNavigation,
 			}
 		}
 	}
 
+	// Check if this is an instance method call on a class type
+	if result := a.tryAnalyzeInstanceMethodCall(typedObject, unwrappedType, expr, typedArgs); result != nil {
+		return result
+	}
+
 	// Unknown method call
-	if _, isErr := objectType.(ErrorType); !isErr {
+	if _, isErr := unwrappedType.(ErrorType); !isErr {
 		a.addError(
-			fmt.Sprintf("unknown method '%s' on type '%s'", expr.Method, objectType.String()),
+			fmt.Sprintf("unknown method '%s' on type '%s'", expr.Method, unwrappedType.String()),
 			expr.MethodPos, expr.MethodPos,
 		)
 	}
 
 	return &TypedMethodCallExpr{
-		Type:       TypeError,
-		Object:     typedObject,
-		Dot:        expr.Dot,
-		Method:     expr.Method,
-		MethodPos:  expr.MethodPos,
-		LeftParen:  expr.LeftParen,
-		Arguments:  typedArgs,
-		RightParen: expr.RightParen,
+		Type:           TypeError,
+		Object:         typedObject,
+		Dot:            expr.Dot,
+		Method:         expr.Method,
+		MethodPos:      expr.MethodPos,
+		LeftParen:      expr.LeftParen,
+		Arguments:      typedArgs,
+		RightParen:     expr.RightParen,
+		SafeNavigation: expr.SafeNavigation,
 	}
+}
+
+// analyzeStaticMethodCall analyzes a static method call on a class (e.g., ClassName.method())
+func (a *Analyzer) analyzeStaticMethodCall(classType *ClassType, className string, expr *ast.MethodCallExpr) TypedExpression {
+	// Type arguments
+	typedArgs := make([]TypedExpression, len(expr.Arguments))
+	for i, arg := range expr.Arguments {
+		typedArgs[i] = a.analyzeExpression(arg)
+	}
+
+	// Create a typed identifier for the class name
+	typedObject := &TypedIdentifierExpr{
+		Type:     *classType,
+		Name:     className,
+		StartPos: expr.Object.Pos(),
+		EndPos:   expr.Object.End(),
+	}
+
+	// Look up the method
+	methodInfos, found := classType.Methods[expr.Method]
+	if !found || len(methodInfos) == 0 {
+		a.addError(
+			fmt.Sprintf("undefined method '%s' on class '%s'", expr.Method, className),
+			expr.MethodPos, expr.MethodPos,
+		)
+		return &TypedMethodCallExpr{
+			Type:       TypeError,
+			Object:     typedObject,
+			Dot:        expr.Dot,
+			Method:     expr.Method,
+			MethodPos:  expr.MethodPos,
+			LeftParen:  expr.LeftParen,
+			Arguments:  typedArgs,
+			RightParen: expr.RightParen,
+		}
+	}
+
+	// Resolve the best static overload
+	methodInfo := a.resolveStaticOverload(methodInfos, typedArgs, expr.Method, className, expr.MethodPos)
+	if methodInfo == nil {
+		// Error already reported by resolveStaticOverload
+		return &TypedMethodCallExpr{
+			Type:       TypeError,
+			Object:     typedObject,
+			Dot:        expr.Dot,
+			Method:     expr.Method,
+			MethodPos:  expr.MethodPos,
+			LeftParen:  expr.LeftParen,
+			Arguments:  typedArgs,
+			RightParen: expr.RightParen,
+		}
+	}
+
+	return &TypedMethodCallExpr{
+		Type:           methodInfo.ReturnType,
+		Object:         typedObject,
+		Dot:            expr.Dot,
+		Method:         expr.Method,
+		MethodPos:      expr.MethodPos,
+		LeftParen:      expr.LeftParen,
+		Arguments:      typedArgs,
+		RightParen:     expr.RightParen,
+		ResolvedMethod: methodInfo,
+	}
+}
+
+// analyzeObjectStaticMethodCall analyzes a static method call on an object (e.g., Math.max())
+func (a *Analyzer) analyzeObjectStaticMethodCall(objectType *ObjectType, objectName string, expr *ast.MethodCallExpr) TypedExpression {
+	// Type arguments
+	typedArgs := make([]TypedExpression, len(expr.Arguments))
+	for i, arg := range expr.Arguments {
+		typedArgs[i] = a.analyzeExpression(arg)
+	}
+
+	// Create a typed identifier for the object name
+	typedObject := &TypedIdentifierExpr{
+		Type:     *objectType,
+		Name:     objectName,
+		StartPos: expr.Object.Pos(),
+		EndPos:   expr.Object.End(),
+	}
+
+	// Look up the method
+	methodInfos, found := objectType.Methods[expr.Method]
+	if !found || len(methodInfos) == 0 {
+		a.addError(
+			fmt.Sprintf("undefined method '%s' on object '%s'", expr.Method, objectName),
+			expr.MethodPos, expr.MethodPos,
+		)
+		return &TypedMethodCallExpr{
+			Type:       TypeError,
+			Object:     typedObject,
+			Dot:        expr.Dot,
+			Method:     expr.Method,
+			MethodPos:  expr.MethodPos,
+			LeftParen:  expr.LeftParen,
+			Arguments:  typedArgs,
+			RightParen: expr.RightParen,
+		}
+	}
+
+	// Resolve the best overload (object methods are always static)
+	methodInfo := a.resolveObjectOverload(methodInfos, typedArgs, expr.Method, objectName, expr.MethodPos)
+	if methodInfo == nil {
+		// Error already reported by resolveObjectOverload
+		return &TypedMethodCallExpr{
+			Type:       TypeError,
+			Object:     typedObject,
+			Dot:        expr.Dot,
+			Method:     expr.Method,
+			MethodPos:  expr.MethodPos,
+			LeftParen:  expr.LeftParen,
+			Arguments:  typedArgs,
+			RightParen: expr.RightParen,
+		}
+	}
+
+	return &TypedMethodCallExpr{
+		Type:           methodInfo.ReturnType,
+		Object:         typedObject,
+		Dot:            expr.Dot,
+		Method:         expr.Method,
+		MethodPos:      expr.MethodPos,
+		LeftParen:      expr.LeftParen,
+		Arguments:      typedArgs,
+		RightParen:     expr.RightParen,
+		ResolvedMethod: methodInfo,
+	}
+}
+
+// tryAnalyzeInstanceMethodCall attempts to analyze an instance method call
+// Returns nil if the object type doesn't support instance methods
+func (a *Analyzer) tryAnalyzeInstanceMethodCall(typedObject TypedExpression, objectType Type, expr *ast.MethodCallExpr, typedArgs []TypedExpression) TypedExpression {
+	// Get the class type from the object type
+	var classType *ClassType
+
+	// Direct class type (stack-allocated instance)
+	if ct, ok := objectType.(ClassType); ok {
+		classType = &ct
+	}
+
+	// Owned pointer to class
+	if owned, ok := objectType.(OwnedPointerType); ok {
+		if ct, ok := owned.ElementType.(ClassType); ok {
+			classType = &ct
+		}
+	}
+
+	// Immutable reference to class
+	if ref, ok := objectType.(RefPointerType); ok {
+		if ct, ok := ref.ElementType.(ClassType); ok {
+			classType = &ct
+		}
+	}
+
+	// Mutable reference to class
+	if mutRef, ok := objectType.(MutRefPointerType); ok {
+		if ct, ok := mutRef.ElementType.(ClassType); ok {
+			classType = &ct
+		}
+	}
+
+	if classType == nil {
+		return nil // Not a class type, let caller handle it
+	}
+
+	// Look up the method
+	methodInfos, found := classType.Methods[expr.Method]
+	if !found || len(methodInfos) == 0 {
+		a.addError(
+			fmt.Sprintf("undefined method '%s' on class '%s'", expr.Method, classType.Name),
+			expr.MethodPos, expr.MethodPos,
+		)
+		return &TypedMethodCallExpr{
+			Type:           TypeError,
+			Object:         typedObject,
+			Dot:            expr.Dot,
+			Method:         expr.Method,
+			MethodPos:      expr.MethodPos,
+			LeftParen:      expr.LeftParen,
+			Arguments:      typedArgs,
+			RightParen:     expr.RightParen,
+			SafeNavigation: expr.SafeNavigation,
+		}
+	}
+
+	// Resolve the best instance overload
+	methodInfo := a.resolveInstanceOverload(methodInfos, typedArgs, objectType, expr.Method, classType.Name, expr.MethodPos)
+	if methodInfo == nil {
+		// Error already reported by resolveInstanceOverload
+		return &TypedMethodCallExpr{
+			Type:           TypeError,
+			Object:         typedObject,
+			Dot:            expr.Dot,
+			Method:         expr.Method,
+			MethodPos:      expr.MethodPos,
+			LeftParen:      expr.LeftParen,
+			Arguments:      typedArgs,
+			RightParen:     expr.RightParen,
+			SafeNavigation: expr.SafeNavigation,
+		}
+	}
+
+	// Check that the receiver type is compatible with the self parameter type
+	selfType := methodInfo.ParamTypes[0]
+	if !a.checkReceiverCompatibility(objectType, selfType, expr.Object.Pos()) {
+		// Error already reported by checkReceiverCompatibility
+	}
+
+	// Determine result type: for safe navigation, wrap non-void return types in nullable
+	resultType := methodInfo.ReturnType
+	if expr.SafeNavigation {
+		// For safe navigation, if method returns a non-void type, wrap in nullable
+		if _, isVoid := resultType.(VoidType); !isVoid {
+			resultType = NullableType{InnerType: resultType}
+		}
+	}
+
+	return &TypedMethodCallExpr{
+		Type:           resultType,
+		Object:         typedObject,
+		Dot:            expr.Dot,
+		Method:         expr.Method,
+		MethodPos:      expr.MethodPos,
+		LeftParen:      expr.LeftParen,
+		Arguments:      typedArgs,
+		RightParen:     expr.RightParen,
+		ResolvedMethod: methodInfo,
+		SafeNavigation: expr.SafeNavigation,
+	}
+}
+
+// checkReceiverCompatibility checks if an object type is compatible with a self parameter type
+func (a *Analyzer) checkReceiverCompatibility(objectType Type, selfType Type, pos ast.Position) bool {
+	// Get the class from the self type
+	var selfClassType ClassType
+	var isOwnedRef bool
+
+	switch st := selfType.(type) {
+	case RefPointerType:
+		if ct, ok := st.ElementType.(ClassType); ok {
+			selfClassType = ct
+		}
+	case MutRefPointerType:
+		// Mutable reference - auto-borrow logic applies
+		if ct, ok := st.ElementType.(ClassType); ok {
+			selfClassType = ct
+		}
+	case OwnedPointerType:
+		isOwnedRef = true
+		if ct, ok := st.ElementType.(ClassType); ok {
+			selfClassType = ct
+		}
+	default:
+		return false
+	}
+
+	// For owned reference methods, the caller must pass an owned pointer
+	if isOwnedRef {
+		if _, isOwned := objectType.(OwnedPointerType); !isOwned {
+			a.addError(
+				fmt.Sprintf("method requires ownership (*%s), but receiver is '%s'", selfClassType.Name, objectType.String()),
+				pos, pos,
+			).WithHint("use Heap.new() to create an owned instance")
+			return false
+		}
+	}
+
+	// For mutable reference methods, we need auto-borrow logic
+	// Stack values and owned pointers can be auto-borrowed
+	// (This is a simplified check - full implementation would track borrows)
+
+	return true
+}
+
+// overloadCallKind distinguishes between different method call contexts for overload resolution
+type overloadCallKind int
+
+const (
+	overloadCallStatic   overloadCallKind = iota // static method call on class
+	overloadCallInstance                         // instance method call on class
+	overloadCallObject                           // method call on object (always static)
+)
+
+// resolveStaticOverload finds the best matching static method overload for the given arguments.
+// Returns the resolved method, or nil if no match is found (error already reported).
+func (a *Analyzer) resolveStaticOverload(methodInfos []*MethodInfo, typedArgs []TypedExpression, methodName, className string, pos ast.Position) *MethodInfo {
+	return a.resolveOverloadCore(methodInfos, typedArgs, nil, methodName, className, pos, overloadCallStatic)
+}
+
+// resolveInstanceOverload finds the best matching instance method overload for the given arguments.
+// Returns the resolved method, or nil if no match is found (error already reported).
+func (a *Analyzer) resolveInstanceOverload(methodInfos []*MethodInfo, typedArgs []TypedExpression, objectType Type, methodName, className string, pos ast.Position) *MethodInfo {
+	return a.resolveOverloadCore(methodInfos, typedArgs, objectType, methodName, className, pos, overloadCallInstance)
+}
+
+// resolveObjectOverload finds the best matching method overload for an object (all methods are static).
+// Returns the resolved method, or nil if no match is found (error already reported).
+func (a *Analyzer) resolveObjectOverload(methodInfos []*MethodInfo, typedArgs []TypedExpression, methodName, objectName string, pos ast.Position) *MethodInfo {
+	return a.resolveOverloadCore(methodInfos, typedArgs, nil, methodName, objectName, pos, overloadCallObject)
+}
+
+// resolveOverloadCore is the shared implementation for overload resolution.
+// objectType is only used for instance method calls (to check receiver compatibility).
+func (a *Analyzer) resolveOverloadCore(methodInfos []*MethodInfo, typedArgs []TypedExpression, objectType Type, methodName, ownerName string, pos ast.Position, callKind overloadCallKind) *MethodInfo {
+	// Determine self offset based on call kind
+	selfOffset := 0
+	if callKind == overloadCallInstance {
+		selfOffset = 1
+	}
+
+	// Collect all applicable overloads
+	var applicable []*MethodInfo
+	for _, mi := range methodInfos {
+		switch callKind {
+		case overloadCallStatic:
+			// Only consider static methods
+			if !mi.IsStatic {
+				continue
+			}
+		case overloadCallInstance:
+			// Only consider instance methods with compatible receiver
+			if mi.IsStatic {
+				continue
+			}
+			if len(mi.ParamTypes) == 0 || !a.isReceiverCompatible(objectType, mi.ParamTypes[0]) {
+				continue
+			}
+		case overloadCallObject:
+			// Object methods are all static, no filtering needed
+		}
+
+		if a.isOverloadApplicable(mi, typedArgs, selfOffset) {
+			applicable = append(applicable, mi)
+		}
+	}
+
+	if len(applicable) == 0 {
+		// No applicable overload found - report best error
+		a.reportNoApplicableOverloadCore(methodInfos, typedArgs, methodName, ownerName, pos, callKind)
+		return nil
+	}
+
+	if len(applicable) == 1 {
+		return applicable[0]
+	}
+
+	// Multiple applicable - find most specific
+	return a.selectMostSpecificCore(applicable, selfOffset, methodName, ownerName, pos, callKind)
+}
+
+// selectMostSpecificCore selects the most specific overload from multiple applicable overloads.
+// Returns the most specific method, or reports ambiguity and returns nil.
+func (a *Analyzer) selectMostSpecificCore(applicable []*MethodInfo, selfOffset int, methodName, ownerName string, pos ast.Position, callKind overloadCallKind) *MethodInfo {
+	if len(applicable) == 0 {
+		return nil
+	}
+
+	// Find the most specific overload
+	best := applicable[0]
+	for i := 1; i < len(applicable); i++ {
+		candidate := applicable[i]
+		if a.isMoreSpecificThan(candidate, best, selfOffset) {
+			best = candidate
+		}
+	}
+
+	// Verify that 'best' is more specific than all others
+	for _, other := range applicable {
+		if other == best {
+			continue
+		}
+		if !a.isMoreSpecificThan(best, other, selfOffset) {
+			// Ambiguous overload - format error message based on call kind
+			var msg string
+			if callKind == overloadCallObject {
+				msg = fmt.Sprintf("ambiguous method call '%s' on object '%s': multiple overloads match", methodName, ownerName)
+			} else {
+				msg = fmt.Sprintf("ambiguous method call '%s' on '%s': multiple overloads match", methodName, ownerName)
+			}
+			a.addError(msg, pos, pos).WithHint("provide explicit types to disambiguate")
+			return nil
+		}
+	}
+
+	return best
+}
+
+// reportNoApplicableOverloadCore reports an error when no overload matches the arguments.
+func (a *Analyzer) reportNoApplicableOverloadCore(methodInfos []*MethodInfo, typedArgs []TypedExpression, methodName, ownerName string, pos ast.Position, callKind overloadCallKind) {
+	// For class methods, filter by static/instance kind
+	var candidates []*MethodInfo
+	selfOffset := 0
+
+	switch callKind {
+	case overloadCallStatic:
+		for _, mi := range methodInfos {
+			if mi.IsStatic {
+				candidates = append(candidates, mi)
+			}
+		}
+	case overloadCallInstance:
+		selfOffset = 1
+		for _, mi := range methodInfos {
+			if !mi.IsStatic {
+				candidates = append(candidates, mi)
+			}
+		}
+	case overloadCallObject:
+		candidates = methodInfos // All object methods are static
+	}
+
+	// Check for static/instance mismatch (only for class methods)
+	if callKind != overloadCallObject && len(candidates) == 0 {
+		if callKind == overloadCallStatic {
+			a.addError(
+				fmt.Sprintf("method '%s' on class '%s' is not a static method", methodName, ownerName),
+				pos, pos,
+			).WithHint("static methods are called on the class name, instance methods on an instance")
+		} else {
+			a.addError(
+				fmt.Sprintf("method '%s' on class '%s' is a static method", methodName, ownerName),
+				pos, pos,
+			).WithHint("instance methods require 'self' as first parameter; call static methods on the class name")
+		}
+		return
+	}
+
+	// Check if it's an argument count issue
+	expectedCounts := make(map[int]bool)
+	for _, mi := range candidates {
+		expectedCounts[len(mi.ParamTypes)-selfOffset] = true
+	}
+
+	// Format owner type label
+	ownerLabel := ownerName
+	if callKind == overloadCallObject {
+		ownerLabel = "object '" + ownerName + "'"
+	}
+
+	if len(expectedCounts) == 1 {
+		// All overloads have the same arg count
+		var expected int
+		for c := range expectedCounts {
+			expected = c
+		}
+		if len(typedArgs) != expected {
+			a.addError(
+				fmt.Sprintf("method '%s' expects %d argument(s), got %d", methodName, expected, len(typedArgs)),
+				pos, pos,
+			)
+		} else {
+			// Same arg count but type mismatch
+			a.addError(
+				fmt.Sprintf("no matching overload for method '%s' on %s", methodName, ownerLabel),
+				pos, pos,
+			).WithHint("check argument types")
+		}
+	} else {
+		// Multiple arg counts possible
+		a.addError(
+			fmt.Sprintf("no matching overload for method '%s' on %s: got %d argument(s)", methodName, ownerLabel, len(typedArgs)),
+			pos, pos,
+		)
+	}
+}
+
+// isReceiverCompatible checks if an object type is compatible with a self parameter type
+// without reporting errors (unlike checkReceiverCompatibility)
+func (a *Analyzer) isReceiverCompatible(objectType Type, selfType Type) bool {
+	// For owned pointers, check if object is also owned
+	if _, isSelfOwned := selfType.(OwnedPointerType); isSelfOwned {
+		_, isObjOwned := objectType.(OwnedPointerType)
+		return isObjOwned
+	}
+
+	// For ref/mutref pointers, owned pointers can auto-borrow
+	return true
+}
+
+// isOverloadApplicable checks if a method can be called with the given arguments.
+// selfOffset is 0 for static methods, 1 for instance methods (to skip self).
+func (a *Analyzer) isOverloadApplicable(mi *MethodInfo, typedArgs []TypedExpression, selfOffset int) bool {
+	expectedArgs := len(mi.ParamTypes) - selfOffset
+	if len(typedArgs) != expectedArgs {
+		return false
+	}
+
+	for i := 0; i < len(typedArgs); i++ {
+		argType := typedArgs[i].GetType()
+		paramType := mi.ParamTypes[i+selfOffset]
+		if !IsAssignableTo(argType, paramType) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// isMoreSpecificThan returns true if m1 is more specific than m2.
+// A method is more specific if all its parameter types are at least as specific,
+// and at least one is strictly more specific.
+// Specificity rules: non-nullable > nullable, exact type > compatible type
+func (a *Analyzer) isMoreSpecificThan(m1, m2 *MethodInfo, selfOffset int) bool {
+	if len(m1.ParamTypes) != len(m2.ParamTypes) {
+		return false // Different arity, can't compare
+	}
+
+	hasStrictlyMore := false
+	for i := selfOffset; i < len(m1.ParamTypes); i++ {
+		t1 := m1.ParamTypes[i]
+		t2 := m2.ParamTypes[i]
+
+		cmp := a.compareTypeSpecificity(t1, t2)
+		if cmp < 0 {
+			return false // t1 is less specific, m1 is not more specific
+		}
+		if cmp > 0 {
+			hasStrictlyMore = true
+		}
+	}
+
+	return hasStrictlyMore
+}
+
+// compareTypeSpecificity compares two types for specificity.
+// Returns: 1 if t1 is more specific, -1 if t2 is more specific, 0 if equal.
+func (a *Analyzer) compareTypeSpecificity(t1, t2 Type) int {
+	// Non-nullable is more specific than nullable
+	t1Nullable, t1IsNullable := t1.(NullableType)
+	t2Nullable, t2IsNullable := t2.(NullableType)
+
+	if !t1IsNullable && t2IsNullable {
+		return 1 // t1 is more specific (non-nullable vs nullable)
+	}
+	if t1IsNullable && !t2IsNullable {
+		return -1 // t2 is more specific
+	}
+	if t1IsNullable && t2IsNullable {
+		// Both nullable, compare inner types
+		return a.compareTypeSpecificity(t1Nullable.InnerType, t2Nullable.InnerType)
+	}
+
+	// If types are equal, return 0
+	if t1.Equals(t2) {
+		return 0
+	}
+
+	// Different non-nullable types - no clear specificity ordering
+	return 0
 }
 
 // analyzeHeapMethodCall analyzes Heap.new() and other Heap methods
@@ -2839,6 +4026,34 @@ func (a *Analyzer) analyzeIdentifier(ident *ast.IdentifierExpr) TypedExpression 
 		Name:     ident.Name,
 		StartPos: ident.StartPos,
 		EndPos:   ident.EndPos,
+	}
+}
+
+// analyzeSelfExpr analyzes the 'self' expression within a method body
+func (a *Analyzer) analyzeSelfExpr(self *ast.SelfExpr) TypedExpression {
+	// 'self' is only valid within a method body
+	if a.currentClass == nil {
+		a.addError("'self' can only be used within a method body", self.SelfPos, self.SelfPos)
+		return &TypedSelfExpr{
+			Type:    TypeError,
+			SelfPos: self.SelfPos,
+		}
+	}
+
+	// Look up 'self' in the current scope (it was added as a parameter)
+	info, found := a.currentScope.lookup("self")
+	if !found {
+		// This shouldn't happen if we're in a class method that has 'self' param
+		a.addError("'self' is not available in this context", self.SelfPos, self.SelfPos)
+		return &TypedSelfExpr{
+			Type:    TypeError,
+			SelfPos: self.SelfPos,
+		}
+	}
+
+	return &TypedSelfExpr{
+		Type:    info.Type,
+		SelfPos: self.SelfPos,
 	}
 }
 

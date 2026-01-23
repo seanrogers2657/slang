@@ -1,0 +1,19 @@
+// @test: expect_error=true
+// @test: error_stage=semantic
+// @test: error_contains=immutable
+// Error: cannot modify val field even with mutable borrow
+
+Point = class {
+    val x: i64    // immutable field
+    var y: i64    // mutable field
+
+    // Mutable borrow should allow modifying var fields, but not val fields
+    tryModifyX = (self: &&Point) {
+        self.x = 100  // ERROR: cannot modify immutable field 'x'
+    }
+}
+
+main = () {
+    val p = Heap.new(Point{ 10, 20 })
+    p.tryModifyX()
+}

@@ -2,15 +2,15 @@
 // Test safe navigation for method calls (?.method())
 
 Counter = class {
-    var value: i64
+    var value: s64
 
     // Static factory
-    create = (initial: i64) -> *Counter {
+    create = (initial: s64) -> *Counter {
         return Heap.new(Counter{ initial })
     }
 
     // Instance method that returns a value
-    getValue = (self: &Counter) -> i64 {
+    getValue = (self: &Counter) -> s64 {
         return self.value
     }
 
@@ -24,12 +24,12 @@ main = () {
     // Test 1: Safe call on non-null returns the value
     val counter: *Counter? = Counter.create(10)
     val v1 = counter?.getValue()
-    // v1 is i64? = 10
+    // v1 is s64? = 10
 
     // Test 2: Safe call on null returns null (no crash)
     val nullCounter: *Counter? = null
     val v2 = nullCounter?.getValue()
-    // v2 is i64? = null
+    // v2 is s64? = null
 
     // For exit code: v1 should be 10, v2 should be 0 (null)
     // If we can use v1 as the base...

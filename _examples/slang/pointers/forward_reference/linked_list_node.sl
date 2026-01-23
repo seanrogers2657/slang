@@ -2,7 +2,7 @@
 // @test: stdout=10\n
 // Test: Self-referential struct (linked list node)
 Node = struct {
-    val value: i64
+    val value: s64
     var next: *Node?
 }
 

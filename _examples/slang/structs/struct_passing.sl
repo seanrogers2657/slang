@@ -3,11 +3,11 @@
 // Note: This tests passing a struct to a function
 // Currently tests reading a single field from the passed struct
 Point = struct {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 }
 
-getX = (p: Point) -> i64 {
+getX = (p: Point) -> s64 {
     return p.x
 }
 

@@ -2,8 +2,8 @@
 // @test: error_stage=parser
 // @test: error_contains=cannot mix positional and named arguments
 Point = struct {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 }
 
 main = () {

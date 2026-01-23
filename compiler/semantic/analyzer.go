@@ -2473,7 +2473,7 @@ func (a *Analyzer) analyzeLenBuiltin(call *ast.CallExpr) TypedExpression {
 		)
 		// Return error typed expression
 		return &TypedLenExpr{
-			Type:       TypeI64,
+			Type:       TypeS64,
 			Array:      nil,
 			ArraySize:  ArraySizeUnknown,
 			NamePos:    call.NamePos,
@@ -2496,7 +2496,7 @@ func (a *Analyzer) analyzeLenBuiltin(call *ast.CallExpr) TypedExpression {
 			)
 		}
 		return &TypedLenExpr{
-			Type:       TypeI64,
+			Type:       TypeS64,
 			Array:      typedArg,
 			ArraySize:  ArraySizeUnknown,
 			NamePos:    call.NamePos,
@@ -2506,7 +2506,7 @@ func (a *Analyzer) analyzeLenBuiltin(call *ast.CallExpr) TypedExpression {
 	}
 
 	return &TypedLenExpr{
-		Type:       TypeI64,
+		Type:       TypeS64,
 		Array:      typedArg,
 		ArraySize:  arrayType.Size,
 		NamePos:    call.NamePos,
@@ -3950,8 +3950,8 @@ func isAcceptedType(argType Type, acceptedTypes []Type) bool {
 		if accepted.Equals(argType) {
 			return true
 		}
-		// Also allow compatible integer types when i64 is accepted
-		if _, isI64 := accepted.(I64Type); isI64 && IsIntegerType(argType) {
+		// Also allow compatible integer types when s64 is accepted
+		if _, isS64 := accepted.(S64Type); isS64 && IsIntegerType(argType) {
 			return true
 		}
 	}
@@ -3983,8 +3983,8 @@ func formatAcceptedTypes(types []Type) string {
 // isCompatibleIntegerType checks if argType can be passed to paramType
 // This allows generic integer literals to be passed to sized integer parameters
 func isCompatibleIntegerType(paramType, argType Type) bool {
-	// If param expects i64, allow any integer type
-	if _, isI64 := paramType.(I64Type); isI64 {
+	// If param expects s64, allow any integer type
+	if _, isS64 := paramType.(S64Type); isS64 {
 		return IsIntegerType(argType)
 	}
 	return false
@@ -4463,29 +4463,29 @@ func (a *Analyzer) checkIntegerBounds(value string, targetType Type, pos ast.Pos
 	zero := big.NewInt(0)
 
 	switch targetType.(type) {
-	case I8Type:
+	case S8Type:
 		if val.Cmp(minI8) < 0 || val.Cmp(maxI8) > 0 {
-			a.addError(fmt.Sprintf("integer literal %s out of range for i8 (-128 to 127)", value), pos, pos)
+			a.addError(fmt.Sprintf("integer literal %s out of range for s8 (-128 to 127)", value), pos, pos)
 			return false
 		}
-	case I16Type:
+	case S16Type:
 		if val.Cmp(minI16) < 0 || val.Cmp(maxI16) > 0 {
-			a.addError(fmt.Sprintf("integer literal %s out of range for i16 (-32768 to 32767)", value), pos, pos)
+			a.addError(fmt.Sprintf("integer literal %s out of range for s16 (-32768 to 32767)", value), pos, pos)
 			return false
 		}
-	case I32Type:
+	case S32Type:
 		if val.Cmp(minI32) < 0 || val.Cmp(maxI32) > 0 {
-			a.addError(fmt.Sprintf("integer literal %s out of range for i32", value), pos, pos)
+			a.addError(fmt.Sprintf("integer literal %s out of range for s32", value), pos, pos)
 			return false
 		}
-	case I64Type:
+	case S64Type:
 		if val.Cmp(minI64) < 0 || val.Cmp(maxI64) > 0 {
-			a.addError(fmt.Sprintf("integer literal %s out of range for i64", value), pos, pos)
+			a.addError(fmt.Sprintf("integer literal %s out of range for s64", value), pos, pos)
 			return false
 		}
-	case I128Type:
+	case S128Type:
 		if val.Cmp(minI128) < 0 || val.Cmp(maxI128) > 0 {
-			a.addError(fmt.Sprintf("integer literal %s out of range for i128", value), pos, pos)
+			a.addError(fmt.Sprintf("integer literal %s out of range for s128", value), pos, pos)
 			return false
 		}
 	case U8Type:

@@ -2,15 +2,15 @@
 // Test mutable borrow (&&T) modifying fields
 
 Counter = class {
-    var count: i64
+    var count: s64
 
     // Mutable borrow - can modify var fields
-    addMany = (self: &&Counter, a: i64, b: i64, c: i64) {
+    addMany = (self: &&Counter, a: s64, b: s64, c: s64) {
         self.count = self.count + a + b + c
     }
 
     // Immutable borrow - read-only
-    getCount = (self: &Counter) -> i64 {
+    getCount = (self: &Counter) -> s64 {
         return self.count
     }
 }

@@ -2,10 +2,10 @@
 // Test method call on temporary (literal) value
 
 Point = class {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 
-    magnitude = (self: &Point) -> i64 {
+    magnitude = (self: &Point) -> s64 {
         return self.x * self.x + self.y * self.y
     }
 }

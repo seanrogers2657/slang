@@ -15,48 +15,48 @@ type NumericType interface {
 }
 
 // Signed integer types
-type I8Type struct{}
+type S8Type struct{}
 
-func (t I8Type) String() string         { return "i8" }
-func (t I8Type) BitWidth() int          { return 8 }
-func (t I8Type) IsSigned() bool         { return true }
-func (t I8Type) IsFloat() bool          { return false }
-func (t I8Type) Equals(other Type) bool { _, ok := other.(I8Type); return ok }
+func (t S8Type) String() string         { return "s8" }
+func (t S8Type) BitWidth() int          { return 8 }
+func (t S8Type) IsSigned() bool         { return true }
+func (t S8Type) IsFloat() bool          { return false }
+func (t S8Type) Equals(other Type) bool { _, ok := other.(S8Type); return ok }
 
-type I16Type struct{}
+type S16Type struct{}
 
-func (t I16Type) String() string         { return "i16" }
-func (t I16Type) BitWidth() int          { return 16 }
-func (t I16Type) IsSigned() bool         { return true }
-func (t I16Type) IsFloat() bool          { return false }
-func (t I16Type) Equals(other Type) bool { _, ok := other.(I16Type); return ok }
+func (t S16Type) String() string         { return "s16" }
+func (t S16Type) BitWidth() int          { return 16 }
+func (t S16Type) IsSigned() bool         { return true }
+func (t S16Type) IsFloat() bool          { return false }
+func (t S16Type) Equals(other Type) bool { _, ok := other.(S16Type); return ok }
 
-type I32Type struct{}
+type S32Type struct{}
 
-func (t I32Type) String() string         { return "i32" }
-func (t I32Type) BitWidth() int          { return 32 }
-func (t I32Type) IsSigned() bool         { return true }
-func (t I32Type) IsFloat() bool          { return false }
-func (t I32Type) Equals(other Type) bool { _, ok := other.(I32Type); return ok }
+func (t S32Type) String() string         { return "s32" }
+func (t S32Type) BitWidth() int          { return 32 }
+func (t S32Type) IsSigned() bool         { return true }
+func (t S32Type) IsFloat() bool          { return false }
+func (t S32Type) Equals(other Type) bool { _, ok := other.(S32Type); return ok }
 
-type I64Type struct{}
+type S64Type struct{}
 
-func (t I64Type) String() string { return "i64" }
-func (t I64Type) BitWidth() int  { return 64 }
-func (t I64Type) IsSigned() bool { return true }
-func (t I64Type) IsFloat() bool  { return false }
-func (t I64Type) Equals(other Type) bool {
-	_, ok := other.(I64Type)
+func (t S64Type) String() string { return "s64" }
+func (t S64Type) BitWidth() int  { return 64 }
+func (t S64Type) IsSigned() bool { return true }
+func (t S64Type) IsFloat() bool  { return false }
+func (t S64Type) Equals(other Type) bool {
+	_, ok := other.(S64Type)
 	return ok
 }
 
-type I128Type struct{}
+type S128Type struct{}
 
-func (t I128Type) String() string         { return "i128" }
-func (t I128Type) BitWidth() int          { return 128 }
-func (t I128Type) IsSigned() bool         { return true }
-func (t I128Type) IsFloat() bool          { return false }
-func (t I128Type) Equals(other Type) bool { _, ok := other.(I128Type); return ok }
+func (t S128Type) String() string         { return "s128" }
+func (t S128Type) BitWidth() int          { return 128 }
+func (t S128Type) IsSigned() bool         { return true }
+func (t S128Type) IsFloat() bool          { return false }
+func (t S128Type) Equals(other Type) bool { _, ok := other.(S128Type); return ok }
 
 // Unsigned integer types
 type U8Type struct{}
@@ -726,7 +726,7 @@ func TypeByteSize(t Type) int {
 // Common type instances
 var (
 	// Default types
-	TypeInteger = I64Type{} // default integer (i64)
+	TypeInteger = S64Type{} // default integer (s64)
 	TypeString  = StringType{}
 	TypeBoolean = BooleanType{}
 	TypeVoid    = VoidType{}
@@ -734,11 +734,11 @@ var (
 	TypeNothing = NothingType{} // type of null literal
 
 	// Signed integer types
-	TypeI8   = I8Type{}
-	TypeI16  = I16Type{}
-	TypeI32  = I32Type{}
-	TypeI64  = I64Type{}
-	TypeI128 = I128Type{}
+	TypeS8   = S8Type{}
+	TypeS16  = S16Type{}
+	TypeS32  = S32Type{}
+	TypeS64  = S64Type{}
+	TypeS128 = S128Type{}
 
 	// Unsigned integer types
 	TypeU8   = U8Type{}
@@ -755,7 +755,7 @@ var (
 // IsIntegerType checks if a type is any integer type
 func IsIntegerType(t Type) bool {
 	switch t.(type) {
-	case I8Type, I16Type, I32Type, I64Type, I128Type,
+	case S8Type, S16Type, S32Type, S64Type, S128Type,
 		U8Type, U16Type, U32Type, U64Type, U128Type:
 		return true
 	}
@@ -791,16 +791,16 @@ func TypeFromName(name string) Type {
 		return TypeVoid
 
 	// Signed integers
-	case "i8":
-		return TypeI8
-	case "i16":
-		return TypeI16
-	case "i32":
-		return TypeI32
-	case "i64":
-		return TypeI64
-	case "i128":
-		return TypeI128
+	case "s8":
+		return TypeS8
+	case "s16":
+		return TypeS16
+	case "s32":
+		return TypeS32
+	case "s64":
+		return TypeS64
+	case "s128":
+		return TypeS128
 
 	// Unsigned integers
 	case "u8":

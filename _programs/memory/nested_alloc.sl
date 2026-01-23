@@ -3,22 +3,22 @@
 // Run manually: ./sl run _programs/memory/nested_alloc.sl
 
 Inner = struct {
-    var value: i64
+    var value: s64
 }
 
 Outer = struct {
     var data: *Inner
-    var extra: i64
+    var extra: s64
 }
 
-createAndCompute = (n: i64) -> i64 {
+createAndCompute = (n: s64) -> s64 {
     val inner = Heap.new(Inner{ n })
     val outer = Heap.new(Outer{ inner, n * 2 })
     return outer.data.value + outer.extra
 }
 
 main = () {
-    var sum: i64 = 0
+    var sum: s64 = 0
     var i = 1
 
     for ; i <= 1000; i = i + 1 {

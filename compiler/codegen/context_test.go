@@ -31,12 +31,12 @@ func TestNewBaseContext_WithSourceLines(t *testing.T) {
 func TestBaseContext_DeclareVariable(t *testing.T) {
 	ctx := NewBaseContext(nil)
 
-	offset1 := ctx.DeclareVariable("x", semantic.TypeI64)
+	offset1 := ctx.DeclareVariable("x", semantic.TypeS64)
 	if offset1 != 16 {
 		t.Errorf("first variable should be at offset 16, got %d", offset1)
 	}
 
-	offset2 := ctx.DeclareVariable("y", semantic.TypeI32)
+	offset2 := ctx.DeclareVariable("y", semantic.TypeS32)
 	if offset2 != 32 {
 		t.Errorf("second variable should be at offset 32, got %d", offset2)
 	}
@@ -49,7 +49,7 @@ func TestBaseContext_DeclareVariable(t *testing.T) {
 
 func TestBaseContext_GetVariable(t *testing.T) {
 	ctx := NewBaseContext(nil)
-	ctx.DeclareVariable("x", semantic.TypeI64)
+	ctx.DeclareVariable("x", semantic.TypeS64)
 
 	info, found := ctx.GetVariable("x")
 	if !found {
@@ -58,8 +58,8 @@ func TestBaseContext_GetVariable(t *testing.T) {
 	if info.Offset != 16 {
 		t.Errorf("expected offset 16, got %d", info.Offset)
 	}
-	if info.Type != semantic.TypeI64 {
-		t.Errorf("expected type I64, got %v", info.Type)
+	if info.Type != semantic.TypeS64 {
+		t.Errorf("expected type S64, got %v", info.Type)
 	}
 
 	_, found = ctx.GetVariable("notfound")
@@ -148,10 +148,10 @@ func TestBaseContext_MultipleVariables(t *testing.T) {
 	ctx := NewBaseContext(nil)
 
 	// Declare multiple variables with different types
-	ctx.DeclareVariable("a", semantic.TypeI8)
-	ctx.DeclareVariable("b", semantic.TypeI16)
-	ctx.DeclareVariable("c", semantic.TypeI32)
-	ctx.DeclareVariable("d", semantic.TypeI64)
+	ctx.DeclareVariable("a", semantic.TypeS8)
+	ctx.DeclareVariable("b", semantic.TypeS16)
+	ctx.DeclareVariable("c", semantic.TypeS32)
+	ctx.DeclareVariable("d", semantic.TypeS64)
 	ctx.DeclareVariable("e", semantic.TypeFloat32)
 	ctx.DeclareVariable("f", semantic.TypeFloat64)
 

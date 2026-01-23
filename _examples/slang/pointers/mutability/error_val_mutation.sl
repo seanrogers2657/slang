@@ -3,8 +3,8 @@
 // @test: error_contains=cannot assign to immutable field
 // Test: Cannot mutate VAL FIELD (immutable field), even through mutable binding
 Point = struct {
-    val x: i64  // val field cannot be mutated
-    var y: i64
+    val x: s64  // val field cannot be mutated
+    var y: s64
 }
 
 main = () {

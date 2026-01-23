@@ -4,7 +4,7 @@
 
 main = () {
     // Elvis with non-null - should use original value, not add
-    val y: i64? = 3
+    val y: s64? = 3
     val r2 = y ?: 5 + 10  // Should be: 3 (not 3 + 10 = 13)
 
     // If precedence is correct: r2 = 3

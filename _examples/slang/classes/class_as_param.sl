@@ -2,20 +2,20 @@
 // Test passing class instances to free functions
 
 Point = class {
-    var x: i64
-    var y: i64
+    var x: s64
+    var y: s64
 
-    create = (x: i64, y: i64) -> *Point {
+    create = (x: s64, y: s64) -> *Point {
         return Heap.new(Point{ x, y })
     }
 
-    getX = (self: &Point) -> i64 {
+    getX = (self: &Point) -> s64 {
         return self.x
     }
 }
 
 // Free function taking immutable borrow of class
-sumPoints = (p1: &Point, p2: &Point) -> i64 {
+sumPoints = (p1: &Point, p2: &Point) -> s64 {
     return p1.x + p1.y + p2.x + p2.y
 }
 
@@ -26,7 +26,7 @@ doublePoint = (p: &&Point) {
 }
 
 // Free function returning value derived from class
-manhattan = (p: &Point) -> i64 {
+manhattan = (p: &Point) -> s64 {
     val absX = if p.x < 0 { 0 - p.x } else { p.x }
     val absY = if p.y < 0 { 0 - p.y } else { p.y }
     return absX + absY

@@ -2,15 +2,15 @@
 // Test field mutation through methods
 
 Counter = class {
-    var value: i64
+    var value: s64
 
     // Read-only access with &Counter
-    get = (self: &Counter) -> i64 {
+    get = (self: &Counter) -> s64 {
         return self.value
     }
 
     // Mutating access with &&Counter
-    set = (self: &&Counter, v: i64) {
+    set = (self: &&Counter, v: s64) {
         self.value = v
     }
 
@@ -19,7 +19,7 @@ Counter = class {
         self.value = self.value * 2
     }
 
-    addAmount = (self: &&Counter, amount: i64) {
+    addAmount = (self: &&Counter, amount: s64) {
         self.value = self.value + amount
     }
 }

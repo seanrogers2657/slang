@@ -2,10 +2,10 @@
 // Test methods with local variables
 
 Calculator = class {
-    var base: i64
+    var base: s64
 
     // Method with multiple local variables
-    compute = (self: &Calculator, x: i64, y: i64) -> i64 {
+    compute = (self: &Calculator, x: s64, y: s64) -> s64 {
         val sum = x + y
         val product = x * y
         val combined = sum + product
@@ -13,9 +13,9 @@ Calculator = class {
     }
 
     // Method with mutable local variable
-    accumulate = (self: &Calculator, n: i64) -> i64 {
-        var total: i64 = self.base
-        var i: i64 = 1
+    accumulate = (self: &Calculator, n: s64) -> s64 {
+        var total: s64 = self.base
+        var i: s64 = 1
         while i <= n {
             val increment = i * 2
             total = total + increment
@@ -25,7 +25,7 @@ Calculator = class {
     }
 
     // Method with shadowing (local shadows parameter-like behavior)
-    transform = (self: &Calculator, value: i64) -> i64 {
+    transform = (self: &Calculator, value: s64) -> s64 {
         val temp = value * 2
         val result = temp + self.base
         return result

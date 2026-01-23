@@ -2,21 +2,21 @@
 // Test instance method calling another method on self
 
 Point = class {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 
     // Method that calls another method on self
-    squaredMagnitude = (self: &Point) -> i64 {
+    squaredMagnitude = (self: &Point) -> s64 {
         val xSq = self.getXSquared()
         val ySq = self.getYSquared()
         return xSq + ySq
     }
 
-    getXSquared = (self: &Point) -> i64 {
+    getXSquared = (self: &Point) -> s64 {
         return self.x * self.x
     }
 
-    getYSquared = (self: &Point) -> i64 {
+    getYSquared = (self: &Point) -> s64 {
         return self.y * self.y
     }
 }

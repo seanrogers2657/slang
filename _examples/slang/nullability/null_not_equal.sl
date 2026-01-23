@@ -2,8 +2,8 @@
 // @test: stdout=false\ntrue\n
 // Test != null comparison
 main = () {
-    val x: i64? = null
-    val y: i64? = 42
+    val x: s64? = null
+    val y: s64? = 42
     print(x != null)
     print(y != null)
 }

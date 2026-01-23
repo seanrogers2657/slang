@@ -3,10 +3,10 @@
 // This is a future feature
 
 Point = class {
-    var x: i64
-    var y: i64
+    var x: s64
+    var y: s64
 
-    magnitude = (self: &Point) -> i64 {
+    magnitude = (self: &Point) -> s64 {
         return self.x * self.x + self.y * self.y
     }
 }

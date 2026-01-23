@@ -2,14 +2,14 @@
 // Test void methods (methods with no return value)
 
 Logger = class {
-    var lastValue: i64
+    var lastValue: s64
 
     create = () -> *Logger {
         return Heap.new(Logger{ 0 })
     }
 
     // Void method with explicit void return type
-    log = (self: &&Logger, value: i64) {
+    log = (self: &&Logger, value: s64) {
         self.lastValue = value
     }
 
@@ -19,12 +19,12 @@ Logger = class {
     }
 
     // Void static method
-    staticLog = (value: i64) {
+    staticLog = (value: s64) {
         // Just does something without returning
         val temp = value * 2
     }
 
-    getLast = (self: &Logger) -> i64 {
+    getLast = (self: &Logger) -> s64 {
         return self.lastValue
     }
 }

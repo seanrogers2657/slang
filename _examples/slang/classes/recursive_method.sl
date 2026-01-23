@@ -2,10 +2,10 @@
 // Test recursive method with method call directly as operand
 
 Calculator = class {
-    var result: i64
+    var result: s64
 
     // Recursive static method - factorial with direct operand usage
-    factorial = (n: i64) -> i64 {
+    factorial = (n: s64) -> s64 {
         if n <= 1 {
             return 1
         }

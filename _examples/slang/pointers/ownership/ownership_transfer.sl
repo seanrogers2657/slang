@@ -2,11 +2,11 @@
 // @test: stdout=30\n15\n15\n
 // Test: Passing *T to a function transfers ownership
 Point = struct {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 }
 
-consumePoint = (p: *Point) -> i64 {
+consumePoint = (p: *Point) -> s64 {
     return p.x + p.y
 }
 

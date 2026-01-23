@@ -3,12 +3,12 @@
 // Test: Heap allocation in function with return value
 // Verifies that return values aren't clobbered by deallocation cleanup
 Point = struct {
-    var x: i64
-    var y: i64
-    var z: i64
+    var x: s64
+    var y: s64
+    var z: s64
 }
 
-allocateAndSum = (a: i64, b: i64, c: i64) -> i64 {
+allocateAndSum = (a: s64, b: s64, c: s64) -> s64 {
     val p = Heap.new(Point{ a, b, c })
     return p.x + p.y + p.z
 }

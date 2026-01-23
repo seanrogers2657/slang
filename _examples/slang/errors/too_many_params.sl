@@ -1,7 +1,7 @@
 // @test: expect_error=true
 // @test: error_stage=semantic
 // @test: error_contains=maximum allowed is 8
-tooMany = (a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64, i: i64) {
+tooMany = (a: s64, b: s64, c: s64, d: s64, e: s64, f: s64, g: s64, h: s64, i: s64) {
     print(a)
 }
 

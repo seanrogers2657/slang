@@ -1,7 +1,7 @@
-// Tests ownership transfer with *i64
+// Tests ownership transfer with *s64
 // Demonstrates that ownership can be transferred multiple times
 
-transfer = (s: *i64) -> *i64 {
+transfer = (s: *s64) -> *s64 {
     return s
 }
 

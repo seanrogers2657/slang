@@ -2,8 +2,8 @@
 // @test: stdout=10\n20\n
 // Test: Mutable borrowing with &&T
 Point = struct {
-    var x: i64
-    var y: i64
+    var x: s64
+    var y: s64
 }
 
 doubleX = (p: &&Point) {

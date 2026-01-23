@@ -2,16 +2,16 @@
 // Test recursive instance methods
 
 Node = class {
-    var value: i64
-    var depth: i64
+    var value: s64
+    var depth: s64
 
-    create = (value: i64, depth: i64) -> *Node {
+    create = (value: s64, depth: s64) -> *Node {
         return Heap.new(Node{ value, depth })
     }
 
     // Recursive instance method using iteration instead
-    sumToDepth = (self: &Node) -> i64 {
-        var total: i64 = 0
+    sumToDepth = (self: &Node) -> s64 {
+        var total: s64 = 0
         var d = self.depth
         while d >= 0 {
             total = total + self.value
@@ -22,10 +22,10 @@ Node = class {
 }
 
 Fibonacci = class {
-    var placeholder: i64
+    var placeholder: s64
 
     // Recursive static
-    fib = (n: i64) -> i64 {
+    fib = (n: s64) -> s64 {
         if n <= 1 {
             return n
         }

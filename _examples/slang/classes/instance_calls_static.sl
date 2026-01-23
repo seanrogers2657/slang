@@ -2,25 +2,25 @@
 // Test instance method calling static method of same class
 
 MathBox = class {
-    var value: i64
+    var value: s64
 
     // Static helper method
-    double = (x: i64) -> i64 {
+    double = (x: s64) -> s64 {
         return x * 2
     }
 
     // Static method calling another static
-    quadruple = (x: i64) -> i64 {
+    quadruple = (x: s64) -> s64 {
         return MathBox.double(MathBox.double(x))
     }
 
     // Instance method calling static method
-    addDoubled = (self: &&MathBox, x: i64) {
+    addDoubled = (self: &&MathBox, x: s64) {
         self.value = self.value + MathBox.double(x)
     }
 
     // Instance method using static in expression
-    getDoubledValue = (self: &MathBox) -> i64 {
+    getDoubledValue = (self: &MathBox) -> s64 {
         return MathBox.double(self.value)
     }
 }

@@ -2,14 +2,14 @@
 // Test methods with conditional logic
 
 Classifier = class {
-    var threshold: i64
+    var threshold: s64
 
-    create = (threshold: i64) -> *Classifier {
+    create = (threshold: s64) -> *Classifier {
         return Heap.new(Classifier{ threshold })
     }
 
     // Method with if-else chain
-    classify = (self: &Classifier, value: i64) -> i64 {
+    classify = (self: &Classifier, value: s64) -> s64 {
         if value < 0 {
             return 0
         }
@@ -23,7 +23,7 @@ Classifier = class {
     }
 
     // Method with conditional expression
-    score = (self: &Classifier, value: i64) -> i64 {
+    score = (self: &Classifier, value: s64) -> s64 {
         val multiplier = if value < 0 {
             0
         } else if value < self.threshold {

@@ -4,16 +4,16 @@
 TreeNode = struct {
     var left: *TreeNode?
     var right: *TreeNode?
-    val value: i64
+    val value: s64
 }
 
 // Create a leaf node (no children)
-leaf = (value: i64) -> *TreeNode {
+leaf = (value: s64) -> *TreeNode {
     return Heap.new(TreeNode{ null, null, value })
 }
 
 // Create a node with children (takes ownership)
-node = (left: *TreeNode?, right: *TreeNode?, value: i64) -> *TreeNode {
+node = (left: *TreeNode?, right: *TreeNode?, value: s64) -> *TreeNode {
     return Heap.new(TreeNode{ left, right, value })
 }
 

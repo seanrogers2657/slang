@@ -2,30 +2,30 @@
 // Test class with only static methods (utility class pattern)
 
 MathUtils = class {
-    var placeholder: i64
+    var placeholder: s64
 
-    abs = (x: i64) -> i64 {
+    abs = (x: s64) -> s64 {
         if x < 0 {
             return 0 - x
         }
         return x
     }
 
-    max = (a: i64, b: i64) -> i64 {
+    max = (a: s64, b: s64) -> s64 {
         if a > b {
             return a
         }
         return b
     }
 
-    min = (a: i64, b: i64) -> i64 {
+    min = (a: s64, b: s64) -> s64 {
         if a < b {
             return a
         }
         return b
     }
 
-    clamp = (value: i64, minVal: i64, maxVal: i64) -> i64 {
+    clamp = (value: s64, minVal: s64, maxVal: s64) -> s64 {
         return MathUtils.min(MathUtils.max(value, minVal), maxVal)
     }
 }

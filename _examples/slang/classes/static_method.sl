@@ -2,7 +2,7 @@
 // Static method call on a class
 
 Math = class {
-    add = (a: i64, b: i64) -> i64 {
+    add = (a: s64, b: s64) -> s64 {
         return a + b
     }
 }

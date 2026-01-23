@@ -169,7 +169,7 @@ func (s *OwnershipScope) getMoveInfo(name string) (MoveInfo, bool) {
 func IsCopyable(t Type) bool {
 	switch tt := t.(type) {
 	// Primitive types are always copyable
-	case I8Type, I16Type, I32Type, I64Type, I128Type,
+	case S8Type, S16Type, S32Type, S64Type, S128Type,
 		U8Type, U16Type, U32Type, U64Type, U128Type,
 		F32Type, F64Type,
 		BooleanType, StringType:

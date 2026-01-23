@@ -2,8 +2,8 @@
 // @test: stdout=99\n
 // Chained elvis operators using intermediate variables
 main = () {
-    val a: i64? = null
-    val b: i64? = null
+    val a: s64? = null
+    val b: s64? = null
     val bDefault = b ?: 99
     val result = a ?: bDefault
     print(result)

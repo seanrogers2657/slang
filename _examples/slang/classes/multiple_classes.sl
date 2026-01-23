@@ -3,37 +3,37 @@
 
 // First class
 Point = class {
-    var x: i64
-    var y: i64
+    var x: s64
+    var y: s64
 
-    create = (x: i64, y: i64) -> *Point {
+    create = (x: s64, y: s64) -> *Point {
         return Heap.new(Point{ x, y })
     }
 
-    getX = (self: &Point) -> i64 {
+    getX = (self: &Point) -> s64 {
         return self.x
     }
 
-    getY = (self: &Point) -> i64 {
+    getY = (self: &Point) -> s64 {
         return self.y
     }
 }
 
 // Second class that uses the first
 Line = class {
-    var length: i64
+    var length: s64
 
-    create = (len: i64) -> *Line {
+    create = (len: s64) -> *Line {
         return Heap.new(Line{ len })
     }
 
-    getLength = (self: &Line) -> i64 {
+    getLength = (self: &Line) -> s64 {
         return self.length
     }
 }
 
 // Free function using multiple classes
-computeDistance = (p1: &Point, p2: &Point) -> i64 {
+computeDistance = (p1: &Point, p2: &Point) -> s64 {
     val dx = p2.getX() - p1.getX()
     val dy = p2.getY() - p1.getY()
     val absDx = if dx < 0 { 0 - dx } else { dx }

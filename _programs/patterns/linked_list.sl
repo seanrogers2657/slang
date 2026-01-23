@@ -6,11 +6,11 @@
 
 Node = struct {
     var next: *Node?
-    val value: i64
+    val value: s64
 }
 
 // Build a list by prepending nodes
-prepend = (head: *Node?, value: i64) -> *Node {
+prepend = (head: *Node?, value: s64) -> *Node {
     return Heap.new(Node{ head, value })
 }
 

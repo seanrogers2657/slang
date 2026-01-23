@@ -3,8 +3,8 @@
 // @test: error_contains=cannot borrow
 // Test: Multiple mutable borrows should produce an error
 Point = struct {
-    var x: i64
-    var y: i64
+    var x: s64
+    var y: s64
 }
 
 mutateBoth = (a: &&Point, b: &&Point) {

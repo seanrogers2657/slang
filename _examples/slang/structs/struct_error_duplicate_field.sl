@@ -2,8 +2,8 @@
 // @test: error_stage=semantic
 // @test: error_contains=field 'x' specified multiple times
 Point = struct {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 }
 
 main = () {

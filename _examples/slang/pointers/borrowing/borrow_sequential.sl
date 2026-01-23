@@ -2,7 +2,7 @@
 // @test: stdout=4\n
 // Test: Sequential mutable borrows are OK (no overlap)
 Point = struct {
-    var x: i64
+    var x: s64
 }
 
 increment = (p: &&Point) {

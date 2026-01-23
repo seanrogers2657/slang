@@ -2,15 +2,15 @@
 // Test methods that return nullable types directly
 
 Box = class {
-    var value: i64
+    var value: s64
 
     // Method returning nullable type
-    getNullable = (self: &Box) -> i64? {
+    getNullable = (self: &Box) -> s64? {
         return self.value
     }
 
     // Method returning null for zero values
-    getNonZeroOrNull = (self: &Box) -> i64? {
+    getNonZeroOrNull = (self: &Box) -> s64? {
         if self.value == 0 {
             return null
         }

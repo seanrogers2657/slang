@@ -2,7 +2,7 @@
 // @test: stdout=true\nfalse\nfalse\ntrue\n
 // Test reassigning mutable nullable variables
 main = () {
-    var x: i64? = 42
+    var x: s64? = 42
     print(x != null)  // true - has value
 
     x = null

@@ -91,7 +91,7 @@ func TestTypedCodeGenerator_IntegerLiteral(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			stmt := &semantic.TypedExprStmt{
 				Expr: &semantic.TypedLiteralExpr{
-					Type:    semantic.TypeI64,
+					Type:    semantic.TypeS64,
 					LitType: ast.LiteralTypeInteger,
 					Value:   tt.value,
 				},
@@ -142,9 +142,9 @@ func TestTypedCodeGenerator_VarDecl(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			stmt := &semantic.TypedVarDeclStmt{
 				Name:         tt.varName,
-				DeclaredType: semantic.TypeI64,
+				DeclaredType: semantic.TypeS64,
 				Initializer: &semantic.TypedLiteralExpr{
-					Type:    semantic.TypeI64,
+					Type:    semantic.TypeS64,
 					LitType: ast.LiteralTypeInteger,
 					Value:   tt.initVal,
 				},
@@ -170,17 +170,17 @@ func TestTypedCodeGenerator_VarDeclWithExpression(t *testing.T) {
 	// val sum = 10 + 20
 	stmt := &semantic.TypedVarDeclStmt{
 		Name:         "sum",
-		DeclaredType: semantic.TypeI64,
+		DeclaredType: semantic.TypeS64,
 		Initializer: &semantic.TypedBinaryExpr{
-			Type: semantic.TypeI64,
+			Type: semantic.TypeS64,
 			Left: &semantic.TypedLiteralExpr{
-				Type:    semantic.TypeI64,
+				Type:    semantic.TypeS64,
 				LitType: ast.LiteralTypeInteger,
 				Value:   "10",
 			},
 			Op: "+",
 			Right: &semantic.TypedLiteralExpr{
-				Type:    semantic.TypeI64,
+				Type:    semantic.TypeS64,
 				LitType: ast.LiteralTypeInteger,
 				Value:   "20",
 			},
@@ -234,15 +234,15 @@ func TestTypedCodeGenerator_BinaryExpr_AllIntOperations(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			stmt := &semantic.TypedExprStmt{
 				Expr: &semantic.TypedBinaryExpr{
-					Type: semantic.TypeI64,
+					Type: semantic.TypeS64,
 					Left: &semantic.TypedLiteralExpr{
-						Type:    semantic.TypeI64,
+						Type:    semantic.TypeS64,
 						LitType: ast.LiteralTypeInteger,
 						Value:   "5",
 					},
 					Op: tt.op,
 					Right: &semantic.TypedLiteralExpr{
-						Type:    semantic.TypeI64,
+						Type:    semantic.TypeS64,
 						LitType: ast.LiteralTypeInteger,
 						Value:   "3",
 					},
@@ -271,16 +271,16 @@ func TestTypedCodeGenerator_VariableReference(t *testing.T) {
 	stmts := []semantic.TypedStatement{
 		&semantic.TypedVarDeclStmt{
 			Name:         "x",
-			DeclaredType: semantic.TypeI64,
+			DeclaredType: semantic.TypeS64,
 			Initializer: &semantic.TypedLiteralExpr{
-				Type:    semantic.TypeI64,
+				Type:    semantic.TypeS64,
 				LitType: ast.LiteralTypeInteger,
 				Value:   "42",
 			},
 		},
 		&semantic.TypedExprStmt{
 			Expr: &semantic.TypedIdentifierExpr{
-				Type: semantic.TypeI64,
+				Type: semantic.TypeS64,
 				Name: "x",
 			},
 		},
@@ -312,18 +312,18 @@ func TestTypedCodeGenerator_Assignment(t *testing.T) {
 		&semantic.TypedVarDeclStmt{
 			Name:         "x",
 			Mutable:      true,
-			DeclaredType: semantic.TypeI64,
+			DeclaredType: semantic.TypeS64,
 			Initializer: &semantic.TypedLiteralExpr{
-				Type:    semantic.TypeI64,
+				Type:    semantic.TypeS64,
 				LitType: ast.LiteralTypeInteger,
 				Value:   "10",
 			},
 		},
 		&semantic.TypedAssignStmt{
 			Name:    "x",
-			VarType: semantic.TypeI64,
+			VarType: semantic.TypeS64,
 			Value: &semantic.TypedLiteralExpr{
-				Type:    semantic.TypeI64,
+				Type:    semantic.TypeS64,
 				LitType: ast.LiteralTypeInteger,
 				Value:   "20",
 			},
@@ -348,12 +348,12 @@ func TestTypedCodeGenerator_ReturnStatement(t *testing.T) {
 	fn := &semantic.TypedFunctionDecl{
 		Name:       "getAnswer",
 		Parameters: []semantic.TypedParameter{},
-		ReturnType: semantic.TypeI64,
+		ReturnType: semantic.TypeS64,
 		Body: &semantic.TypedBlockStmt{
 			Statements: []semantic.TypedStatement{
 				&semantic.TypedReturnStmt{
 					Value: &semantic.TypedLiteralExpr{
-						Type:    semantic.TypeI64,
+						Type:    semantic.TypeS64,
 						LitType: ast.LiteralTypeInteger,
 						Value:   "42",
 					},
@@ -401,7 +401,7 @@ func TestTypedCodeGenerator_ExitBuiltin(t *testing.T) {
 			Name: "exit",
 			Arguments: []semantic.TypedExpression{
 				&semantic.TypedLiteralExpr{
-					Type:    semantic.TypeI64,
+					Type:    semantic.TypeS64,
 					LitType: ast.LiteralTypeInteger,
 					Value:   "42",
 				},
@@ -431,26 +431,26 @@ func TestTypedCodeGenerator_ExitBuiltin(t *testing.T) {
 }
 
 func TestTypedCodeGenerator_FunctionWithParameters(t *testing.T) {
-	// fn add(a: i64, b: i64): i64 { return a + b }
+	// fn add(a: s64, b: s64): s64 { return a + b }
 	fn := &semantic.TypedFunctionDecl{
 		Name: "add",
 		Parameters: []semantic.TypedParameter{
-			{Name: "a", Type: semantic.TypeI64},
-			{Name: "b", Type: semantic.TypeI64},
+			{Name: "a", Type: semantic.TypeS64},
+			{Name: "b", Type: semantic.TypeS64},
 		},
-		ReturnType: semantic.TypeI64,
+		ReturnType: semantic.TypeS64,
 		Body: &semantic.TypedBlockStmt{
 			Statements: []semantic.TypedStatement{
 				&semantic.TypedReturnStmt{
 					Value: &semantic.TypedBinaryExpr{
-						Type: semantic.TypeI64,
+						Type: semantic.TypeS64,
 						Left: &semantic.TypedIdentifierExpr{
-							Type: semantic.TypeI64,
+							Type: semantic.TypeS64,
 							Name: "a",
 						},
 						Op: "+",
 						Right: &semantic.TypedIdentifierExpr{
-							Type: semantic.TypeI64,
+							Type: semantic.TypeS64,
 							Name: "b",
 						},
 					},
@@ -494,26 +494,26 @@ func TestTypedCodeGenerator_FunctionWithParameters(t *testing.T) {
 }
 
 func TestTypedCodeGenerator_FunctionCall(t *testing.T) {
-	// fn double(x: i64): i64 { return x * 2 }
+	// fn double(x: s64): s64 { return x * 2 }
 	// fn main() { double(21) }
 	doubleFn := &semantic.TypedFunctionDecl{
 		Name: "double",
 		Parameters: []semantic.TypedParameter{
-			{Name: "x", Type: semantic.TypeI64},
+			{Name: "x", Type: semantic.TypeS64},
 		},
-		ReturnType: semantic.TypeI64,
+		ReturnType: semantic.TypeS64,
 		Body: &semantic.TypedBlockStmt{
 			Statements: []semantic.TypedStatement{
 				&semantic.TypedReturnStmt{
 					Value: &semantic.TypedBinaryExpr{
-						Type: semantic.TypeI64,
+						Type: semantic.TypeS64,
 						Left: &semantic.TypedIdentifierExpr{
-							Type: semantic.TypeI64,
+							Type: semantic.TypeS64,
 							Name: "x",
 						},
 						Op: "*",
 						Right: &semantic.TypedLiteralExpr{
-							Type:    semantic.TypeI64,
+							Type:    semantic.TypeS64,
 							LitType: ast.LiteralTypeInteger,
 							Value:   "2",
 						},
@@ -531,11 +531,11 @@ func TestTypedCodeGenerator_FunctionCall(t *testing.T) {
 			Statements: []semantic.TypedStatement{
 				&semantic.TypedExprStmt{
 					Expr: &semantic.TypedCallExpr{
-						Type: semantic.TypeI64,
+						Type: semantic.TypeS64,
 						Name: "double",
 						Arguments: []semantic.TypedExpression{
 							&semantic.TypedLiteralExpr{
-								Type:    semantic.TypeI64,
+								Type:    semantic.TypeS64,
 								LitType: ast.LiteralTypeInteger,
 								Value:   "21",
 							},
@@ -575,24 +575,24 @@ func TestTypedCodeGenerator_NestedBinaryExpr(t *testing.T) {
 	// (2 + 3) * 4
 	stmt := &semantic.TypedExprStmt{
 		Expr: &semantic.TypedBinaryExpr{
-			Type: semantic.TypeI64,
+			Type: semantic.TypeS64,
 			Left: &semantic.TypedBinaryExpr{
-				Type: semantic.TypeI64,
+				Type: semantic.TypeS64,
 				Left: &semantic.TypedLiteralExpr{
-					Type:    semantic.TypeI64,
+					Type:    semantic.TypeS64,
 					LitType: ast.LiteralTypeInteger,
 					Value:   "2",
 				},
 				Op: "+",
 				Right: &semantic.TypedLiteralExpr{
-					Type:    semantic.TypeI64,
+					Type:    semantic.TypeS64,
 					LitType: ast.LiteralTypeInteger,
 					Value:   "3",
 				},
 			},
 			Op: "*",
 			Right: &semantic.TypedLiteralExpr{
-				Type:    semantic.TypeI64,
+				Type:    semantic.TypeS64,
 				LitType: ast.LiteralTypeInteger,
 				Value:   "4",
 			},
@@ -624,13 +624,13 @@ func TestTypedCodeGenContext_DeclareVariable(t *testing.T) {
 	ctx := NewBaseContext(nil)
 
 	// First variable at offset 16
-	offset1 := ctx.DeclareVariable("x", semantic.TypeI64)
+	offset1 := ctx.DeclareVariable("x", semantic.TypeS64)
 	if offset1 != 16 {
 		t.Errorf("expected first offset to be 16, got %d", offset1)
 	}
 
 	// Second variable at offset 32
-	offset2 := ctx.DeclareVariable("y", semantic.TypeI64)
+	offset2 := ctx.DeclareVariable("y", semantic.TypeS64)
 	if offset2 != 32 {
 		t.Errorf("expected second offset to be 32, got %d", offset2)
 	}
@@ -700,7 +700,7 @@ func TestTypedCodeGenerator_UndefinedVariable(t *testing.T) {
 	// Reference undefined variable
 	stmt := &semantic.TypedExprStmt{
 		Expr: &semantic.TypedIdentifierExpr{
-			Type: semantic.TypeI64,
+			Type: semantic.TypeS64,
 			Name: "undefined_var",
 		},
 	}
@@ -720,9 +720,9 @@ func TestTypedCodeGenerator_UndefinedVariableInAssignment(t *testing.T) {
 	// Assign to undefined variable
 	stmt := &semantic.TypedAssignStmt{
 		Name:    "undefined_var",
-		VarType: semantic.TypeI64,
+		VarType: semantic.TypeS64,
 		Value: &semantic.TypedLiteralExpr{
-			Type:    semantic.TypeI64,
+			Type:    semantic.TypeS64,
 			LitType: ast.LiteralTypeInteger,
 			Value:   "10",
 		},
@@ -813,7 +813,7 @@ func TestTypedCodeGenerator_PrintIntegerLiteral(t *testing.T) {
 			Type: semantic.TypeVoid,
 			Arguments: []semantic.TypedExpression{
 				&semantic.TypedLiteralExpr{
-					Type:    semantic.TypeI64,
+					Type:    semantic.TypeS64,
 					LitType: ast.LiteralTypeInteger,
 					Value:   "42",
 				},
@@ -888,9 +888,9 @@ func TestTypedCodeGenerator_IntegerLiteralTypes(t *testing.T) {
 		typ      semantic.Type
 		expected string
 	}{
-		{"i8", semantic.TypeI8, "sxtb x2, w2"},
-		{"i16", semantic.TypeI16, "sxth x2, w2"},
-		{"i32", semantic.TypeI32, "sxtw x2, w2"},
+		{"s8", semantic.TypeS8, "sxtb x2, w2"},
+		{"s16", semantic.TypeS16, "sxth x2, w2"},
+		{"s32", semantic.TypeS32, "sxtw x2, w2"},
 		{"u8", semantic.TypeU8, "and x2, x2, #0xFF"},
 		{"u16", semantic.TypeU16, "and x2, x2, #0xFFFF"},
 		{"u32", semantic.TypeU32, "mov w2, w2"},
@@ -1045,10 +1045,10 @@ func TestTypedCodeGenerator_OperandToReg_CallExpr(t *testing.T) {
 			Expr: &semantic.TypedBinaryExpr{
 				Left: &semantic.TypedCallExpr{
 					Name: "foo",
-					Type: semantic.TypeI64,
+					Type: semantic.TypeS64,
 					Arguments: []semantic.TypedExpression{
 						&semantic.TypedLiteralExpr{
-							Type:    semantic.TypeI64,
+							Type:    semantic.TypeS64,
 							LitType: ast.LiteralTypeInteger,
 							Value:   "1",
 						},
@@ -1056,26 +1056,26 @@ func TestTypedCodeGenerator_OperandToReg_CallExpr(t *testing.T) {
 				},
 				Op: "+",
 				Right: &semantic.TypedLiteralExpr{
-					Type:    semantic.TypeI64,
+					Type:    semantic.TypeS64,
 					LitType: ast.LiteralTypeInteger,
 					Value:   "2",
 				},
-				Type: semantic.TypeI64,
+				Type: semantic.TypeS64,
 			},
 		},
 	}
 
 	fn := &semantic.TypedFunctionDecl{
 		Name:       "foo",
-		ReturnType: semantic.TypeI64,
+		ReturnType: semantic.TypeS64,
 		Parameters: []semantic.TypedParameter{
-			{Name: "x", Type: semantic.TypeI64},
+			{Name: "x", Type: semantic.TypeS64},
 		},
 		Body: &semantic.TypedBlockStmt{
 			Statements: []semantic.TypedStatement{
 				&semantic.TypedReturnStmt{
 					Value: &semantic.TypedIdentifierExpr{
-						Type: semantic.TypeI64,
+						Type: semantic.TypeS64,
 						Name: "x",
 					},
 				},
@@ -1121,9 +1121,9 @@ func TestTypedCodeGenerator_WhileLoop(t *testing.T) {
 		&semantic.TypedVarDeclStmt{
 			Name:         "i",
 			Mutable:      true,
-			DeclaredType: semantic.TypeI64,
+			DeclaredType: semantic.TypeS64,
 			Initializer: &semantic.TypedLiteralExpr{
-				Type:    semantic.TypeI64,
+				Type:    semantic.TypeS64,
 				LitType: ast.LiteralTypeInteger,
 				Value:   "0",
 			},
@@ -1133,12 +1133,12 @@ func TestTypedCodeGenerator_WhileLoop(t *testing.T) {
 			WhileKeyword: ast.Position{Line: 3, Column: 1},
 			Condition: &semantic.TypedBinaryExpr{
 				Left: &semantic.TypedIdentifierExpr{
-					Type: semantic.TypeI64,
+					Type: semantic.TypeS64,
 					Name: "i",
 				},
 				Op: "<",
 				Right: &semantic.TypedLiteralExpr{
-					Type:    semantic.TypeI64,
+					Type:    semantic.TypeS64,
 					LitType: ast.LiteralTypeInteger,
 					Value:   "5",
 				},
@@ -1150,16 +1150,16 @@ func TestTypedCodeGenerator_WhileLoop(t *testing.T) {
 						Name: "i",
 						Value: &semantic.TypedBinaryExpr{
 							Left: &semantic.TypedIdentifierExpr{
-								Type: semantic.TypeI64,
+								Type: semantic.TypeS64,
 								Name: "i",
 							},
 							Op: "+",
 							Right: &semantic.TypedLiteralExpr{
-								Type:    semantic.TypeI64,
+								Type:    semantic.TypeS64,
 								LitType: ast.LiteralTypeInteger,
 								Value:   "1",
 							},
-							Type: semantic.TypeI64,
+							Type: semantic.TypeS64,
 						},
 					},
 				},
@@ -1228,9 +1228,9 @@ func TestTypedCodeGenerator_WhileLoopWithContinue(t *testing.T) {
 		&semantic.TypedVarDeclStmt{
 			Name:         "i",
 			Mutable:      true,
-			DeclaredType: semantic.TypeI64,
+			DeclaredType: semantic.TypeS64,
 			Initializer: &semantic.TypedLiteralExpr{
-				Type:    semantic.TypeI64,
+				Type:    semantic.TypeS64,
 				LitType: ast.LiteralTypeInteger,
 				Value:   "0",
 			},
@@ -1239,12 +1239,12 @@ func TestTypedCodeGenerator_WhileLoopWithContinue(t *testing.T) {
 			WhileKeyword: ast.Position{Line: 2, Column: 1},
 			Condition: &semantic.TypedBinaryExpr{
 				Left: &semantic.TypedIdentifierExpr{
-					Type: semantic.TypeI64,
+					Type: semantic.TypeS64,
 					Name: "i",
 				},
 				Op: "<",
 				Right: &semantic.TypedLiteralExpr{
-					Type:    semantic.TypeI64,
+					Type:    semantic.TypeS64,
 					LitType: ast.LiteralTypeInteger,
 					Value:   "5",
 				},

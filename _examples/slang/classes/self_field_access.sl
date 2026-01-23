@@ -2,15 +2,15 @@
 // Test nested class composition (class with field of another class type)
 
 Point = class {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 }
 
 Rectangle = class {
-    val width: i64
-    val height: i64
+    val width: s64
+    val height: s64
 
-    getArea = (self: &Rectangle) -> i64 {
+    getArea = (self: &Rectangle) -> s64 {
         return self.width * self.height
     }
 }

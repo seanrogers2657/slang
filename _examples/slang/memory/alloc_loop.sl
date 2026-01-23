@@ -3,16 +3,16 @@
 // Test: Repeated allocation/deallocation in a loop
 // Verifies memory is properly freed each iteration
 Point = struct {
-    var x: i64
+    var x: s64
 }
 
-allocateAndReturn = (n: i64) -> i64 {
+allocateAndReturn = (n: s64) -> s64 {
     val p = Heap.new(Point{ n })
     return p.x
 }
 
 main = () {
-    var sum: i64 = 0
+    var sum: s64 = 0
     var i = 1
 
     // 100 iterations of allocate/deallocate

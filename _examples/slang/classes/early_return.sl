@@ -2,14 +2,14 @@
 // Test methods with multiple return points (early return)
 
 Validator = class {
-    var threshold: i64
+    var threshold: s64
 
-    create = (threshold: i64) -> *Validator {
+    create = (threshold: s64) -> *Validator {
         return Heap.new(Validator{ threshold })
     }
 
     // Method with early return
-    clamp = (self: &Validator, value: i64) -> i64 {
+    clamp = (self: &Validator, value: s64) -> s64 {
         if value < 0 {
             return 0
         }
@@ -20,7 +20,7 @@ Validator = class {
     }
 
     // Method with multiple conditions
-    classify = (self: &Validator, value: i64) -> i64 {
+    classify = (self: &Validator, value: s64) -> s64 {
         if value < 0 {
             return 0
         }

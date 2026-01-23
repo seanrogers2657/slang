@@ -3,8 +3,8 @@
 // @test: error_contains=moved value
 // Test: Use-after-move should produce an error
 Point = struct {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 }
 
 main = () {

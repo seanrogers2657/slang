@@ -1,7 +1,7 @@
 // @test: exit_code=0
 // @test: stdout=1\n2\n3\n
 Num = struct {
-    val v: i64
+    val v: s64
 }
 
 main = () {

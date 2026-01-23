@@ -1,12 +1,12 @@
 // @test: exit_code=0
 // @test: stdout=true\n
 // Test returning a non-null value from a function with nullable return type
-getValue = () -> i64? {
+getValue = () -> s64? {
     return 42
 }
 
 main = () {
-    val x: i64? = getValue()
+    val x: s64? = getValue()
     print(x != null)  // true - function returned a value
 
     // We can't unwrap yet without if-narrowing, but we verified it's not null

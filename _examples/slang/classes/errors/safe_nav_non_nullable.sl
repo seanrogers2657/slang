@@ -4,13 +4,13 @@
 // Test error: using ?. on non-nullable type
 
 Counter = class {
-    var value: i64
+    var value: s64
 
     create = () -> *Counter {
         return Heap.new(Counter{ 0 })
     }
 
-    getValue = (self: &Counter) -> i64 {
+    getValue = (self: &Counter) -> s64 {
         return self.value
     }
 }

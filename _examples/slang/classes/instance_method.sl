@@ -2,13 +2,13 @@
 // Instance method call on a class
 
 Counter = class {
-    var count: i64
+    var count: s64
 
-    getCount = (self: &Counter) -> i64 {
+    getCount = (self: &Counter) -> s64 {
         return self.count
     }
 
-    add = (self: &Counter, n: i64) -> i64 {
+    add = (self: &Counter, n: s64) -> s64 {
         return self.count + n
     }
 }

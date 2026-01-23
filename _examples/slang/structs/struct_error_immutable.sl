@@ -2,8 +2,8 @@
 // @test: error_stage=semantic
 // @test: error_contains=cannot assign to immutable field
 Point = struct {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 }
 
 main = () {

@@ -2,15 +2,15 @@
 // Test class with pointer field to another class
 
 Node = class {
-    val value: i64
+    val value: s64
     var next: *Node?
 
     // Static factory
-    create = (v: i64) -> *Node {
+    create = (v: s64) -> *Node {
         return Heap.new(Node{ v, null })
     }
 
-    getValue = (self: &Node) -> i64 {
+    getValue = (self: &Node) -> s64 {
         return self.value
     }
 

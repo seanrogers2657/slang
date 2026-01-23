@@ -2,17 +2,17 @@
 // Test calling methods inside loops
 
 Accumulator = class {
-    var total: i64
+    var total: s64
 
     create = () -> *Accumulator {
         return Heap.new(Accumulator{ 0 })
     }
 
-    add = (self: &&Accumulator, n: i64) {
+    add = (self: &&Accumulator, n: s64) {
         self.total = self.total + n
     }
 
-    get = (self: &Accumulator) -> i64 {
+    get = (self: &Accumulator) -> s64 {
         return self.total
     }
 

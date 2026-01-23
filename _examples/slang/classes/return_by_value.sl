@@ -2,8 +2,8 @@
 // Test returning class instances by value
 
 Point = class {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 
     // Returns a new Point by value (copied to caller)
     origin = () -> Point {
@@ -15,7 +15,7 @@ Point = class {
         return Point{ self.x, self.y }
     }
 
-    sum = (self: &Point) -> i64 {
+    sum = (self: &Point) -> s64 {
         return self.x + self.y
     }
 }

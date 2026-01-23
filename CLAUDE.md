@@ -41,12 +41,12 @@ This repository follows strict organizational rules:
 The compiler currently supports:
 - **Variables**: Immutable (`val`) and mutable (`var`) variables (e.g., `val x = 5`, `var y = 10`)
 - **Types**:
-  - Signed integers: `i8`, `i16`, `i32`, `i64`, `i128` (`int` is alias for `i64`)
+  - Signed integers: `s8`, `s16`, `s32`, `s64`, `s128` (`int` is alias for `s64`)
   - Unsigned integers: `u8`, `u16`, `u32`, `u64`, `u128`
   - Other primitives: `bool`, `string`, `void`
   - Arrays: `[1, 2, 3]` with index access and `len()`
   - Structs: User-defined types with `val`/`var` fields
-  - Nullable types: `T?` (e.g., `i64?`) with `null` value
+  - Nullable types: `T?` (e.g., `s64?`) with `null` value
   - Pointer types: `*T` (owned), `&T` (immutable borrow), `&&T` (mutable borrow)
 - **Expressions**: Binary and unary expressions
 - **Operators**:
@@ -66,7 +66,7 @@ The compiler currently supports:
   - `when` expressions (conditional branching)
 - **Functions**: Function declarations (e.g., `main = () { ... }`, `add = (a: int, b: int) -> int { ... }`)
 - **Built-in Functions**:
-  - `print(value)` - print a value to stdout (accepts `i64`, `string`, or `bool`)
+  - `print(value)` - print a value to stdout (accepts `s64`, `string`, or `bool`)
   - `exit(code)` - exit program with specified exit code
   - `len(array)` - get array length
   - `sleep(nanoseconds)` - sleep for specified duration
@@ -395,10 +395,10 @@ Built-in functions are registered in a central registry and handled specially by
 
    ```go
    var Builtins = map[string]BuiltinFunc{
-       "exit":  {ParamTypes: []Type{TypeI64}, ReturnType: TypeVoid, NoReturn: true},
-       "print": {ParamTypes: []Type{TypeI64}, ReturnType: TypeVoid, AcceptedTypes: map[int][]Type{0: {TypeI64, TypeString, TypeBoolean}}},
-       "len":   {ParamTypes: []Type{TypeError}, ReturnType: TypeI64, IsArrayLen: true},
-       "sleep": {ParamTypes: []Type{TypeI64}, ReturnType: TypeVoid},
+       "exit":  {ParamTypes: []Type{TypeS64}, ReturnType: TypeVoid, NoReturn: true},
+       "print": {ParamTypes: []Type{TypeS64}, ReturnType: TypeVoid, AcceptedTypes: map[int][]Type{0: {TypeS64, TypeString, TypeBoolean}}},
+       "len":   {ParamTypes: []Type{TypeError}, ReturnType: TypeS64, IsArrayLen: true},
+       "sleep": {ParamTypes: []Type{TypeS64}, ReturnType: TypeVoid},
        // Add new built-in here
    }
    ```
@@ -460,8 +460,8 @@ Structs are declared at the top level using the assignment syntax with `struct` 
 ```slang
 // Define a struct with immutable and mutable fields
 Point = struct {
-    val x: i64    // immutable field
-    var y: i64    // mutable field
+    val x: s64    // immutable field
+    var y: s64    // mutable field
 }
 
 // Nested structs
@@ -521,8 +521,8 @@ Slang uses an ownership-based memory model with three pointer types:
 
 ```slang
 Point = struct {
-    var x: i64
-    var y: i64
+    var x: s64
+    var y: s64
 }
 
 // Allocate on the heap with Heap.new()
@@ -540,12 +540,12 @@ main = () {
 **Ownership transfer (move semantics):**
 ```slang
 // Passing *T to a function transfers ownership
-consumePoint = (p: *Point) -> i64 {
+consumePoint = (p: *Point) -> s64 {
     return p.x + p.y
 }
 
 // Returning *T transfers ownership to caller
-createPoint = (x: i64, y: i64) -> *Point {
+createPoint = (x: s64, y: s64) -> *Point {
     return Heap.new(Point{ x, y })
 }
 
@@ -623,8 +623,8 @@ main = () {
     print(isValid && isGreater)  // prints "true" or "false"
 
     // Explicit type annotations
-    val a: i16 = 1000        // explicitly typed as i16
-    val b: i32 = 50000       // explicitly typed as i32
+    val a: s16 = 1000        // explicitly typed as s16
+    val b: s32 = 50000       // explicitly typed as s32
     val flag: bool = true    // explicitly typed as bool
 }
 ```
@@ -742,7 +742,7 @@ main = () {
 }
 
 // When as expression (returns a value)
-getValue = (x: i64) -> i64 {
+getValue = (x: s64) -> s64 {
     return when {
         x < 0 -> -1
         x == 0 -> 0
@@ -817,10 +817,10 @@ Slang supports nullable types with the `T?` syntax (Kotlin-style):
 ```slang
 main = () {
     // Nullable variable with null
-    val x: i64? = null
+    val x: s64? = null
 
     // Nullable variable with value
-    val y: i64? = 42
+    val y: s64? = 42
 
     // Null comparison
     print(x == null)  // prints true
@@ -829,8 +829,8 @@ main = () {
 
     // Nullable struct fields
     Point = struct {
-        val x: i64?
-        val y: i64?
+        val x: s64?
+        val y: s64?
     }
 
     val p = Point{ null, 42 }
@@ -838,7 +838,7 @@ main = () {
 }
 
 // Functions can return nullable types
-findValue = (x: i64) -> i64? {
+findValue = (x: s64) -> s64? {
     if x > 0 {
         return x
     }

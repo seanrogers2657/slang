@@ -4,14 +4,14 @@
 // Error: instance method called on class without instance
 
 Counter = class {
-    var count: i64
+    var count: s64
 
     // Instance method requires self
     increment = (self: &&Counter) {
         self.count = self.count + 1
     }
 
-    get = (self: &Counter) -> i64 {
+    get = (self: &Counter) -> s64 {
         return self.count
     }
 }

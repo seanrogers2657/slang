@@ -1,7 +1,7 @@
 // @test: expect_error=true
 // @test: error_stage=semantic
 // @test: error_contains=does not return a value on all code paths
-getValue = (cond: bool) -> i64 {
+getValue = (cond: bool) -> s64 {
     if cond {
         return 42
     }

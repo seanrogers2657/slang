@@ -3,14 +3,14 @@
 
 // A graph node with a value and edges to other nodes
 GraphNode = struct {
-    val id: i64
-    var data: i64
+    val id: s64
+    var data: s64
     var edge1: *GraphNode?
     var edge2: *GraphNode?
 }
 
 // Create a new graph node on the heap
-createNode = (id: i64, data: i64) -> *GraphNode {
+createNode = (id: s64, data: s64) -> *GraphNode {
     return Heap.new(GraphNode{ id, data, null, null })
 }
 

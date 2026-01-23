@@ -1,6 +1,6 @@
 // @test: exit_code=50
 // Tests when expression used directly in return
-getValue = (x: i64) -> i64 {
+getValue = (x: s64) -> s64 {
     return when {
         x > 100 -> 100
         x > 10 -> 50

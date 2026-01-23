@@ -2,29 +2,29 @@
 // Test that method declaration order doesn't matter
 
 Calculator = class {
-    var value: i64
+    var value: s64
 
     // Method uses getDouble which is defined later
-    addDouble = (self: &&Calculator, x: i64) {
+    addDouble = (self: &&Calculator, x: s64) {
         self.value = self.value + self.getDouble(x)
     }
 
     // This is defined after addDouble uses it
-    getDouble = (self: &Calculator, x: i64) -> i64 {
+    getDouble = (self: &Calculator, x: s64) -> s64 {
         return x * 2
     }
 
     // Static method uses another static defined later
-    compute = (a: i64, b: i64) -> i64 {
+    compute = (a: s64, b: s64) -> s64 {
         return Calculator.helper(a) + Calculator.helper(b)
     }
 
     // Defined after compute uses it
-    helper = (x: i64) -> i64 {
+    helper = (x: s64) -> s64 {
         return x + 1
     }
 
-    getValue = (self: &Calculator) -> i64 {
+    getValue = (self: &Calculator) -> s64 {
         return self.value
     }
 }

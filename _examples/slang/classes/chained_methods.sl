@@ -2,19 +2,19 @@
 // Test chained method calls
 
 Builder = class {
-    var value: i64
+    var value: s64
 
     create = () -> *Builder {
         return Heap.new(Builder{ 0 })
     }
 
     // Methods that return self for chaining
-    add = (self: &&Builder, x: i64) -> *Builder {
+    add = (self: &&Builder, x: s64) -> *Builder {
         self.value = self.value + x
         return Heap.new(Builder{ self.value })
     }
 
-    getValue = (self: &Builder) -> i64 {
+    getValue = (self: &Builder) -> s64 {
         return self.value
     }
 }

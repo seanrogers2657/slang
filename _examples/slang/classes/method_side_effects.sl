@@ -2,16 +2,16 @@
 // Test methods with side effects (modifying multiple fields)
 
 State = class {
-    var x: i64
-    var y: i64
-    var z: i64
+    var x: s64
+    var y: s64
+    var z: s64
 
     create = () -> *State {
         return Heap.new(State{ 0, 0, 0 })
     }
 
     // Method modifying multiple fields
-    setAll = (self: &&State, v: i64) {
+    setAll = (self: &&State, v: s64) {
         self.x = v
         self.y = v
         self.z = v
@@ -31,7 +31,7 @@ State = class {
         self.y = temp
     }
 
-    sum = (self: &State) -> i64 {
+    sum = (self: &State) -> s64 {
         return self.x + self.y + self.z
     }
 }

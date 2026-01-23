@@ -1,7 +1,7 @@
 // @test: exit_code=0
 // @test: stdout=42\n
 Wrapper = struct {
-    val value: i64
+    val value: s64
 }
 
 main = () {

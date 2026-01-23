@@ -6,7 +6,7 @@ dummy = () {
 }
 
 main = () {
-    val y: i64? = null
+    val y: s64? = null
     print(y != null)  // false
     dummy()
     print(y != null)  // should still be false

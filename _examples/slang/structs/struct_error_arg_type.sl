@@ -1,9 +1,9 @@
 // @test: expect_error=true
 // @test: error_stage=semantic
-// @test: error_contains=cannot assign boolean to variable of type i64
+// @test: error_contains=cannot assign boolean to variable of type s64
 Point = struct {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 }
 
 main = () {

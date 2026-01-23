@@ -3,5 +3,5 @@
 // @test: error_contains=nested nullable types are not allowed
 // Test that nested nullable types are not allowed
 main = () {
-    val x: i64?? = null
+    val x: s64?? = null
 }

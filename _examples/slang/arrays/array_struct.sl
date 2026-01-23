@@ -1,8 +1,8 @@
 // @test: exit_code=0
 // @test: stdout=1\n2\n3\n4\n5\n6\n
 Point = struct {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 }
 
 main = () {

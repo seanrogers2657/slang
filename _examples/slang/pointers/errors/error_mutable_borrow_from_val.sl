@@ -3,8 +3,8 @@
 // Test: Val binding CAN create mutable borrow (val only controls reassignment)
 // With the && refactor, val/var only control reassignability, not mutability
 Point = struct {
-    var x: i64
-    var y: i64
+    var x: s64
+    var y: s64
 }
 
 mutatePoint = (p: &&Point) {

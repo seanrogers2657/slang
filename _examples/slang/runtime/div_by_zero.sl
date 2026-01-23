@@ -1,8 +1,8 @@
 // @test: exit_code=1
 // @test: stderr_contains=panic: division by zero
 main = () {
-    val a: i64 = 42
-    val b: i64 = 0
+    val a: s64 = 42
+    val b: s64 = 0
     call4(a, b)
 }
 

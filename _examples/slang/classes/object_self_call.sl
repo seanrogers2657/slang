@@ -3,16 +3,16 @@
 
 Math = object {
     // Simple methods
-    double = (x: i64) -> i64 {
+    double = (x: s64) -> s64 {
         return x + x
     }
 
-    triple = (x: i64) -> i64 {
+    triple = (x: s64) -> s64 {
         return x + x + x
     }
 
     // Method calling another method in same object
-    doubleThenTriple = (x: i64) -> i64 {
+    doubleThenTriple = (x: s64) -> s64 {
         val doubled = Math.double(x)
         return Math.triple(doubled)
     }

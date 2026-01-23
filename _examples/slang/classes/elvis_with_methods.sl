@@ -2,13 +2,13 @@
 // Test elvis operator with nullable method results
 
 Counter = class {
-    var value: i64
+    var value: s64
 
-    create = (v: i64) -> *Counter {
+    create = (v: s64) -> *Counter {
         return Heap.new(Counter{ v })
     }
 
-    getValue = (self: &Counter) -> i64 {
+    getValue = (self: &Counter) -> s64 {
         return self.value
     }
 }

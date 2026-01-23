@@ -4,12 +4,12 @@
 // (Self-referential linked list requires forward declaration support)
 
 Point = struct {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 }
 
 // Create a point on the heap
-createPoint = (x: i64, y: i64) -> *Point {
+createPoint = (x: s64, y: s64) -> *Point {
     return Heap.new(Point{ x, y })
 }
 

@@ -3,11 +3,11 @@
 // @test: error_contains=cannot move
 // Test: Moving inside a loop should produce an error
 Point = struct {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 }
 
-consumePoint = (p: *Point) -> i64 {
+consumePoint = (p: *Point) -> s64 {
     return p.x + p.y
 }
 

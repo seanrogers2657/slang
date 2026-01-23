@@ -2,8 +2,8 @@
 // @test: stdout=10\n100\n
 // Test: Var binding can mutate var fields
 Point = struct {
-    var x: i64
-    var y: i64
+    var x: s64
+    var y: s64
 }
 
 main = () {

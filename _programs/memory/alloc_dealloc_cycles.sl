@@ -7,10 +7,10 @@
 
 Node = struct {
     var next: *Node?
-    var a: i64
-    var b: i64
-    var c: i64
-    var d: i64
+    var a: s64
+    var b: s64
+    var c: s64
+    var d: s64
 }
 
 main = () {

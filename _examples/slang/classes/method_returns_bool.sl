@@ -2,15 +2,15 @@
 // Test methods returning boolean values
 
 Range = class {
-    var min: i64
-    var max: i64
+    var min: s64
+    var max: s64
 
-    create = (min: i64, max: i64) -> *Range {
+    create = (min: s64, max: s64) -> *Range {
         return Heap.new(Range{ min, max })
     }
 
     // Method returning bool
-    contains = (self: &Range, value: i64) -> bool {
+    contains = (self: &Range, value: s64) -> bool {
         return value >= self.min && value <= self.max
     }
 
@@ -19,11 +19,11 @@ Range = class {
         return self.min > self.max
     }
 
-    getMin = (self: &Range) -> i64 {
+    getMin = (self: &Range) -> s64 {
         return self.min
     }
 
-    getMax = (self: &Range) -> i64 {
+    getMax = (self: &Range) -> s64 {
         return self.max
     }
 }
@@ -31,7 +31,7 @@ Range = class {
 main = () {
     val r1 = Range.create(0, 10)
 
-    var count: i64 = 0
+    var count: s64 = 0
 
     // Test contains
     if r1.contains(5) {

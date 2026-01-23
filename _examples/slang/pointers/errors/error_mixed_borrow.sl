@@ -3,8 +3,8 @@
 // @test: error_contains=cannot borrow
 // Test: Cannot mix mutable and immutable borrows
 Point = struct {
-    var x: i64
-    var y: i64
+    var x: s64
+    var y: s64
 }
 
 mixedBorrow = (a: &&Point, b: &Point) {

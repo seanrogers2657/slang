@@ -2,15 +2,15 @@
 // Singleton object with static methods
 
 Math = object {
-    add = (a: i64, b: i64) -> i64 {
+    add = (a: s64, b: s64) -> s64 {
         return a + b
     }
 
-    mul = (a: i64, b: i64) -> i64 {
+    mul = (a: s64, b: s64) -> s64 {
         return a * b
     }
 
-    square = (x: i64) -> i64 {
+    square = (x: s64) -> s64 {
         return Math.mul(x, x)
     }
 }

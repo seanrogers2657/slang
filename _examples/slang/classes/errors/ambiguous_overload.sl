@@ -4,15 +4,15 @@
 // Error: duplicate method signature (same name and parameter types)
 
 Printer = class {
-    var count: i64
+    var count: s64
 
     // Overload 1: accepts i64
-    print = (self: &&Printer, x: i64) {
+    print = (self: &&Printer, x: s64) {
         self.count = self.count + 1
     }
 
     // Overload 2: same signature - should be rejected
-    print = (self: &&Printer, y: i64) {
+    print = (self: &&Printer, y: s64) {
         self.count = self.count + 2
     }
 }

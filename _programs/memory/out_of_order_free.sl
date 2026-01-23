@@ -6,8 +6,8 @@
 // Memory should stay at ~1 MB (single arena) throughout
 
 Point = struct {
-    var x: i64
-    var y: i64
+    var x: s64
+    var y: s64
 }
 
 main = () {

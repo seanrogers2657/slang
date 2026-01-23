@@ -4,7 +4,7 @@
 // Error: using 'self' outside a method
 
 Counter = class {
-    var count: i64
+    var count: s64
 }
 
 main = () {

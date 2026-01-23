@@ -4,7 +4,7 @@
 // Error: calling undefined method
 
 Counter = class {
-    var count: i64
+    var count: s64
 
     create = () -> *Counter {
         return Heap.new(Counter{ 0 })

@@ -3,18 +3,18 @@
 // Run manually to verify no memory leaks: ./sl run _programs/memory/alloc_stress.sl
 
 Point = struct {
-    var x: i64
-    var y: i64
-    var z: i64
+    var x: s64
+    var y: s64
+    var z: s64
 }
 
-allocateAndUse = (n: i64) -> i64 {
+allocateAndUse = (n: s64) -> s64 {
     val p = Heap.new(Point{ n, n * 2, n * 3 })
     return p.x + p.y + p.z  // 6n
 }
 
 main = () {
-    var sum: i64 = 0
+    var sum: s64 = 0
     var i = 1
 
     // 50,000 iterations of allocate/deallocate

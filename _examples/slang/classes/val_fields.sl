@@ -2,24 +2,24 @@
 // Test class with val (immutable) fields
 
 Point = class {
-    val x: i64   // immutable
-    val y: i64   // immutable
+    val x: s64   // immutable
+    val y: s64   // immutable
 
-    create = (x: i64, y: i64) -> *Point {
+    create = (x: s64, y: s64) -> *Point {
         return Heap.new(Point{ x, y })
     }
 
     // Can read val fields
-    sum = (self: &Point) -> i64 {
+    sum = (self: &Point) -> s64 {
         return self.x + self.y
     }
 
     // Can access individual fields
-    getX = (self: &Point) -> i64 {
+    getX = (self: &Point) -> s64 {
         return self.x
     }
 
-    getY = (self: &Point) -> i64 {
+    getY = (self: &Point) -> s64 {
         return self.y
     }
 }

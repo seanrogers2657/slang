@@ -2,18 +2,18 @@
 // Test .copy() on class instances for deep copy
 
 Point = class {
-    var x: i64
-    var y: i64
+    var x: s64
+    var y: s64
 
-    create = (x: i64, y: i64) -> *Point {
+    create = (x: s64, y: s64) -> *Point {
         return Heap.new(Point{ x, y })
     }
 
-    setX = (self: &&Point, newX: i64) {
+    setX = (self: &&Point, newX: s64) {
         self.x = newX
     }
 
-    sum = (self: &Point) -> i64 {
+    sum = (self: &Point) -> s64 {
         return self.x + self.y
     }
 }

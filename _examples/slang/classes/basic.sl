@@ -2,13 +2,13 @@
 // Basic class with instance methods
 
 Counter = class {
-    var count: i64
+    var count: s64
 
     increment = (self: &&Counter) {
         self.count = self.count + 1
     }
 
-    getCount = (self: &Counter) -> i64 {
+    getCount = (self: &Counter) -> s64 {
         return self.count
     }
 }

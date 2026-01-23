@@ -1,7 +1,7 @@
 // Large memory allocation test - forces many arena allocations
 // Run with: /usr/bin/time -l ./build/output
 //
-// Bump allocator uses 1MB arenas. Each LargeNode is 136 bytes (17 * i64),
+// Bump allocator uses 1MB arenas. Each LargeNode is 136 bytes (17 * s64),
 // which fits in the 256-byte size class.
 // Nodes per arena: ~4,000
 //
@@ -10,22 +10,22 @@
 
 LargeNode = struct {
     var next: *LargeNode?
-    var a: i64
-    var b: i64
-    var c: i64
-    var d: i64
-    var e: i64
-    var f: i64
-    var g: i64
-    var h: i64
-    var i: i64
-    var j: i64
-    var k: i64
-    var l: i64
-    var m: i64
-    var n: i64
-    var o: i64
-    var p: i64
+    var a: s64
+    var b: s64
+    var c: s64
+    var d: s64
+    var e: s64
+    var f: s64
+    var g: s64
+    var h: s64
+    var i: s64
+    var j: s64
+    var k: s64
+    var l: s64
+    var m: s64
+    var n: s64
+    var o: s64
+    var p: s64
 }
 
 main = () {

@@ -2,20 +2,20 @@
 // Test methods with complex expressions in body
 
 Calculator = class {
-    var a: i64
-    var b: i64
+    var a: s64
+    var b: s64
 
-    create = (a: i64, b: i64) -> *Calculator {
+    create = (a: s64, b: s64) -> *Calculator {
         return Heap.new(Calculator{ a, b })
     }
 
     // Method with complex arithmetic expression
-    compute = (self: &Calculator, x: i64) -> i64 {
+    compute = (self: &Calculator, x: s64) -> s64 {
         return (self.a * x + self.b) * (x - 1) + self.a
     }
 
     // Method with nested conditionals in expression
-    complexConditional = (self: &Calculator, x: i64) -> i64 {
+    complexConditional = (self: &Calculator, x: s64) -> s64 {
         val base = if x > 0 {
             if x > 10 { self.a * 2 } else { self.a }
         } else {
@@ -25,7 +25,7 @@ Calculator = class {
     }
 
     // Method with multiple field accesses in expression
-    combine = (self: &Calculator) -> i64 {
+    combine = (self: &Calculator) -> s64 {
         return self.a * self.a + self.b * self.b + self.a * self.b
     }
 }

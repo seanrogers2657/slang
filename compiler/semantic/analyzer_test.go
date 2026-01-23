@@ -243,10 +243,10 @@ func TestAnalyzeTypedVariableDeclaration(t *testing.T) {
 		initValue    string
 		expectedType Type
 	}{
-		{"i8 type", "i8", "42", TypeI8},
-		{"i16 type", "i16", "1000", TypeI16},
-		{"i32 type", "i32", "100000", TypeI32},
-		{"i64 type", "i64", "9223372036854775807", TypeI64},
+		{"s8 type", "s8", "42", TypeS8},
+		{"s16 type", "s16", "1000", TypeS16},
+		{"s32 type", "s32", "100000", TypeS32},
+		{"s64 type", "s64", "9223372036854775807", TypeS64},
 		{"u8 type", "u8", "255", TypeU8},
 		{"u16 type", "u16", "65535", TypeU16},
 		{"u32 type", "u32", "4294967295", TypeU32},
@@ -287,13 +287,13 @@ func TestAnalyzeBoundsChecking(t *testing.T) {
 		initValue string
 		errorMsg  string
 	}{
-		// i8 bounds: -128 to 127
-		{"i8 overflow positive", "i8", "128", "out of range for i8"},
-		{"i8 overflow large", "i8", "200", "out of range for i8"},
-		// i16 bounds: -32768 to 32767
-		{"i16 overflow", "i16", "32768", "out of range for i16"},
-		// i32 bounds: -2147483648 to 2147483647
-		{"i32 overflow", "i32", "2147483648", "out of range for i32"},
+		// s8 bounds: -128 to 127
+		{"s8 overflow positive", "s8", "128", "out of range for s8"},
+		{"s8 overflow large", "s8", "200", "out of range for s8"},
+		// s16 bounds: -32768 to 32767
+		{"s16 overflow", "s16", "32768", "out of range for s16"},
+		// s32 bounds: -2147483648 to 2147483647
+		{"s32 overflow", "s32", "2147483648", "out of range for s32"},
 		// u8 bounds: 0 to 255
 		{"u8 overflow", "u8", "256", "out of range for u8"},
 		// u16 bounds: 0 to 65535
@@ -328,16 +328,16 @@ func TestAnalyzeUntypedIntegerLiteralOverflow(t *testing.T) {
 		value    string
 		errorMsg string
 	}{
-		// i64 max is 9223372036854775807
-		{"i64 overflow by 1", "9223372036854775808", "out of range for i64"},
-		{"large overflow", "99999999999999999999999999999", "out of range for i64"},
-		{"i64 min underflow by 1", "-9223372036854775809", "out of range for i64"},
+		// s64 max is 9223372036854775807
+		{"s64 overflow by 1", "9223372036854775808", "out of range for s64"},
+		{"large overflow", "99999999999999999999999999999", "out of range for s64"},
+		{"s64 min underflow by 1", "-9223372036854775809", "out of range for s64"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			test := newTest(t).withScope()
-			// Untyped variable declaration - should infer i64 and check bounds
+			// Untyped variable declaration - should infer s64 and check bounds
 			test.analyzer.analyzeVarDeclStatement(varDecl("x", false, intLit(tt.value)))
 			test.expectErrorContaining(tt.errorMsg)
 		})
@@ -349,8 +349,8 @@ func TestAnalyzeUntypedIntegerLiteralValid(t *testing.T) {
 		name  string
 		value string
 	}{
-		{"i64 max", "9223372036854775807"},
-		{"i64 min", "-9223372036854775808"},
+		{"s64 max", "9223372036854775807"},
+		{"s64 min", "-9223372036854775808"},
 		{"zero", "0"},
 		{"small positive", "42"},
 		{"small negative", "-100"},
@@ -376,10 +376,10 @@ func TestAnalyzeTypeMismatch(t *testing.T) {
 		rightType string
 		errorMsg  string
 	}{
-		{"i32 + i64", "i32", "i64", "requires operands of the same type"},
-		{"i8 + i16", "i8", "i16", "requires operands of the same type"},
+		{"s32 + s64", "s32", "s64", "requires operands of the same type"},
+		{"s8 + s16", "s8", "s16", "requires operands of the same type"},
 		{"u8 + u16", "u8", "u16", "requires operands of the same type"},
-		{"i32 + u32", "i32", "u32", "requires operands of the same type"},
+		{"s32 + u32", "s32", "u32", "requires operands of the same type"},
 	}
 
 	for _, tt := range tests {
@@ -402,10 +402,10 @@ func TestAnalyzeSameTypeOperations(t *testing.T) {
 		value1   string
 		value2   string
 	}{
-		{"i8 + i8", "i8", "10", "20"},
-		{"i16 + i16", "i16", "100", "200"},
-		{"i32 + i32", "i32", "1000", "2000"},
-		{"i64 + i64", "i64", "10000", "20000"},
+		{"s8 + s8", "s8", "10", "20"},
+		{"s16 + s16", "s16", "100", "200"},
+		{"s32 + s32", "s32", "1000", "2000"},
+		{"s64 + s64", "s64", "10000", "20000"},
 		{"u8 + u8", "u8", "10", "20"},
 		{"u16 + u16", "u16", "100", "200"},
 		{"u32 + u32", "u32", "1000", "2000"},
@@ -487,10 +487,10 @@ func TestAnalyzeFloatOperations(t *testing.T) {
 }
 
 func TestAnalyzeFloatIntegerMismatch(t *testing.T) {
-	t.Run("f64 + i64", func(t *testing.T) {
+	t.Run("f64 + s64", func(t *testing.T) {
 		test := newTest(t).withScope()
 		test.analyzer.analyzeVarDeclStatement(typedVarDecl("a", "f64", false, floatLit("1.5")))
-		test.analyzer.analyzeVarDeclStatement(typedVarDecl("b", "i64", false, intLit("10")))
+		test.analyzer.analyzeVarDeclStatement(typedVarDecl("b", "s64", false, intLit("10")))
 		test.analyzer.analyzeBinaryExpression(binExpr(ident("a"), "+", ident("b")))
 		test.expectErrorContaining("requires operands of the same type")
 	})
@@ -629,7 +629,7 @@ func TestAnalyzeLogicalOr(t *testing.T) {
 }
 
 func TestAnalyzeComparisonReturnsBool(t *testing.T) {
-	// This is a breaking change - comparisons now return bool instead of i64
+	// This is a breaking change - comparisons now return bool instead of s64
 	for _, op := range []string{"==", "!=", "<", ">", "<=", ">="} {
 		t.Run(op+" returns bool", func(t *testing.T) {
 			test := newTest(t)
@@ -749,7 +749,7 @@ func TestAnalyzeReturnPathAnalysis(t *testing.T) {
 		test := newTest(t)
 		prog := programWithFuncs(
 			funcDecl("main", "void", nil),
-			funcDecl("getVal", "i64", nil, returnStmt(intLit("42"))),
+			funcDecl("getVal", "s64", nil, returnStmt(intLit("42"))),
 		)
 		errs, _ := test.analyzer.Analyze(prog)
 		for _, err := range errs {
@@ -763,7 +763,7 @@ func TestAnalyzeReturnPathAnalysis(t *testing.T) {
 		test := newTest(t)
 		prog := programWithFuncs(
 			funcDecl("main", "void", nil),
-			funcDecl("getVal", "i64", nil, exprStmt(intLit("42"))),
+			funcDecl("getVal", "s64", nil, exprStmt(intLit("42"))),
 		)
 		errs, _ := test.analyzer.Analyze(prog)
 		found := false
@@ -782,7 +782,7 @@ func TestAnalyzeReturnPathAnalysis(t *testing.T) {
 		test := newTest(t)
 		prog := programWithFuncs(
 			funcDecl("main", "void", nil),
-			funcDecl("getVal", "i64", nil,
+			funcDecl("getVal", "s64", nil,
 				ifStmtWithElse(
 					boolLit("true"),
 					[]ast.Statement{returnStmtAST(intLit("1"))},
@@ -802,7 +802,7 @@ func TestAnalyzeReturnPathAnalysis(t *testing.T) {
 		test := newTest(t)
 		prog := programWithFuncs(
 			funcDecl("main", "void", nil),
-			funcDecl("getVal", "i64", nil,
+			funcDecl("getVal", "s64", nil,
 				ifStmtNoElse(
 					boolLit("true"),
 					[]ast.Statement{returnStmtAST(intLit("1"))},
@@ -826,7 +826,7 @@ func TestAnalyzeReturnPathAnalysis(t *testing.T) {
 		test := newTest(t)
 		prog := programWithFuncs(
 			funcDecl("main", "void", nil),
-			funcDecl("getVal", "i64", nil,
+			funcDecl("getVal", "s64", nil,
 				ifStmtWithElse(
 					boolLit("true"),
 					[]ast.Statement{returnStmtAST(intLit("1"))},
@@ -853,7 +853,7 @@ func TestAnalyzeMaxFunctionParameters(t *testing.T) {
 		test := newTest(t)
 		params := make([]ast.Parameter, 8)
 		for i := 0; i < 8; i++ {
-			params[i] = param("p"+string(rune('0'+i)), "i64")
+			params[i] = param("p"+string(rune('0'+i)), "s64")
 		}
 		prog := programWithFuncs(
 			funcDecl("main", "void", nil),
@@ -871,7 +871,7 @@ func TestAnalyzeMaxFunctionParameters(t *testing.T) {
 		test := newTest(t)
 		params := make([]ast.Parameter, 9)
 		for i := 0; i < 9; i++ {
-			params[i] = param("p"+string(rune('0'+i)), "i64")
+			params[i] = param("p"+string(rune('0'+i)), "s64")
 		}
 		prog := programWithFuncs(
 			funcDecl("main", "void", nil),
@@ -896,7 +896,7 @@ func TestAnalyzeMaxFunctionParameters(t *testing.T) {
 		// and try to call it with 9 args
 		params := make([]ast.Parameter, 9)
 		for i := 0; i < 9; i++ {
-			params[i] = param("p"+string(rune('0'+i)), "i64")
+			params[i] = param("p"+string(rune('0'+i)), "s64")
 		}
 		args := make([]ast.Expression, 9)
 		for i := 0; i < 9; i++ {
@@ -1258,7 +1258,7 @@ func TestAnalyzeNullLiteral(t *testing.T) {
 func TestAnalyzeNullableTypes(t *testing.T) {
 	t.Run("null can be assigned to nullable type", func(t *testing.T) {
 		test := newTest(t).withScope()
-		result := test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", "i64?", false, nullLit()))
+		result := test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", "s64?", false, nullLit()))
 
 		if result == nil {
 			t.Fatal("expected result, got nil")
@@ -1268,7 +1268,7 @@ func TestAnalyzeNullableTypes(t *testing.T) {
 
 	t.Run("non-null value can be assigned to nullable type", func(t *testing.T) {
 		test := newTest(t).withScope()
-		result := test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", "i64?", false, intLit("42")))
+		result := test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", "s64?", false, intLit("42")))
 
 		if result == nil {
 			t.Fatal("expected result, got nil")
@@ -1278,7 +1278,7 @@ func TestAnalyzeNullableTypes(t *testing.T) {
 
 	t.Run("null cannot be assigned to non-nullable type", func(t *testing.T) {
 		test := newTest(t).withScope()
-		test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", "i64", false, nullLit()))
+		test.analyzer.analyzeVarDeclStatement(typedVarDecl("x", "s64", false, nullLit()))
 
 		test.expectErrorContaining("cannot assign null to non-nullable")
 	})
@@ -1293,14 +1293,14 @@ func TestAnalyzeNullableTypes(t *testing.T) {
 
 func TestAnalyzeNullComparison(t *testing.T) {
 	t.Run("nullable equals null returns bool", func(t *testing.T) {
-		test := newTest(t).withScope().declare("x", NullableType{InnerType: TypeI64}, false)
+		test := newTest(t).withScope().declare("x", NullableType{InnerType: TypeS64}, false)
 		result := test.analyzer.analyzeBinaryExpression(binExpr(ident("x"), "==", nullLit()))
 		test.expectType(result, TypeBoolean)
 		test.expectNoErrors()
 	})
 
 	t.Run("nullable not equals null returns bool", func(t *testing.T) {
-		test := newTest(t).withScope().declare("x", NullableType{InnerType: TypeI64}, false)
+		test := newTest(t).withScope().declare("x", NullableType{InnerType: TypeS64}, false)
 		result := test.analyzer.analyzeBinaryExpression(binExpr(ident("x"), "!=", nullLit()))
 		test.expectType(result, TypeBoolean)
 		test.expectNoErrors()
@@ -1314,7 +1314,7 @@ func TestAnalyzeNullComparison(t *testing.T) {
 	})
 
 	t.Run("non-nullable compared to null is error", func(t *testing.T) {
-		test := newTest(t).withScope().declare("x", TypeI64, false)
+		test := newTest(t).withScope().declare("x", TypeS64, false)
 		test.analyzer.analyzeBinaryExpression(binExpr(ident("x"), "==", nullLit()))
 		test.expectErrorContaining("cannot compare non-nullable")
 	})
@@ -1322,31 +1322,31 @@ func TestAnalyzeNullComparison(t *testing.T) {
 
 func TestNullableTypeHelpers(t *testing.T) {
 	t.Run("IsNullable returns true for NullableType", func(t *testing.T) {
-		nullableInt := NullableType{InnerType: TypeI64}
+		nullableInt := NullableType{InnerType: TypeS64}
 		if !IsNullable(nullableInt) {
 			t.Error("expected IsNullable to return true")
 		}
 	})
 
 	t.Run("IsNullable returns false for non-nullable type", func(t *testing.T) {
-		if IsNullable(TypeI64) {
+		if IsNullable(TypeS64) {
 			t.Error("expected IsNullable to return false")
 		}
 	})
 
 	t.Run("MakeNullable wraps type", func(t *testing.T) {
-		result := MakeNullable(TypeI64)
+		result := MakeNullable(TypeS64)
 		nullable, ok := result.(NullableType)
 		if !ok {
 			t.Fatal("expected NullableType")
 		}
-		if !nullable.InnerType.Equals(TypeI64) {
-			t.Error("expected inner type to be i64")
+		if !nullable.InnerType.Equals(TypeS64) {
+			t.Error("expected inner type to be s64")
 		}
 	})
 
 	t.Run("MakeNullable does not double-wrap", func(t *testing.T) {
-		nullable := NullableType{InnerType: TypeI64}
+		nullable := NullableType{InnerType: TypeS64}
 		result := MakeNullable(nullable)
 		if result != nullable {
 			t.Error("expected MakeNullable to return same type for already nullable")
@@ -1354,25 +1354,25 @@ func TestNullableTypeHelpers(t *testing.T) {
 	})
 
 	t.Run("UnwrapNullable extracts inner type", func(t *testing.T) {
-		nullable := NullableType{InnerType: TypeI64}
+		nullable := NullableType{InnerType: TypeS64}
 		inner, ok := UnwrapNullable(nullable)
 		if !ok {
 			t.Error("expected ok to be true")
 		}
-		if !inner.Equals(TypeI64) {
-			t.Error("expected inner type to be i64")
+		if !inner.Equals(TypeS64) {
+			t.Error("expected inner type to be s64")
 		}
 	})
 
 	t.Run("UnwrapNullable returns false for non-nullable", func(t *testing.T) {
-		_, ok := UnwrapNullable(TypeI64)
+		_, ok := UnwrapNullable(TypeS64)
 		if ok {
 			t.Error("expected ok to be false")
 		}
 	})
 
 	t.Run("NullableSize returns 16 for primitives", func(t *testing.T) {
-		size := NullableSize(TypeI64)
+		size := NullableSize(TypeS64)
 		if size != 16 {
 			t.Errorf("expected 16, got %d", size)
 		}
@@ -1392,45 +1392,45 @@ func TestNullableTypeHelpers(t *testing.T) {
 
 func TestOwnedPointerType(t *testing.T) {
 	t.Run("OwnedPointerType String() returns correct format", func(t *testing.T) {
-		ownType := OwnedPointerType{ElementType: TypeI64}
-		if ownType.String() != "*i64" {
-			t.Errorf("expected *i64, got %s", ownType.String())
+		ownType := OwnedPointerType{ElementType: TypeS64}
+		if ownType.String() != "*s64" {
+			t.Errorf("expected *s64, got %s", ownType.String())
 		}
 	})
 
 	t.Run("OwnedPointerType Equals works correctly", func(t *testing.T) {
-		own1 := OwnedPointerType{ElementType: TypeI64}
-		own2 := OwnedPointerType{ElementType: TypeI64}
-		own3 := OwnedPointerType{ElementType: TypeI32}
+		own1 := OwnedPointerType{ElementType: TypeS64}
+		own2 := OwnedPointerType{ElementType: TypeS64}
+		own3 := OwnedPointerType{ElementType: TypeS32}
 
 		if !own1.Equals(own2) {
-			t.Error("expected Own<i64> to equal Own<i64>")
+			t.Error("expected Own<s64> to equal Own<s64>")
 		}
 		if own1.Equals(own3) {
-			t.Error("expected Own<i64> to not equal Own<i32>")
+			t.Error("expected Own<s64> to not equal Own<s32>")
 		}
-		if own1.Equals(TypeI64) {
-			t.Error("expected Own<i64> to not equal i64")
+		if own1.Equals(TypeS64) {
+			t.Error("expected Own<s64> to not equal s64")
 		}
 	})
 
 	t.Run("OwnedPointerType is not copyable", func(t *testing.T) {
-		ownType := OwnedPointerType{ElementType: TypeI64}
+		ownType := OwnedPointerType{ElementType: TypeS64}
 		if ownType.IsCopyable() {
 			t.Error("expected owned pointer to not be copyable")
 		}
 	})
 
 	t.Run("IsOwnedPointer returns true for OwnedPointerType", func(t *testing.T) {
-		ownType := OwnedPointerType{ElementType: TypeI64}
+		ownType := OwnedPointerType{ElementType: TypeS64}
 		if !IsOwnedPointer(ownType) {
 			t.Error("expected IsOwnedPointer to return true")
 		}
 	})
 
 	t.Run("IsOwnedPointer returns false for non-pointer types", func(t *testing.T) {
-		if IsOwnedPointer(TypeI64) {
-			t.Error("expected IsOwnedPointer to return false for i64")
+		if IsOwnedPointer(TypeS64) {
+			t.Error("expected IsOwnedPointer to return false for s64")
 		}
 		if IsOwnedPointer(TypeString) {
 			t.Error("expected IsOwnedPointer to return false for string")
@@ -1438,25 +1438,25 @@ func TestOwnedPointerType(t *testing.T) {
 	})
 
 	t.Run("UnwrapOwnedPointer extracts element type", func(t *testing.T) {
-		ownType := OwnedPointerType{ElementType: TypeI64}
+		ownType := OwnedPointerType{ElementType: TypeS64}
 		inner, ok := UnwrapOwnedPointer(ownType)
 		if !ok {
 			t.Error("expected ok to be true")
 		}
-		if !inner.Equals(TypeI64) {
-			t.Errorf("expected i64, got %s", inner.String())
+		if !inner.Equals(TypeS64) {
+			t.Errorf("expected s64, got %s", inner.String())
 		}
 	})
 
 	t.Run("UnwrapOwnedPointer returns false for non-pointer", func(t *testing.T) {
-		_, ok := UnwrapOwnedPointer(TypeI64)
+		_, ok := UnwrapOwnedPointer(TypeS64)
 		if ok {
 			t.Error("expected ok to be false")
 		}
 	})
 
 	t.Run("TypeByteSize for OwnedPointerType is 8", func(t *testing.T) {
-		ownType := OwnedPointerType{ElementType: TypeI64}
+		ownType := OwnedPointerType{ElementType: TypeS64}
 		if TypeByteSize(ownType) != 8 {
 			t.Errorf("expected 8 bytes, got %d", TypeByteSize(ownType))
 		}
@@ -1464,10 +1464,10 @@ func TestOwnedPointerType(t *testing.T) {
 }
 
 func TestHeapNewTypeChecking(t *testing.T) {
-	t.Run("Heap.new(integer) returns Own<i64>", func(t *testing.T) {
+	t.Run("Heap.new(integer) returns Own<s64>", func(t *testing.T) {
 		test := newTest(t)
 		result := test.analyzer.analyzeExpression(methodCallExpr(ident("Heap"), "new", intLit("42")))
-		expectedType := OwnedPointerType{ElementType: TypeI64}
+		expectedType := OwnedPointerType{ElementType: TypeS64}
 		test.expectType(result, expectedType)
 		test.expectNoErrors()
 	})
@@ -1482,8 +1482,8 @@ func TestHeapNewTypeChecking(t *testing.T) {
 
 	t.Run("Heap.new(struct literal) returns Own<StructType>", func(t *testing.T) {
 		test := newTest(t).withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
-			StructFieldInfo{Name: "y", Type: TypeI64, Mutable: true, Index: 1},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
 		pointType := test.analyzer.structs["Point"]
 		result := test.analyzer.analyzeExpression(methodCallExpr(ident("Heap"), "new", structLiteral("Point", intLit("10"), intLit("20"))))
@@ -1514,24 +1514,24 @@ func TestHeapNewTypeChecking(t *testing.T) {
 func TestFieldAccessThroughOwnedPointer(t *testing.T) {
 	t.Run("field access on Own<Struct> auto-dereferences", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
-			StructFieldInfo{Name: "y", Type: TypeI64, Mutable: true, Index: 1},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
 		// Declare p as Own<Point>
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 		test.declare("p", ownPointType, false)
 
-		// Access p.x should work and return i64
+		// Access p.x should work and return s64
 		result := test.analyzer.analyzeExpression(fieldAccessExpr(ident("p"), "x"))
-		test.expectType(result, TypeI64)
+		test.expectType(result, TypeS64)
 		test.expectNoErrors()
 	})
 
 	t.Run("field access on Own<Struct> preserves field mutability", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
-			StructFieldInfo{Name: "y", Type: TypeI64, Mutable: true, Index: 1},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -1549,8 +1549,8 @@ func TestFieldAccessThroughOwnedPointer(t *testing.T) {
 
 	t.Run("invalid field access on Own<Struct> is error", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
-			StructFieldInfo{Name: "y", Type: TypeI64, Mutable: true, Index: 1},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -1562,7 +1562,7 @@ func TestFieldAccessThroughOwnedPointer(t *testing.T) {
 
 	t.Run("field access on Own<non-struct> is error", func(t *testing.T) {
 		test := newTest(t).withScope()
-		ownIntType := OwnedPointerType{ElementType: TypeI64}
+		ownIntType := OwnedPointerType{ElementType: TypeS64}
 		test.declare("p", ownIntType, false)
 
 		test.analyzer.analyzeExpression(fieldAccessExpr(ident("p"), "x"))
@@ -1573,7 +1573,7 @@ func TestFieldAccessThroughOwnedPointer(t *testing.T) {
 func TestNullableOwnedPointerValidation(t *testing.T) {
 	t.Run("*Point? is valid nullable owned pointer", func(t *testing.T) {
 		test := newTest(t).withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		resolved := test.analyzer.resolveTypeName("*Point?", pos(1, 1))
 		nullableOwn, ok := resolved.(NullableType)
@@ -1592,15 +1592,15 @@ func TestNullableOwnedPointerValidation(t *testing.T) {
 
 	t.Run("*Point? with inner nullable is invalid - produces error", func(t *testing.T) {
 		test := newTest(t).withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		test.analyzer.resolveTypeName("*Point??", pos(1, 1))
 		test.expectErrorContaining("nested nullable types are not allowed")
 	})
 
-	t.Run("*i64? with inner nullable is invalid - produces error", func(t *testing.T) {
+	t.Run("*s64? with inner nullable is invalid - produces error", func(t *testing.T) {
 		test := newTest(t)
-		test.analyzer.resolveTypeName("*i64??", pos(1, 1))
+		test.analyzer.resolveTypeName("*s64??", pos(1, 1))
 		test.expectErrorContaining("nested nullable types are not allowed")
 	})
 }
@@ -1608,7 +1608,7 @@ func TestNullableOwnedPointerValidation(t *testing.T) {
 func TestOwnedPointerCopy(t *testing.T) {
 	t.Run("p.copy() on Own<T> returns Own<T>", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -1621,7 +1621,7 @@ func TestOwnedPointerCopy(t *testing.T) {
 
 	t.Run("p.copy() with arguments is error", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -1633,7 +1633,7 @@ func TestOwnedPointerCopy(t *testing.T) {
 
 	t.Run("unknown method on Own<T> is error", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -1650,119 +1650,119 @@ func TestOwnedPointerCopy(t *testing.T) {
 
 func TestRefPointerType(t *testing.T) {
 	t.Run("RefPointerType String() returns correct format", func(t *testing.T) {
-		refType := RefPointerType{ElementType: TypeI64}
-		if refType.String() != "&i64" {
-			t.Errorf("expected &i64, got %s", refType.String())
+		refType := RefPointerType{ElementType: TypeS64}
+		if refType.String() != "&s64" {
+			t.Errorf("expected &s64, got %s", refType.String())
 		}
 	})
 
 	t.Run("MutRefPointerType String() returns correct format", func(t *testing.T) {
-		refType := MutRefPointerType{ElementType: TypeI64}
-		if refType.String() != "&&i64" {
-			t.Errorf("expected &&i64, got %s", refType.String())
+		refType := MutRefPointerType{ElementType: TypeS64}
+		if refType.String() != "&&s64" {
+			t.Errorf("expected &&s64, got %s", refType.String())
 		}
 	})
 
 	t.Run("RefPointerType Equals works correctly", func(t *testing.T) {
-		ref1 := RefPointerType{ElementType: TypeI64}
-		ref2 := RefPointerType{ElementType: TypeI64}
-		ref3 := RefPointerType{ElementType: TypeI32}
-		mutRef := MutRefPointerType{ElementType: TypeI64}
+		ref1 := RefPointerType{ElementType: TypeS64}
+		ref2 := RefPointerType{ElementType: TypeS64}
+		ref3 := RefPointerType{ElementType: TypeS32}
+		mutRef := MutRefPointerType{ElementType: TypeS64}
 
 		if !ref1.Equals(ref2) {
-			t.Error("expected Ref<i64> to equal Ref<i64>")
+			t.Error("expected Ref<s64> to equal Ref<s64>")
 		}
 		if ref1.Equals(ref3) {
-			t.Error("expected Ref<i64> to not equal Ref<i32>")
+			t.Error("expected Ref<s64> to not equal Ref<s32>")
 		}
 		if ref1.Equals(mutRef) {
-			t.Error("expected Ref<i64> to not equal MutRef<i64>")
+			t.Error("expected Ref<s64> to not equal MutRef<s64>")
 		}
-		if ref1.Equals(TypeI64) {
-			t.Error("expected Ref<i64> to not equal i64")
+		if ref1.Equals(TypeS64) {
+			t.Error("expected Ref<s64> to not equal s64")
 		}
 	})
 
 	t.Run("RefPointerType is copyable", func(t *testing.T) {
-		refType := RefPointerType{ElementType: TypeI64}
+		refType := RefPointerType{ElementType: TypeS64}
 		if !refType.IsCopyable() {
 			t.Error("expected reference pointer to be copyable")
 		}
 	})
 
 	t.Run("MutRefPointerType is copyable", func(t *testing.T) {
-		refType := MutRefPointerType{ElementType: TypeI64}
+		refType := MutRefPointerType{ElementType: TypeS64}
 		if !refType.IsCopyable() {
 			t.Error("expected mutable reference pointer to be copyable")
 		}
 	})
 
 	t.Run("IsRefPointer returns true for RefPointerType", func(t *testing.T) {
-		refType := RefPointerType{ElementType: TypeI64}
+		refType := RefPointerType{ElementType: TypeS64}
 		if !IsRefPointer(refType) {
 			t.Error("expected IsRefPointer to return true")
 		}
 	})
 
 	t.Run("IsMutRefPointer returns true for MutRefPointerType", func(t *testing.T) {
-		refType := MutRefPointerType{ElementType: TypeI64}
+		refType := MutRefPointerType{ElementType: TypeS64}
 		if !IsMutRefPointer(refType) {
 			t.Error("expected IsMutRefPointer to return true")
 		}
 	})
 
 	t.Run("IsAnyRefPointer returns true for both ref types", func(t *testing.T) {
-		if !IsAnyRefPointer(RefPointerType{ElementType: TypeI64}) {
+		if !IsAnyRefPointer(RefPointerType{ElementType: TypeS64}) {
 			t.Error("expected IsAnyRefPointer to return true for Ref")
 		}
-		if !IsAnyRefPointer(MutRefPointerType{ElementType: TypeI64}) {
+		if !IsAnyRefPointer(MutRefPointerType{ElementType: TypeS64}) {
 			t.Error("expected IsAnyRefPointer to return true for MutRef")
 		}
 	})
 
 	t.Run("IsRefPointer returns false for non-pointer types", func(t *testing.T) {
-		if IsRefPointer(TypeI64) {
-			t.Error("expected IsRefPointer to return false for i64")
+		if IsRefPointer(TypeS64) {
+			t.Error("expected IsRefPointer to return false for s64")
 		}
-		if IsRefPointer(OwnedPointerType{ElementType: TypeI64}) {
-			t.Error("expected IsRefPointer to return false for Own<i64>")
+		if IsRefPointer(OwnedPointerType{ElementType: TypeS64}) {
+			t.Error("expected IsRefPointer to return false for Own<s64>")
 		}
-		if IsRefPointer(MutRefPointerType{ElementType: TypeI64}) {
-			t.Error("expected IsRefPointer to return false for MutRef<i64>")
+		if IsRefPointer(MutRefPointerType{ElementType: TypeS64}) {
+			t.Error("expected IsRefPointer to return false for MutRef<s64>")
 		}
 	})
 
 	t.Run("UnwrapRefPointer extracts element type", func(t *testing.T) {
-		refType := RefPointerType{ElementType: TypeI64}
+		refType := RefPointerType{ElementType: TypeS64}
 		inner, ok := UnwrapRefPointer(refType)
 		if !ok {
 			t.Error("expected ok to be true")
 		}
-		if !inner.Equals(TypeI64) {
-			t.Errorf("expected i64, got %s", inner.String())
+		if !inner.Equals(TypeS64) {
+			t.Errorf("expected s64, got %s", inner.String())
 		}
 	})
 
 	t.Run("UnwrapMutRefPointer extracts element type", func(t *testing.T) {
-		refType := MutRefPointerType{ElementType: TypeI64}
+		refType := MutRefPointerType{ElementType: TypeS64}
 		inner, ok := UnwrapMutRefPointer(refType)
 		if !ok {
 			t.Error("expected ok to be true")
 		}
-		if !inner.Equals(TypeI64) {
-			t.Errorf("expected i64, got %s", inner.String())
+		if !inner.Equals(TypeS64) {
+			t.Errorf("expected s64, got %s", inner.String())
 		}
 	})
 
 	t.Run("UnwrapRefPointer returns false for non-ref", func(t *testing.T) {
-		_, ok := UnwrapRefPointer(TypeI64)
+		_, ok := UnwrapRefPointer(TypeS64)
 		if ok {
 			t.Error("expected ok to be false")
 		}
 	})
 
 	t.Run("TypeByteSize for RefPointerType is 8", func(t *testing.T) {
-		refType := RefPointerType{ElementType: TypeI64}
+		refType := RefPointerType{ElementType: TypeS64}
 		if TypeByteSize(refType) != 8 {
 			t.Errorf("expected 8 bytes, got %d", TypeByteSize(refType))
 		}
@@ -1770,10 +1770,10 @@ func TestRefPointerType(t *testing.T) {
 }
 
 func TestRefTypeResolution(t *testing.T) {
-	t.Run("&i64 resolves correctly", func(t *testing.T) {
+	t.Run("&s64 resolves correctly", func(t *testing.T) {
 		test := newTest(t)
-		result := test.analyzer.resolveTypeName("&i64", pos(1, 1))
-		expected := RefPointerType{ElementType: TypeI64}
+		result := test.analyzer.resolveTypeName("&s64", pos(1, 1))
+		expected := RefPointerType{ElementType: TypeS64}
 		if !result.Equals(expected) {
 			t.Errorf("expected %s, got %s", expected.String(), result.String())
 		}
@@ -1782,7 +1782,7 @@ func TestRefTypeResolution(t *testing.T) {
 
 	t.Run("&Point resolves correctly", func(t *testing.T) {
 		test := newTest(t).withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		result := test.analyzer.resolveTypeName("&Point", pos(1, 1))
 		expected := RefPointerType{ElementType: test.analyzer.structs["Point"]}
@@ -1792,9 +1792,9 @@ func TestRefTypeResolution(t *testing.T) {
 		test.expectNoErrors()
 	})
 
-	t.Run("&i64?? is invalid - produces error", func(t *testing.T) {
+	t.Run("&s64?? is invalid - produces error", func(t *testing.T) {
 		test := newTest(t)
-		test.analyzer.resolveTypeName("&i64??", pos(1, 1))
+		test.analyzer.resolveTypeName("&s64??", pos(1, 1))
 		test.expectErrorContaining("nested nullable types are not allowed")
 	})
 }
@@ -1802,7 +1802,7 @@ func TestRefTypeResolution(t *testing.T) {
 func TestRefUsageRestrictions(t *testing.T) {
 	t.Run("&T allowed as function parameter", func(t *testing.T) {
 		test := newTest(t).withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		fn := funcDecl("readPoint", "void", []ast.Parameter{param("p", "&Point")})
 		mainFn := funcDecl("main", "void", []ast.Parameter{})
@@ -1812,7 +1812,7 @@ func TestRefUsageRestrictions(t *testing.T) {
 
 	t.Run("&&T creates mutable reference parameter", func(t *testing.T) {
 		test := newTest(t).withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		fn := funcDecl("mutatePoint", "void", []ast.Parameter{param("p", "&&Point")})
 		mainFn := funcDecl("main", "void", []ast.Parameter{})
@@ -1829,7 +1829,7 @@ func TestRefUsageRestrictions(t *testing.T) {
 
 	t.Run("var &T is error - use &&T instead", func(t *testing.T) {
 		test := newTest(t).withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		fn := funcDecl("badFunc", "void", []ast.Parameter{varParam("p", "&Point")})
 		test.analyzer.Analyze(programWithDecls(fn))
@@ -1838,14 +1838,14 @@ func TestRefUsageRestrictions(t *testing.T) {
 
 	t.Run("var on non-Ref parameter is error", func(t *testing.T) {
 		test := newTest(t)
-		fn := funcDecl("badFunc", "void", []ast.Parameter{varParam("x", "i64")})
+		fn := funcDecl("badFunc", "void", []ast.Parameter{varParam("x", "s64")})
 		test.analyzer.Analyze(programWithDecls(fn))
 		test.expectErrorContaining("'var' modifier is not supported on parameters")
 	})
 
 	t.Run("&T as return type is error", func(t *testing.T) {
 		test := newTest(t).withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		fn := funcDecl("badFunc", "&Point", []ast.Parameter{})
 		test.analyzer.Analyze(programWithDecls(fn))
@@ -1854,7 +1854,7 @@ func TestRefUsageRestrictions(t *testing.T) {
 
 	t.Run("&T as struct field is error", func(t *testing.T) {
 		test := newTest(t).withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		badStruct := structDecl("Container", structField("ptr", "&Point", false))
 		test.analyzer.Analyze(programWithDecls(badStruct))
@@ -1863,7 +1863,7 @@ func TestRefUsageRestrictions(t *testing.T) {
 
 	t.Run("&T as local variable is error", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		stmt := typedVarDecl("p", "&Point", false, intLit("0"))
 		test.analyzer.analyzeVarDeclStatement(stmt)
@@ -1874,7 +1874,7 @@ func TestRefUsageRestrictions(t *testing.T) {
 func TestImplicitOwnToRefConversion(t *testing.T) {
 	t.Run("Own<T> auto-borrows to Ref<T> parameter", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 
@@ -1898,7 +1898,7 @@ func TestImplicitOwnToRefConversion(t *testing.T) {
 
 	t.Run("Own<T> auto-borrows to var Ref<T> only if source is mutable", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 
@@ -1921,7 +1921,7 @@ func TestImplicitOwnToRefConversion(t *testing.T) {
 		// With the MutRef refactor, val only controls reassignability, not mutability
 		// So val binding CAN be borrowed as MutRef<T>
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 
@@ -1944,7 +1944,7 @@ func TestImplicitOwnToRefConversion(t *testing.T) {
 func TestRefFieldAccess(t *testing.T) {
 	t.Run("field access through Ref<T> works", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		refPointType := RefPointerType{ElementType: pointType}
@@ -1952,12 +1952,12 @@ func TestRefFieldAccess(t *testing.T) {
 
 		result := test.analyzer.analyzeExpression(fieldAccessExpr(ident("p"), "x"))
 		test.expectNoErrors()
-		test.expectType(result, TypeI64)
+		test.expectType(result, TypeS64)
 	})
 
 	t.Run("Own<T> field through Ref becomes Ref<T>", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -1985,7 +1985,7 @@ func TestRefFieldAccess(t *testing.T) {
 
 	t.Run("assignment through immutable Ref is error", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		refPointType := RefPointerType{ElementType: pointType}
@@ -2006,7 +2006,7 @@ func TestRefFieldAccess(t *testing.T) {
 
 	t.Run("assignment through mutable Ref works", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		refPointType := MutRefPointerType{ElementType: pointType}
@@ -2046,7 +2046,7 @@ func TestOwnershipStateEnum(t *testing.T) {
 
 func TestIsCopyable(t *testing.T) {
 	t.Run("primitives are copyable", func(t *testing.T) {
-		copyableTypes := []Type{TypeI8, TypeI16, TypeI32, TypeI64, TypeI128,
+		copyableTypes := []Type{TypeS8, TypeS16, TypeS32, TypeS64, TypeS128,
 			TypeU8, TypeU16, TypeU32, TypeU64, TypeU128,
 			TypeFloat32, TypeFloat64, TypeBoolean, TypeString}
 		for _, typ := range copyableTypes {
@@ -2057,16 +2057,16 @@ func TestIsCopyable(t *testing.T) {
 	})
 
 	t.Run("Own<T> is not copyable", func(t *testing.T) {
-		ownType := OwnedPointerType{ElementType: TypeI64}
+		ownType := OwnedPointerType{ElementType: TypeS64}
 		if IsCopyable(ownType) {
-			t.Errorf("expected Own<i64> to not be copyable")
+			t.Errorf("expected Own<s64> to not be copyable")
 		}
 	})
 
 	t.Run("Ref<T> is copyable", func(t *testing.T) {
-		refType := RefPointerType{ElementType: TypeI64}
+		refType := RefPointerType{ElementType: TypeS64}
 		if !IsCopyable(refType) {
-			t.Errorf("expected Ref<i64> to be copyable")
+			t.Errorf("expected Ref<s64> to be copyable")
 		}
 	})
 
@@ -2074,8 +2074,8 @@ func TestIsCopyable(t *testing.T) {
 		structType := StructType{
 			Name: "Point",
 			Fields: []StructFieldInfo{
-				{Name: "x", Type: TypeI64},
-				{Name: "y", Type: TypeI64},
+				{Name: "x", Type: TypeS64},
+				{Name: "y", Type: TypeS64},
 			},
 		}
 		if !IsCopyable(structType) {
@@ -2087,7 +2087,7 @@ func TestIsCopyable(t *testing.T) {
 		structType := StructType{
 			Name: "Container",
 			Fields: []StructFieldInfo{
-				{Name: "data", Type: OwnedPointerType{ElementType: TypeI64}},
+				{Name: "data", Type: OwnedPointerType{ElementType: TypeS64}},
 			},
 		}
 		if IsCopyable(structType) {
@@ -2096,30 +2096,30 @@ func TestIsCopyable(t *testing.T) {
 	})
 
 	t.Run("nullable Own<T> is not copyable", func(t *testing.T) {
-		nullableOwn := NullableType{InnerType: OwnedPointerType{ElementType: TypeI64}}
+		nullableOwn := NullableType{InnerType: OwnedPointerType{ElementType: TypeS64}}
 		if IsCopyable(nullableOwn) {
-			t.Errorf("expected Own<i64>? to not be copyable")
+			t.Errorf("expected Own<s64>? to not be copyable")
 		}
 	})
 
 	t.Run("nullable primitive is copyable", func(t *testing.T) {
-		nullableInt := NullableType{InnerType: TypeI64}
+		nullableInt := NullableType{InnerType: TypeS64}
 		if !IsCopyable(nullableInt) {
-			t.Errorf("expected i64? to be copyable")
+			t.Errorf("expected s64? to be copyable")
 		}
 	})
 }
 
 func TestContainsOwnedPointer(t *testing.T) {
 	t.Run("Own<T> contains owned pointer", func(t *testing.T) {
-		if !ContainsOwnedPointer(OwnedPointerType{ElementType: TypeI64}) {
-			t.Error("expected Own<i64> to contain owned pointer")
+		if !ContainsOwnedPointer(OwnedPointerType{ElementType: TypeS64}) {
+			t.Error("expected Own<s64> to contain owned pointer")
 		}
 	})
 
 	t.Run("primitive does not contain owned pointer", func(t *testing.T) {
-		if ContainsOwnedPointer(TypeI64) {
-			t.Error("expected i64 to not contain owned pointer")
+		if ContainsOwnedPointer(TypeS64) {
+			t.Error("expected s64 to not contain owned pointer")
 		}
 	})
 
@@ -2127,7 +2127,7 @@ func TestContainsOwnedPointer(t *testing.T) {
 		structType := StructType{
 			Name: "Container",
 			Fields: []StructFieldInfo{
-				{Name: "data", Type: OwnedPointerType{ElementType: TypeI64}},
+				{Name: "data", Type: OwnedPointerType{ElementType: TypeS64}},
 			},
 		}
 		if !ContainsOwnedPointer(structType) {
@@ -2136,9 +2136,9 @@ func TestContainsOwnedPointer(t *testing.T) {
 	})
 
 	t.Run("nested nullable Own<T> contains owned pointer", func(t *testing.T) {
-		nullableOwn := NullableType{InnerType: OwnedPointerType{ElementType: TypeI64}}
+		nullableOwn := NullableType{InnerType: OwnedPointerType{ElementType: TypeS64}}
 		if !ContainsOwnedPointer(nullableOwn) {
-			t.Error("expected Own<i64>? to contain owned pointer")
+			t.Error("expected Own<s64>? to contain owned pointer")
 		}
 	})
 }
@@ -2146,7 +2146,7 @@ func TestContainsOwnedPointer(t *testing.T) {
 func TestOwnershipScope(t *testing.T) {
 	t.Run("declare adds variable as owned", func(t *testing.T) {
 		scope := newOwnershipScope(nil)
-		scope.declare("p", OwnedPointerType{ElementType: TypeI64})
+		scope.declare("p", OwnedPointerType{ElementType: TypeS64})
 
 		info, found := scope.lookup("p")
 		if !found {
@@ -2159,7 +2159,7 @@ func TestOwnershipScope(t *testing.T) {
 
 	t.Run("markMoved changes state to moved", func(t *testing.T) {
 		scope := newOwnershipScope(nil)
-		scope.declare("p", OwnedPointerType{ElementType: TypeI64})
+		scope.declare("p", OwnedPointerType{ElementType: TypeS64})
 
 		scope.markMoved("p", "q", pos(1, 1))
 
@@ -2174,7 +2174,7 @@ func TestOwnershipScope(t *testing.T) {
 
 	t.Run("lookup finds variable in parent scope", func(t *testing.T) {
 		parent := newOwnershipScope(nil)
-		parent.declare("p", OwnedPointerType{ElementType: TypeI64})
+		parent.declare("p", OwnedPointerType{ElementType: TypeS64})
 
 		child := newOwnershipScope(parent)
 		info, found := child.lookup("p")
@@ -2188,7 +2188,7 @@ func TestOwnershipScope(t *testing.T) {
 
 	t.Run("markMoved updates variable in parent scope", func(t *testing.T) {
 		parent := newOwnershipScope(nil)
-		parent.declare("p", OwnedPointerType{ElementType: TypeI64})
+		parent.declare("p", OwnedPointerType{ElementType: TypeS64})
 
 		child := newOwnershipScope(parent)
 		child.markMoved("p", "q", pos(1, 1))
@@ -2204,7 +2204,7 @@ func TestOwnershipScope(t *testing.T) {
 func TestUseAfterMove(t *testing.T) {
 	t.Run("use of moved variable produces error", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2220,7 +2220,7 @@ func TestUseAfterMove(t *testing.T) {
 
 	t.Run("use of non-moved variable is OK", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2235,7 +2235,7 @@ func TestUseAfterMove(t *testing.T) {
 func TestMoveOnAssignment(t *testing.T) {
 	t.Run("assignment of *T variable moves it", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2257,7 +2257,7 @@ func TestMoveOnAssignment(t *testing.T) {
 
 	t.Run("use after move assignment produces error", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2275,10 +2275,10 @@ func TestMoveOnAssignment(t *testing.T) {
 
 	t.Run("copyable types are not moved on assignment", func(t *testing.T) {
 		test := newTest(t).withScope()
-		test.declare("x", TypeI64, false)
+		test.declare("x", TypeS64, false)
 
-		// Declare y = x - this should NOT move x (i64 is copyable)
-		stmt := typedVarDecl("y", "i64", false, ident("x"))
+		// Declare y = x - this should NOT move x (s64 is copyable)
+		stmt := typedVarDecl("y", "s64", false, ident("x"))
 		test.analyzer.analyzeVarDeclStatement(stmt)
 
 		// x should still be usable
@@ -2292,8 +2292,8 @@ func TestBindingMutability(t *testing.T) {
 		// With the MutRef refactor, val only controls reassignability
 		// So val binding CAN have var fields mutated
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
-			StructFieldInfo{Name: "y", Type: TypeI64, Mutable: true, Index: 1},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2309,8 +2309,8 @@ func TestBindingMutability(t *testing.T) {
 
 	t.Run("var binding Own<T> can have var fields mutated", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
-			StructFieldInfo{Name: "y", Type: TypeI64, Mutable: true, Index: 1},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2325,8 +2325,8 @@ func TestBindingMutability(t *testing.T) {
 
 	t.Run("var binding Own<T> cannot have val fields mutated", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
-			StructFieldInfo{Name: "y", Type: TypeI64, Mutable: true, Index: 1},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2343,8 +2343,8 @@ func TestBindingMutability(t *testing.T) {
 		// With the MutRef refactor, val only controls reassignability
 		// So nested var fields CAN be mutated through a val binding
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
-			StructFieldInfo{Name: "y", Type: TypeI64, Mutable: true, Index: 1},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
 		pointType := test.analyzer.structs["Point"]
 		test.analyzer.structs["Rect"] = StructType{
@@ -2369,7 +2369,7 @@ func TestBindingMutability(t *testing.T) {
 func TestBorrowExclusivity(t *testing.T) {
 	t.Run("multiple immutable borrows of same variable is OK", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: false, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2392,7 +2392,7 @@ func TestBorrowExclusivity(t *testing.T) {
 
 	t.Run("multiple mutable borrows of same variable is ERROR", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2415,7 +2415,7 @@ func TestBorrowExclusivity(t *testing.T) {
 
 	t.Run("mixed mutable and immutable borrow is ERROR", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2439,7 +2439,7 @@ func TestBorrowExclusivity(t *testing.T) {
 
 	t.Run("borrowing different variables is OK", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2465,7 +2465,7 @@ func TestBorrowExclusivity(t *testing.T) {
 func TestConditionalMoves(t *testing.T) {
 	t.Run("move in then branch invalidates after if (no else)", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2492,7 +2492,7 @@ func TestConditionalMoves(t *testing.T) {
 
 	t.Run("move in else branch invalidates after if", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2520,7 +2520,7 @@ func TestConditionalMoves(t *testing.T) {
 
 	t.Run("move in both branches invalidates after if", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2550,7 +2550,7 @@ func TestConditionalMoves(t *testing.T) {
 
 	t.Run("no move in any branch keeps variable valid", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2580,7 +2580,7 @@ func TestConditionalMoves(t *testing.T) {
 
 	t.Run("nested if with move invalidates after outer if", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2626,7 +2626,7 @@ func TestShortCircuitOperatorsWithMoves(t *testing.T) {
 
 	t.Run("move in right side of && is conditional", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		setupConsumeFunction(test)
 		pointType := test.analyzer.structs["Point"]
@@ -2651,7 +2651,7 @@ func TestShortCircuitOperatorsWithMoves(t *testing.T) {
 
 	t.Run("move in right side of || is conditional", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		setupConsumeFunction(test)
 		pointType := test.analyzer.structs["Point"]
@@ -2676,7 +2676,7 @@ func TestShortCircuitOperatorsWithMoves(t *testing.T) {
 
 	t.Run("move in left side of && always happens", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		setupConsumeFunction(test)
 		pointType := test.analyzer.structs["Point"]
@@ -2701,7 +2701,7 @@ func TestShortCircuitOperatorsWithMoves(t *testing.T) {
 
 	t.Run("nested short-circuit with moves", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		setupConsumeFunction(test)
 		pointType := test.analyzer.structs["Point"]
@@ -2725,7 +2725,7 @@ func TestShortCircuitOperatorsWithMoves(t *testing.T) {
 func TestConditionalExpressionMoves(t *testing.T) {
 	t.Run("if expression move in then branch invalidates after", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2764,7 +2764,7 @@ func TestConditionalExpressionMoves(t *testing.T) {
 
 	t.Run("if expression move in else branch invalidates after", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2802,7 +2802,7 @@ func TestConditionalExpressionMoves(t *testing.T) {
 
 	t.Run("when expression move in case invalidates after", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2829,7 +2829,7 @@ func TestConditionalExpressionMoves(t *testing.T) {
 
 	t.Run("when expression move in any case invalidates after", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2869,7 +2869,7 @@ func TestConditionalExpressionMoves(t *testing.T) {
 func TestLoopMoveRestrictions(t *testing.T) {
 	t.Run("cannot move inside while loop", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2889,14 +2889,14 @@ func TestLoopMoveRestrictions(t *testing.T) {
 
 	t.Run("cannot move inside for loop", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
 
-		// Declare p as Own<Point> and i as i64
+		// Declare p as Own<Point> and i as s64
 		test.declare("p", ownPointType, false)
-		test.declare("i", TypeI64, true)
+		test.declare("i", TypeS64, true)
 
 		// for i = 0; i < 10; i = i + 1 { val q = p }  // ERROR: cannot move inside loop
 		loop := forStmt(
@@ -2912,7 +2912,7 @@ func TestLoopMoveRestrictions(t *testing.T) {
 
 	t.Run("cannot move inside nested loop", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2939,7 +2939,7 @@ func TestLoopMoveRestrictions(t *testing.T) {
 
 	t.Run("move before loop is OK", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2964,10 +2964,10 @@ func TestLoopMoveRestrictions(t *testing.T) {
 	t.Run("copyable types can be used inside loops", func(t *testing.T) {
 		test := newTest(t).withScope()
 
-		// Declare x as i64 (copyable)
-		test.declare("x", TypeI64, false)
+		// Declare x as s64 (copyable)
+		test.declare("x", TypeS64, false)
 
-		// while true { val y = x }  // OK: i64 is copyable
+		// while true { val y = x }  // OK: s64 is copyable
 		loop := whileStmt(
 			boolLit("true"),
 			varDecl("y", false, ident("x")),
@@ -2981,7 +2981,7 @@ func TestLoopMoveRestrictions(t *testing.T) {
 func TestSelfReferencePrevention(t *testing.T) {
 	t.Run("cannot self-assign move-only type: p = p", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -2997,7 +2997,7 @@ func TestSelfReferencePrevention(t *testing.T) {
 
 	t.Run("field access p = p.x is type mismatch not self-reference", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -3005,12 +3005,12 @@ func TestSelfReferencePrevention(t *testing.T) {
 		// Declare p as var Own<Point>
 		test.declare("p", ownPointType, true)
 
-		// p = p.x - this is a type mismatch (i64 vs Own<Point>), not a self-reference error
-		// p.x is i64 which is copyable, so no move issues
+		// p = p.x - this is a type mismatch (s64 vs Own<Point>), not a self-reference error
+		// p.x is s64 which is copyable, so no move issues
 		stmt := assignStmt("p", fieldAccessExpr(ident("p"), "x"))
 		test.analyzer.analyzeStatement(stmt)
 		// Should fail for type mismatch, not self-reference
-		test.expectErrorContaining("cannot assign i64")
+		test.expectErrorContaining("cannot assign s64")
 	})
 
 	t.Run("cannot self-referential field assign: container.child = container", func(t *testing.T) {
@@ -3018,7 +3018,7 @@ func TestSelfReferencePrevention(t *testing.T) {
 		childType := StructType{
 			Name: "Child",
 			Fields: []StructFieldInfo{
-				{Name: "value", Type: TypeI64, Mutable: false, Index: 0},
+				{Name: "value", Type: TypeS64, Mutable: false, Index: 0},
 			},
 		}
 		ownChildType := OwnedPointerType{ElementType: childType}
@@ -3050,10 +3050,10 @@ func TestSelfReferencePrevention(t *testing.T) {
 	t.Run("self-assign copyable type is OK", func(t *testing.T) {
 		test := newTest(t).withScope()
 
-		// Declare x as var i64
-		test.declare("x", TypeI64, true)
+		// Declare x as var s64
+		test.declare("x", TypeS64, true)
 
-		// x = x  // OK: i64 is copyable
+		// x = x  // OK: s64 is copyable
 		stmt := assignStmt("x", ident("x"))
 		test.analyzer.analyzeStatement(stmt)
 		test.expectNoErrors()
@@ -3061,7 +3061,7 @@ func TestSelfReferencePrevention(t *testing.T) {
 
 	t.Run("assigning different variables is OK", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -3080,7 +3080,7 @@ func TestSelfReferencePrevention(t *testing.T) {
 func TestFunctionLevelOwnership(t *testing.T) {
 	t.Run("return moves value out of function", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -3107,7 +3107,7 @@ func TestFunctionLevelOwnership(t *testing.T) {
 
 	t.Run("use after return is error", func(t *testing.T) {
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -3131,11 +3131,11 @@ func TestFunctionLevelOwnership(t *testing.T) {
 	t.Run("returning copyable type does not move", func(t *testing.T) {
 		test := newTest(t).withScope()
 
-		// Simulate being in a function with return type i64
-		test.analyzer.currentReturnType = TypeI64
+		// Simulate being in a function with return type s64
+		test.analyzer.currentReturnType = TypeS64
 
-		// Declare x as i64 (copyable)
-		test.declare("x", TypeI64, false)
+		// Declare x as s64 (copyable)
+		test.declare("x", TypeS64, false)
 
 		// return x - this copies x, doesn't move it
 		retStmt := returnStmt(ident("x"))
@@ -3154,7 +3154,7 @@ func TestFunctionLevelOwnership(t *testing.T) {
 		// transform = (var p: Own<Point>) -> Own<Point> { p.x = 10; p }
 		// Note: var prefix needed to mutate fields through the pointer
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}
@@ -3190,7 +3190,7 @@ func TestFunctionLevelOwnership(t *testing.T) {
 		// This tests that immutable binding can still pass ownership through
 		// identity = (p: Own<Point>) -> Own<Point> { p }
 		test := newTest(t).withScope().withStruct("Point",
-			StructFieldInfo{Name: "x", Type: TypeI64, Mutable: true, Index: 0},
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: true, Index: 0},
 		)
 		pointType := test.analyzer.structs["Point"]
 		ownPointType := OwnedPointerType{ElementType: pointType}

@@ -2,12 +2,12 @@
 // Test method containing a loop
 
 Counter = class {
-    var value: i64
+    var value: s64
 
     // Method with while loop - sum 1 to n
-    sumTo = (self: &Counter, n: i64) -> i64 {
-        var sum: i64 = 0
-        var i: i64 = 1
+    sumTo = (self: &Counter, n: s64) -> s64 {
+        var sum: s64 = 0
+        var i: s64 = 1
         while i <= n {
             sum = sum + i
             i = i + 1
@@ -16,8 +16,8 @@ Counter = class {
     }
 
     // Method with for loop - factorial
-    factorial = (self: &Counter, n: i64) -> i64 {
-        var result: i64 = 1
+    factorial = (self: &Counter, n: s64) -> s64 {
+        var result: s64 = 1
         for (var i = 2; i <= n; i = i + 1) {
             result = result * i
         }

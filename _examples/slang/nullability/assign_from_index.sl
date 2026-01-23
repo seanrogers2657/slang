@@ -2,12 +2,12 @@
 // @test: stdout=false\ntrue\n
 // Test assigning nullable values from array index expressions
 main = () {
-    val x: i64? = 42
-    val y: i64? = null
+    val x: s64? = 42
+    val y: s64? = null
     val arr = [x, y]
 
     // Assign from index to mutable variable - exercises TypedIndexExpr in generateNullableAssign
-    var a: i64? = 100
+    var a: s64? = 100
     a = arr[1]  // assign null from index
     print(a != null)  // false
 

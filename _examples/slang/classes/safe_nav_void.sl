@@ -2,9 +2,9 @@
 // Test safe navigation with void method
 
 Counter = class {
-    var value: i64
+    var value: s64
 
-    create = (initial: i64) -> *Counter {
+    create = (initial: s64) -> *Counter {
         return Heap.new(Counter{ initial })
     }
 
@@ -13,7 +13,7 @@ Counter = class {
         self.value = self.value + 1
     }
 
-    getValue = (self: &Counter) -> i64 {
+    getValue = (self: &Counter) -> s64 {
         return self.value
     }
 }

@@ -2,17 +2,17 @@
 // Test nullable field access and elvis operator
 
 Container = class {
-    var value: i64
+    var value: s64
 
-    create = (v: i64) -> *Container {
+    create = (v: s64) -> *Container {
         return Heap.new(Container{ v })
     }
 
-    getValue = (self: &Container) -> i64 {
+    getValue = (self: &Container) -> s64 {
         return self.value
     }
 
-    setValue = (self: &&Container, v: i64) {
+    setValue = (self: &&Container, v: s64) {
         self.value = v
     }
 }

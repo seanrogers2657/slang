@@ -2,24 +2,24 @@
 // Test nested method calls - method(method(method()))
 
 Transformer = class {
-    var offset: i64
+    var offset: s64
 
-    create = (offset: i64) -> *Transformer {
+    create = (offset: s64) -> *Transformer {
         return Heap.new(Transformer{ offset })
     }
 
     // Method to be nested
-    transform = (self: &Transformer, x: i64) -> i64 {
+    transform = (self: &Transformer, x: s64) -> s64 {
         return x + self.offset
     }
 
     // Static version for nesting
-    add = (a: i64, b: i64) -> i64 {
+    add = (a: s64, b: s64) -> s64 {
         return a + b
     }
 
     // Method that calls other methods
-    compute = (self: &Transformer, x: i64) -> i64 {
+    compute = (self: &Transformer, x: s64) -> s64 {
         return self.transform(self.transform(x))
     }
 }

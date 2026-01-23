@@ -2,8 +2,8 @@
 // Demonstrates: When to use * vs & vs && in function signatures
 
 Point = struct {
-    var x: i64
-    var y: i64
+    var x: s64
+    var y: s64
 }
 
 // =============================================================================
@@ -11,7 +11,7 @@ Point = struct {
 // Use when: Function only needs to read data, caller keeps ownership
 // =============================================================================
 
-distance = (p: &Point) -> i64 {
+distance = (p: &Point) -> s64 {
     return p.x * p.x + p.y * p.y
 }
 
@@ -25,12 +25,12 @@ areSamePoint = (a: &Point, b: &Point) -> bool {
 // Use when: Function needs to modify data, caller keeps ownership
 // =============================================================================
 
-scale = (p: &&Point, factor: i64) {
+scale = (p: &&Point, factor: s64) {
     p.x = p.x * factor
     p.y = p.y * factor
 }
 
-translate = (p: &&Point, dx: i64, dy: i64) {
+translate = (p: &&Point, dx: s64, dy: s64) {
     p.x = p.x + dx
     p.y = p.y + dy
 }
@@ -45,7 +45,7 @@ reset = (p: &&Point) {
 // Use when: Function consumes the value or stores it somewhere
 // =============================================================================
 
-consume = (p: *Point) -> i64 {
+consume = (p: *Point) -> s64 {
     // p is freed when this function returns
     return p.x + p.y
 }
@@ -55,7 +55,7 @@ consume = (p: *Point) -> i64 {
 // Use when: Function creates new data for caller to own
 // =============================================================================
 
-createPoint = (x: i64, y: i64) -> *Point {
+createPoint = (x: s64, y: s64) -> *Point {
     return Heap.new(Point{ x, y })
 }
 

@@ -2,23 +2,23 @@
 // Test safe navigation with method arguments
 
 Counter = class {
-    var value: i64
+    var value: s64
 
-    create = (initial: i64) -> *Counter {
+    create = (initial: s64) -> *Counter {
         return Heap.new(Counter{ initial })
     }
 
     // Method with argument
-    add = (self: &&Counter, x: i64) {
+    add = (self: &&Counter, x: s64) {
         self.value = self.value + x
     }
 
     // Method with multiple arguments
-    addTwo = (self: &&Counter, x: i64, y: i64) {
+    addTwo = (self: &&Counter, x: s64, y: s64) {
         self.value = self.value + x + y
     }
 
-    getValue = (self: &Counter) -> i64 {
+    getValue = (self: &Counter) -> s64 {
         return self.value
     }
 }

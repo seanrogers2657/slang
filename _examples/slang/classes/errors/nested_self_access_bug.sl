@@ -3,15 +3,15 @@
 // The chained field access code (self.field.subfield) is fixed, but heap allocation needs fixing
 
 Point = struct {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 }
 
 Rectangle = class {
     val topLeft: Point
     val bottomRight: Point
 
-    getWidth = (self: &Rectangle) -> i64 {
+    getWidth = (self: &Rectangle) -> s64 {
         return self.bottomRight.x - self.topLeft.x  // This access pattern is now supported
     }
 }

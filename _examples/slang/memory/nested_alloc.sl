@@ -2,15 +2,15 @@
 // @test: stdout=30\n
 // Test: Nested heap allocations with proper cleanup
 Inner = struct {
-    var value: i64
+    var value: s64
 }
 
 Outer = struct {
     var data: *Inner
-    var extra: i64
+    var extra: s64
 }
 
-createNested = (n: i64) -> i64 {
+createNested = (n: s64) -> s64 {
     val inner = Heap.new(Inner{ n })
     val outer = Heap.new(Outer{ inner, n * 2 })
     return outer.data.value + outer.extra  // n + 2n = 3n

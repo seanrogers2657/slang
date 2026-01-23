@@ -2,25 +2,25 @@
 // Test calling different methods based on conditions
 
 Ops = class {
-    var value: i64
+    var value: s64
 
-    create = (v: i64) -> *Ops {
+    create = (v: s64) -> *Ops {
         return Heap.new(Ops{ v })
     }
 
-    add = (self: &&Ops, n: i64) {
+    add = (self: &&Ops, n: s64) {
         self.value = self.value + n
     }
 
-    sub = (self: &&Ops, n: i64) {
+    sub = (self: &&Ops, n: s64) {
         self.value = self.value - n
     }
 
-    mul = (self: &&Ops, n: i64) {
+    mul = (self: &&Ops, n: s64) {
         self.value = self.value * n
     }
 
-    get = (self: &Ops) -> i64 {
+    get = (self: &Ops) -> s64 {
         return self.value
     }
 }

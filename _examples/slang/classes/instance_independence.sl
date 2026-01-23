@@ -2,9 +2,9 @@
 // Test that multiple class instances are independent
 
 Counter = class {
-    var count: i64
+    var count: s64
 
-    create = (initial: i64) -> *Counter {
+    create = (initial: s64) -> *Counter {
         return Heap.new(Counter{ initial })
     }
 
@@ -12,11 +12,11 @@ Counter = class {
         self.count = self.count + 1
     }
 
-    add = (self: &&Counter, n: i64) {
+    add = (self: &&Counter, n: s64) {
         self.count = self.count + n
     }
 
-    get = (self: &Counter) -> i64 {
+    get = (self: &Counter) -> s64 {
         return self.count
     }
 }

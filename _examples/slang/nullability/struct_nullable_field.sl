@@ -2,8 +2,8 @@
 // @test: stdout=10\nfalse\n20\ntrue\n
 // Test struct with nullable field
 Person = struct {
-    val age: i64
-    var score: i64?
+    val age: s64
+    var score: s64?
 }
 
 main = () {

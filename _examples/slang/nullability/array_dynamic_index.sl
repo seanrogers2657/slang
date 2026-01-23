@@ -2,8 +2,8 @@
 // @test: stdout=true\nfalse\n
 // Test array with dynamic index access
 main = () {
-    val x: i64? = 42
-    val y: i64? = null
+    val x: s64? = 42
+    val y: s64? = null
     val arr = [x, y]
 
     var i = 0

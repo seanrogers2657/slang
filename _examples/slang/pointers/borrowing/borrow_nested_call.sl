@@ -3,14 +3,14 @@
 // Test: Nested call with value return is OK
 // The inner & borrow ends before the outer && borrow starts
 Point = struct {
-    var x: i64
+    var x: s64
 }
 
-getX = (p: &Point) -> i64 {
+getX = (p: &Point) -> s64 {
     return p.x
 }
 
-setX = (p: &&Point, v: i64) {
+setX = (p: &&Point, v: s64) {
     p.x = v
 }
 

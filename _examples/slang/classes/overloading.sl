@@ -2,7 +2,7 @@
 // Test method overloading with different argument counts
 
 Calculator = class {
-    var value: i64
+    var value: s64
 
     // Static factory
     create = () -> *Calculator {
@@ -10,17 +10,17 @@ Calculator = class {
     }
 
     // Overload 1: no args - returns current value
-    add = (self: &Calculator) -> i64 {
+    add = (self: &Calculator) -> s64 {
         return self.value
     }
 
     // Overload 2: one arg - adds to value
-    add = (self: &&Calculator, x: i64) {
+    add = (self: &&Calculator, x: s64) {
         self.value = self.value + x
     }
 
     // Overload 3: two args - adds both to value
-    add = (self: &&Calculator, x: i64, y: i64) {
+    add = (self: &&Calculator, x: s64, y: s64) {
         self.value = self.value + x + y
     }
 }

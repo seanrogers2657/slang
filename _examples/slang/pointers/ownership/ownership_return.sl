@@ -2,11 +2,11 @@
 // @test: stdout=100\n200\n
 // Test: Returning *T from a function transfers ownership to caller
 Point = struct {
-    val x: i64
-    val y: i64
+    val x: s64
+    val y: s64
 }
 
-createPoint = (x: i64, y: i64) -> *Point {
+createPoint = (x: s64, y: s64) -> *Point {
     return Heap.new(Point{ x, y })
 }
 

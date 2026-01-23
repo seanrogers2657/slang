@@ -4,7 +4,7 @@
 // Error: attempting to instantiate an object (singleton)
 
 Math = object {
-    add = (a: i64, b: i64) -> i64 {
+    add = (a: s64, b: s64) -> s64 {
         return a + b
     }
 }

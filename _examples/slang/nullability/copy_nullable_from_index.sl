@@ -2,8 +2,8 @@
 // @test: stdout=true\nfalse\n
 // Test copying nullable values from array index expressions to another array
 main = () {
-    val x: i64? = 42
-    val y: i64? = null
+    val x: s64? = 42
+    val y: s64? = null
     val src = [x, y]
 
     // Copy from index to another array - this exercises TypedIndexExpr in generateArrayVarDecl

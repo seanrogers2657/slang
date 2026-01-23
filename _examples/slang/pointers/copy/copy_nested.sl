@@ -1,12 +1,12 @@
 // @test: exit_code=0
 // @test: stdout=5\n42\n99\n42\n
 Point = struct {
-    var x: i64
-    var y: i64
+    var x: s64
+    var y: s64
 }
 
 Container = struct {
-    val id: i64
+    val id: s64
     var inner: *Point
 }
 

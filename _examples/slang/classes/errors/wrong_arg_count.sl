@@ -4,13 +4,13 @@
 // Error: wrong number of arguments to method
 
 Counter = class {
-    var count: i64
+    var count: s64
 
     create = () -> *Counter {
         return Heap.new(Counter{ 0 })
     }
 
-    add = (self: &&Counter, x: i64) {
+    add = (self: &&Counter, x: s64) {
         self.count = self.count + x
     }
 }

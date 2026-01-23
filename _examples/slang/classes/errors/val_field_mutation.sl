@@ -4,8 +4,8 @@
 // Error: cannot modify val field even with mutable borrow
 
 Point = class {
-    val x: i64    // immutable field
-    var y: i64    // mutable field
+    val x: s64    // immutable field
+    var y: s64    // mutable field
 
     // Mutable borrow should allow modifying var fields, but not val fields
     tryModifyX = (self: &&Point) {

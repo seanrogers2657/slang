@@ -372,16 +372,16 @@ func mangleMethodNameWithInfo(className string, methodInfo *semantic.MethodInfo)
 // mangleTypeName converts a type to a string suitable for name mangling.
 func mangleTypeName(t semantic.Type) string {
 	switch ty := t.(type) {
-	case semantic.I8Type:
-		return "i8"
-	case semantic.I16Type:
-		return "i16"
-	case semantic.I32Type:
-		return "i32"
-	case semantic.I64Type:
-		return "i64"
-	case semantic.I128Type:
-		return "i128"
+	case semantic.S8Type:
+		return "s8"
+	case semantic.S16Type:
+		return "s16"
+	case semantic.S32Type:
+		return "s32"
+	case semantic.S64Type:
+		return "s64"
+	case semantic.S128Type:
+		return "s128"
 	case semantic.U8Type:
 		return "u8"
 	case semantic.U16Type:
@@ -2129,13 +2129,13 @@ func (g *TypedCodeGenerator) generateLiteral(lit *semantic.TypedLiteralExpr) (st
 	// Integer literal
 	EmitMoveImm(&builder, "x2", lit.Value)
 
-	// Sign extend for smaller types (i64/u64 don't need extension)
+	// Sign extend for smaller types (s64/u64 don't need extension)
 	switch lit.Type.(type) {
-	case semantic.I8Type:
+	case semantic.S8Type:
 		builder.WriteString("    sxtb x2, w2\n")
-	case semantic.I16Type:
+	case semantic.S16Type:
 		builder.WriteString("    sxth x2, w2\n")
-	case semantic.I32Type:
+	case semantic.S32Type:
 		builder.WriteString("    sxtw x2, w2\n")
 	case semantic.U8Type:
 		builder.WriteString("    and x2, x2, #0xFF\n")
@@ -2144,7 +2144,7 @@ func (g *TypedCodeGenerator) generateLiteral(lit *semantic.TypedLiteralExpr) (st
 	case semantic.U32Type:
 		builder.WriteString("    mov w2, w2\n")
 	default:
-		// i64, u64: no sign extension needed for 64-bit values
+		// s64, u64: no sign extension needed for 64-bit values
 	}
 
 	return builder.String(), nil

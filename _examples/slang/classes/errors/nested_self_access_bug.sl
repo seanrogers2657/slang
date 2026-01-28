@@ -8,16 +8,16 @@ Point = struct {
 }
 
 Rectangle = class {
-    val topLeft: Point
-    val bottomRight: Point
+    val top_left: Point
+    val bottom_right: Point
 
-    getWidth = (self: &Rectangle) -> s64 {
-        return self.bottomRight.x - self.topLeft.x  // This access pattern is now supported
+    get_width = (self: &Rectangle) -> s64 {
+        return self.bottom_right.x - self.top_left.x  // This access pattern is now supported
     }
 }
 
 main = () {
     // BUG: Heap.new with nested structs allocates wrong size and stores stack pointers
     val rect = Heap.new(Rectangle{ Point{ 0, 0 }, Point{ 5, 7 } })
-    exit(rect.getWidth())
+    exit(rect.get_width())
 }

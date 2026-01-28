@@ -16,7 +16,7 @@ distance = (p: &Point) -> s64 {
 }
 
 // Multiple Ref params - can borrow same value multiple times
-areSamePoint = (a: &Point, b: &Point) -> bool {
+are_same_point = (a: &Point, b: &Point) -> bool {
     return a.x == b.x && a.y == b.y
 }
 
@@ -55,7 +55,7 @@ consume = (p: *Point) -> s64 {
 // Use when: Function creates new data for caller to own
 // =============================================================================
 
-createPoint = (x: s64, y: s64) -> *Point {
+create_point = (x: s64, y: s64) -> *Point {
     return Heap.new(Point{ x, y })
 }
 
@@ -87,15 +87,15 @@ doubled = (p: *Point) -> *Point {
 
 main = () {
     print("=== Pattern 1: Borrow to read ===")
-    val p1 = createPoint(3, 4)
+    val p1 = create_point(3, 4)
     assert(distance(p1) == 25, "distance should be 25 (3*3 + 4*4)")
-    assert(areSamePoint(p1, p1), "point should equal itself")
+    assert(are_same_point(p1, p1), "point should equal itself")
     print(distance(p1))          // 25 (3*3 + 4*4)
-    print(areSamePoint(p1, p1))  // true
+    print(are_same_point(p1, p1))  // true
     // p1 still valid
 
     print("=== Pattern 2: Borrow to mutate ===")
-    var p2 = createPoint(10, 20)
+    var p2 = create_point(10, 20)
     scale(p2, 2)
     assert(p2.x == 20, "x should be 20 after scale")
     assert(p2.y == 40, "y should be 40 after scale")
@@ -109,14 +109,14 @@ main = () {
     // p2 still valid
 
     print("=== Pattern 3: Take ownership ===")
-    val p3 = createPoint(7, 8)
+    val p3 = create_point(7, 8)
     val sum = consume(p3)
     assert(sum == 15, "sum should be 15 (7+8)")
     print(sum)  // 15
     // p3 is now invalid
 
     print("=== Pattern 4: Return ownership ===")
-    val p4 = createPoint(100, 200)
+    val p4 = create_point(100, 200)
     val p5 = clone(p4)
     assert(p5.x == 100, "cloned x should be 100")
     print(p5.x)  // 100
@@ -131,7 +131,7 @@ main = () {
     print(mid.x)  // 50
 
     print("=== Pattern 5: Transform and return ===")
-    val p6 = createPoint(5, 10)
+    val p6 = create_point(5, 10)
     val p7 = doubled(p6)
     // p6 is now invalid
     assert(p7.x == 10, "doubled x should be 10")

@@ -7,7 +7,7 @@ Point = class {
     var x: s64
     var y: s64
 
-    getX = (self: &Point) -> s64 {
+    get_x = (self: &Point) -> s64 {
         return self.x
     }
 }
@@ -15,7 +15,7 @@ Point = class {
 Box = class {
     var value: s64
 
-    getValue = (self: &Box) -> s64 {
+    get_value = (self: &Box) -> s64 {
         return self.value
     }
 }
@@ -23,6 +23,6 @@ Box = class {
 main = () {
     val b = Heap.new(Box{ 5 })
 
-    // Error: Box has no getX method
-    val x = b.getX()
+    // Error: Box has no get_x method
+    val x = b.get_x()
 }

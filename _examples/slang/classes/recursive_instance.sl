@@ -10,7 +10,7 @@ Node = class {
     }
 
     // Recursive instance method using iteration instead
-    sumToDepth = (self: &Node) -> s64 {
+    sum_to_depth = (self: &Node) -> s64 {
         var total: s64 = 0
         var d = self.depth
         while d >= 0 {
@@ -34,9 +34,9 @@ Fibonacci = class {
 }
 
 main = () {
-    // sumToDepth with value=3, depth=2: 3 * 3 = 9 (3 iterations: d=2,1,0)
+    // sum_to_depth with value=3, depth=2: 3 * 3 = 9 (3 iterations: d=2,1,0)
     val n = Node.create(3, 2)
-    val sum = n.sumToDepth()
+    val sum = n.sum_to_depth()
 
     // fib(7) = 13
     val f = Fibonacci.fib(7)

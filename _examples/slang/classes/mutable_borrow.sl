@@ -5,12 +5,12 @@ Counter = class {
     var count: s64
 
     // Mutable borrow - can modify var fields
-    addMany = (self: &&Counter, a: s64, b: s64, c: s64) {
+    add_many = (self: &&Counter, a: s64, b: s64, c: s64) {
         self.count = self.count + a + b + c
     }
 
     // Immutable borrow - read-only
-    getCount = (self: &Counter) -> s64 {
+    get_count = (self: &Counter) -> s64 {
         return self.count
     }
 }
@@ -18,7 +18,7 @@ Counter = class {
 main = () {
     val c = Heap.new(Counter{ 0 })
 
-    c.addMany(10, 15, 25)  // 0 + 10 + 15 + 25 = 50
+    c.add_many(10, 15, 25)  // 0 + 10 + 15 + 25 = 50
 
-    exit(c.getCount())  // 50
+    exit(c.get_count())  // 50
 }

@@ -37,33 +37,33 @@ main = () {
     print(tree.value)
 
     // Safe call to access nullable children
-    val leftVal = tree.left?.value
-    val rightVal = tree.right?.value
+    val left_val = tree.left?.value
+    val right_val = tree.right?.value
 
-    assert(leftVal != null, "left child should exist")
-    assert(rightVal != null, "right child should exist")
-    if leftVal != null {
+    assert(left_val != null, "left child should exist")
+    assert(right_val != null, "right child should exist")
+    if left_val != null {
         print("Left child exists")
     }
-    if rightVal != null {
+    if right_val != null {
         print("Right child exists")
     }
 
     // Deeper access with chained safe calls
-    val leftLeftVal = tree.left?.left?.value
-    val leftRightVal = tree.left?.right?.value
-    val rightLeftVal = tree.right?.left?.value
-    val rightRightVal = tree.right?.right?.value
+    val left_left_val = tree.left?.left?.value
+    val left_right_val = tree.left?.right?.value
+    val right_left_val = tree.right?.left?.value
+    val right_right_val = tree.right?.right?.value
 
-    assert(leftLeftVal != null, "left-left grandchild should exist")
-    assert(leftRightVal != null, "left-right grandchild should exist")
-    assert(rightLeftVal != null, "right-left grandchild should exist")
-    assert(rightRightVal != null, "right-right grandchild should exist")
+    assert(left_left_val != null, "left-left grandchild should exist")
+    assert(left_right_val != null, "left-right grandchild should exist")
+    assert(right_left_val != null, "right-left grandchild should exist")
+    assert(right_right_val != null, "right-right grandchild should exist")
 
-    if leftLeftVal != null { print("Left-left grandchild exists") }
-    if leftRightVal != null { print("Left-right grandchild exists") }
-    if rightLeftVal != null { print("Right-left grandchild exists") }
-    if rightRightVal != null { print("Right-right grandchild exists") }
+    if left_left_val != null { print("Left-left grandchild exists") }
+    if left_right_val != null { print("Left-right grandchild exists") }
+    if right_left_val != null { print("Right-left grandchild exists") }
+    if right_right_val != null { print("Right-right grandchild exists") }
 
     print("Done - entire tree freed automatically")
     print("Binary tree test passed!")

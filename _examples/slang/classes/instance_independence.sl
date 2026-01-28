@@ -38,6 +38,6 @@ main = () {
     // c3 unchanged = 20
 
     // Verify independence: modifying one doesn't affect others
-    val sum = c1.get() + c2.get() + c3.get() - 5  // 5 + 15 + 20 - 5 = 35
+    val sum = c1.get() + c2.get() + c3.get() - 5  // 5 + 15 + 20 - 5 = 35  (get is fine as-is)
     exit(sum)
 }

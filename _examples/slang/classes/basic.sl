@@ -8,7 +8,7 @@ Counter = class {
         self.count = self.count + 1
     }
 
-    getCount = (self: &Counter) -> s64 {
+    get_count = (self: &Counter) -> s64 {
         return self.count
     }
 }
@@ -18,5 +18,5 @@ main = () {
     c.increment()
     c.increment()
     c.increment()
-    exit(c.getCount())
+    exit(c.get_count())
 }

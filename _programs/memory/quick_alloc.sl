@@ -15,26 +15,26 @@ main = () {
 
     var head: *Node? = null
     var x = 0
-    var totalCount: s64 = 0
+    var total_count: s64 = 0
 
     while x < 10 {
         var count = 0
         for ; count < 1000; count = count + 1 {
-            val newNode = Heap.new(Node{ head, count, count, count, count })
-            head = newNode
+            val new_node = Heap.new(Node{ head, count, count, count, count })
+            head = new_node
             sleep(10 * 1000)
         }
         assert(count == 1000, "should allocate 1000 nodes per loop")
-        totalCount = totalCount + count
+        total_count = total_count + count
         print("one loop done")
         sleep(20 * 1000)
         x = x + 1
     }
 
     assert(x == 10, "should complete 10 loops")
-    assert(totalCount == 10000, "should allocate 10000 total nodes")
+    assert(total_count == 10000, "should allocate 10000 total nodes")
     assert(head != null, "head should not be null")
     print("Allocated:")
-    print(totalCount)
+    print(total_count)
     print("Quick alloc test passed!")
 }

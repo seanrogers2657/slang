@@ -4,7 +4,7 @@
 main = () {
     val a: s64? = null
     val b: s64? = null
-    val bDefault = b ?: 99
-    val result = a ?: bDefault
+    val b_default = b ?: 99
+    val result = a ?: b_default
     print(result)
 }

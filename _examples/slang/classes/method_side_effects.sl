@@ -11,7 +11,7 @@ State = class {
     }
 
     // Method modifying multiple fields
-    setAll = (self: &&State, v: s64) {
+    set_all = (self: &&State, v: s64) {
         self.x = v
         self.y = v
         self.z = v
@@ -25,7 +25,7 @@ State = class {
     }
 
     // Method using and modifying
-    swapXY = (self: &&State) {
+    swap_xy = (self: &&State) {
         val temp = self.x
         self.x = self.y
         self.y = temp
@@ -39,13 +39,13 @@ State = class {
 main = () {
     val s = State.create()
 
-    s.setAll(10)    // x=10, y=10, z=10
+    s.set_all(10)    // x=10, y=10, z=10
     s.increment()   // x=11, y=12, z=13
-    s.swapXY()      // x=12, y=11, z=13
+    s.swap_xy()      // x=12, y=11, z=13
     s.increment()   // x=13, y=13, z=16
 
     // sum = 13 + 13 + 16 = 42
-    s.setAll(20)    // x=20, y=20, z=20
+    s.set_all(20)    // x=20, y=20, z=20
     // sum = 60
 
     exit(s.sum())

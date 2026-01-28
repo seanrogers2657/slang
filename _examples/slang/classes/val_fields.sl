@@ -15,11 +15,11 @@ Point = class {
     }
 
     // Can access individual fields
-    getX = (self: &Point) -> s64 {
+    get_x = (self: &Point) -> s64 {
         return self.x
     }
 
-    getY = (self: &Point) -> s64 {
+    get_y = (self: &Point) -> s64 {
         return self.y
     }
 }

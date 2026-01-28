@@ -14,7 +14,7 @@ Builder = class {
         return Heap.new(Builder{ self.value })
     }
 
-    getValue = (self: &Builder) -> s64 {
+    get_value = (self: &Builder) -> s64 {
         return self.value
     }
 }
@@ -22,6 +22,6 @@ Builder = class {
 main = () {
     // Chained method calls
     val b = Builder.create()
-    val result = b.add(10).add(20).getValue()  // 0 + 10 = 10, 10 + 20 = 30
+    val result = b.add(10).add(20).get_value()  // 0 + 10 = 10, 10 + 20 = 30
     exit(result)
 }

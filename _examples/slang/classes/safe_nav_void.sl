@@ -13,15 +13,15 @@ Counter = class {
         self.value = self.value + 1
     }
 
-    getValue = (self: &Counter) -> s64 {
+    get_value = (self: &Counter) -> s64 {
         return self.value
     }
 }
 
 main = () {
     // Test: Safe call on null with void method should be no-op
-    val nullCounter: *Counter? = null
-    nullCounter?.increment()  // Should do nothing, not crash
+    val null_counter: *Counter? = null
+    null_counter?.increment()  // Should do nothing, not crash
 
     // Test: Safe call on non-null with void method should work
     val counter: *Counter? = Counter.create(10)
@@ -31,7 +31,7 @@ main = () {
     // Verify: use regular access to check value
     // We need to unwrap - but we can't easily do that without more features
     // So let's just verify we didn't crash and counter works
-    val v = counter?.getValue() ?: 0  // Should be 12
+    val v = counter?.get_value() ?: 0  // Should be 12
 
     exit(v + 8)  // 12 + 8 = 20
 }

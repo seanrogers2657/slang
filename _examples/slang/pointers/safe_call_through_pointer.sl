@@ -16,12 +16,12 @@ main = () {
 
     // This is the key test: root.left is *Node?
     // ?.value should unwrap to *Node, then access value field
-    val leftVal = root.left?.value
+    val left_val = root.left?.value
 
-    if leftVal != null {
+    if left_val != null {
         print("Left:")
         // Use elvis operator to unwrap
-        val v = leftVal ?: 0
+        val v = left_val ?: 0
         print(v)
     }
 }

@@ -40,13 +40,13 @@ main = () {
 
     // Test classify (using 0-5 instead of -5 for negative)
     val neg5 = 0 - 5
-    val r1 = c.classify(neg5)   // 0
-    val r2 = c.classify(0)      // 1
-    val r3 = c.classify(5)      // 2
-    val r4 = c.classify(20)     // 3
+    val r1 = c.classify(neg5)  // 0
+    val r2 = c.classify(0)     // 1
+    val r3 = c.classify(5)     // 2
+    val r4 = c.classify(20)    // 3
 
     // Test score
-    val s2 = c.score(5)    // 5 * 1 = 5
+    val s2 = c.score(5)  // 5 * 1 = 5
 
     // r1 + r2 + r3 + r4 = 0 + 1 + 2 + 3 = 6
     // s2 = 5, 6 + 5 + 4 = 15

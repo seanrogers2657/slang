@@ -6,19 +6,19 @@ Point = struct {
 }
 
 Rectangle = struct {
-    val topLeft: Point
-    val bottomRight: Point
+    val top_left: Point
+    val bottom_right: Point
 }
 
 main = () {
     val rect = Rectangle{
-        bottomRight: Point{ x: 100, y: 100 },
-        topLeft: Point{ y: 0, x: 0 },
+        bottom_right: Point{ x: 100, y: 100 },
+        top_left: Point{ y: 0, x: 0 },
     }
     print(
         rect
-            .topLeft
+            .top_left
             .x
     )
-    print(rect.bottomRight.x)
+    print(rect.bottom_right.x)
 }

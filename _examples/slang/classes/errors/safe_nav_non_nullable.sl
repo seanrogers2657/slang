@@ -10,13 +10,13 @@ Counter = class {
         return Heap.new(Counter{ 0 })
     }
 
-    getValue = (self: &Counter) -> s64 {
+    get_value = (self: &Counter) -> s64 {
         return self.value
     }
 }
 
 main = () {
     val counter = Counter.create()  // *Counter (not nullable!)
-    val v = counter?.getValue()     // ERROR: can't use ?. on non-nullable
+    val v = counter?.get_value()     // ERROR: can't use ?. on non-nullable
     exit(v ?: 0)
 }

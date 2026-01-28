@@ -8,12 +8,12 @@ Point = class {
     var y: s64    // mutable field
 
     // Mutable borrow should allow modifying var fields, but not val fields
-    tryModifyX = (self: &&Point) {
+    try_modify_x = (self: &&Point) {
         self.x = 100  // ERROR: cannot modify immutable field 'x'
     }
 }
 
 main = () {
     val p = Heap.new(Point{ 10, 20 })
-    p.tryModifyX()
+    p.try_modify_x()
 }

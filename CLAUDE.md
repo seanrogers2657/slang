@@ -29,6 +29,49 @@ This repository follows strict organizational rules:
 
 - **Never delete files without permission**: Do not use `rm`, `git rm`, or any other file deletion commands without explicit user approval. Always ask before removing any files or directories.
 
+## Naming Conventions
+
+Slang code follows these naming conventions:
+
+1. **Classes and Structs**: Use `CapitalCamelCase`
+   - Examples: `Point`, `Counter`, `GraphNode`, `MathUtils`, `TreeNode`
+
+2. **Methods and Functions**: Use `lower_snake_case`
+   - Examples: `get_value`, `set_x`, `compute_distance`, `is_empty`, `add_two`
+   - This applies to both static methods and instance methods
+   - This applies to free functions as well
+
+3. **Variables**: Use `lower_snake_case`
+   - Examples: `my_value`, `count`, `node_1`, `left_val`, `total_sum`
+
+4. **Fields**: Use `lower_snake_case`
+   - Examples: `x`, `y`, `value`, `count`, `top_left`, `bottom_right`, `last_value`
+
+**Examples:**
+
+```slang
+// CapitalCamelCase for class name
+Counter = class {
+    var count: s64
+
+    // lower_snake_case for methods
+    get_count = (self: &Counter) -> s64 {
+        return self.count
+    }
+
+    add_amount = (self: &&Counter, amount: s64) {
+        self.count = self.count + amount
+    }
+}
+
+// lower_snake_case for free functions and variables
+compute_distance = (p1: &Point, p2: &Point) -> s64 {
+    val delta_x = p2.get_x() - p1.get_x()
+    val delta_y = p2.get_y() - p1.get_y()
+    return delta_x + delta_y
+}
+```
+
 ## Project Overview
 
 **Slang** is a compiler for a simple programming language written in Go. It targets ARM64 assembly for macOS. The compiler follows a five-stage pipeline:
@@ -479,8 +522,8 @@ Point = struct {
 
 // Nested structs
 Rectangle = struct {
-    val topLeft: Point
-    val bottomRight: Point
+    val top_left: Point
+    val bottom_right: Point
 }
 
 main = () {
@@ -507,8 +550,8 @@ main = () {
 
     // Nested struct creation
     val rect = Rectangle{ Point{ 0, 0 }, Point{ 100, 100 } }
-    print(rect.topLeft.x)       // prints 0
-    print(rect.bottomRight.x)   // prints 100
+    print(rect.top_left.x)       // prints 0
+    print(rect.bottom_right.x)   // prints 100
 }
 ```
 
@@ -553,18 +596,18 @@ main = () {
 **Ownership transfer (move semantics):**
 ```slang
 // Passing *T to a function transfers ownership
-consumePoint = (p: *Point) -> s64 {
+consume_point = (p: *Point) -> s64 {
     return p.x + p.y
 }
 
 // Returning *T transfers ownership to caller
-createPoint = (x: s64, y: s64) -> *Point {
+create_point = (x: s64, y: s64) -> *Point {
     return Heap.new(Point{ x, y })
 }
 
 main = () {
-    val p = createPoint(10, 20)
-    val sum = consumePoint(p)  // p is moved
+    val p = create_point(10, 20)
+    val sum = consume_point(p)  // p is moved
     // print(p.x)  // Error: p was moved
 }
 ```
@@ -572,22 +615,22 @@ main = () {
 **Borrowing with &T and &&T:**
 ```slang
 // &T borrows without taking ownership (read-only)
-printPoint = (p: &Point) {
+print_point = (p: &Point) {
     print(p.x)
     print(p.y)
 }
 
 // &&T allows mutation through the reference
-doubleX = (p: &&Point) {
+double_x = (p: &&Point) {
     p.x = p.x * 2
 }
 
 main = () {
     val p = Heap.new(Point{ 10, 20 })
-    printPoint(p)  // Auto-borrow: *Point -> &Point
+    print_point(p)  // Auto-borrow: *Point -> &Point
     print(p.x)     // p still usable: prints 10
 
-    doubleX(p)     // Mutable borrow (val binding can still borrow as &&T)
+    double_x(p)     // Mutable borrow (val binding can still borrow as &&T)
     print(p.x)     // prints 20
 }
 ```
@@ -631,9 +674,9 @@ main = () {
     print(result)            // prints 99
 
     // Boolean variables
-    val isValid = true
-    val isGreater = x > y    // comparison returns bool
-    print(isValid && isGreater)  // prints "true" or "false"
+    val is_valid = true
+    val is_greater = x > y    // comparison returns bool
+    print(is_valid && is_greater)  // prints "true" or "false"
 
     // Explicit type annotations
     val a: s16 = 1000        // explicitly typed as s16
@@ -755,7 +798,7 @@ main = () {
 }
 
 // When as expression (returns a value)
-getValue = (x: s64) -> s64 {
+get_value = (x: s64) -> s64 {
     return when {
         x < 0 -> -1
         x == 0 -> 0
@@ -851,7 +894,7 @@ main = () {
 }
 
 // Functions can return nullable types
-findValue = (x: s64) -> s64? {
+find_value = (x: s64) -> s64? {
     if x > 0 {
         return x
     }
@@ -859,7 +902,7 @@ findValue = (x: s64) -> s64? {
 }
 
 main = () {
-    val result = findValue(-5)
+    val result = find_value(-5)
     if result == null {
         print(0)
     }

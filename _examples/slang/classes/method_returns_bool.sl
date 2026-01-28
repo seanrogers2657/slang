@@ -15,15 +15,15 @@ Range = class {
     }
 
     // Method returning bool
-    isEmpty = (self: &Range) -> bool {
+    is_empty = (self: &Range) -> bool {
         return self.min > self.max
     }
 
-    getMin = (self: &Range) -> s64 {
+    get_min = (self: &Range) -> s64 {
         return self.min
     }
 
-    getMax = (self: &Range) -> s64 {
+    get_max = (self: &Range) -> s64 {
         return self.max
     }
 }
@@ -41,8 +41,8 @@ main = () {
         count = count + 10  // should NOT hit
     }
 
-    // Test isEmpty (use intermediate variable to avoid precedence issue with !)
-    val empty = r1.isEmpty()
+    // Test is_empty (use intermediate variable to avoid precedence issue with !)
+    val empty = r1.is_empty()
     if !empty {
         count = count + 1  // should hit (0-10 is not empty)
     }

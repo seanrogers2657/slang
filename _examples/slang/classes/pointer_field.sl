@@ -10,11 +10,11 @@ Node = class {
         return Heap.new(Node{ v, null })
     }
 
-    getValue = (self: &Node) -> s64 {
+    get_value = (self: &Node) -> s64 {
         return self.value
     }
 
-    setNext = (self: &&Node, n: *Node?) {
+    set_next = (self: &&Node, n: *Node?) {
         self.next = n
     }
 }
@@ -25,11 +25,11 @@ main = () {
     val n2 = Node.create(20)
 
     // Link them (n1 -> n2)
-    n1.setNext(n2)
+    n1.set_next(n2)
 
     // Read values
-    val v1 = n1.getValue()  // 10
-    val v2 = n2.getValue()  // 20
+    val v1 = n1.get_value()  // 10
+    val v2 = n2.get_value()  // 20
 
     exit(v1 + v2)  // 30
 }

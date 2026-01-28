@@ -29,7 +29,7 @@ main = () {
 
     // Nested instance method calls
     // transform(transform(transform(4))) = transform(transform(14)) = transform(24) = 34
-    val r1 = t.transform(t.transform(t.transform(4)))
+    val r1 = t.transform(t.transform(t.transform(4)))  // These are all 'transform', which is fine
 
     // Nested static method calls
     // add(add(5, 10), add(5, 10)) = add(15, 15) = 30

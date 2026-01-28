@@ -10,11 +10,11 @@ Point = class {
         return Heap.new(Point{ x, y })
     }
 
-    getX = (self: &Point) -> s64 {
+    get_x = (self: &Point) -> s64 {
         return self.x
     }
 
-    getY = (self: &Point) -> s64 {
+    get_y = (self: &Point) -> s64 {
         return self.y
     }
 }
@@ -27,18 +27,18 @@ Line = class {
         return Heap.new(Line{ len })
     }
 
-    getLength = (self: &Line) -> s64 {
+    get_length = (self: &Line) -> s64 {
         return self.length
     }
 }
 
 // Free function using multiple classes
-computeDistance = (p1: &Point, p2: &Point) -> s64 {
-    val dx = p2.getX() - p1.getX()
-    val dy = p2.getY() - p1.getY()
-    val absDx = if dx < 0 { 0 - dx } else { dx }
-    val absDy = if dy < 0 { 0 - dy } else { dy }
-    return absDx + absDy
+compute_distance = (p1: &Point, p2: &Point) -> s64 {
+    val dx = p2.get_x() - p1.get_x()
+    val dy = p2.get_y() - p1.get_y()
+    val abs_dx = if dx < 0 { 0 - dx } else { dx }
+    val abs_dy = if dy < 0 { 0 - dy } else { dy }
+    return abs_dx + abs_dy
 }
 
 main = () {
@@ -47,16 +47,16 @@ main = () {
     val p3 = Point.create(15, 35)
 
     // Distance from p1 to p2: |10-0| + |20-0| = 30
-    val d1 = computeDistance(p1, p2)
+    val d1 = compute_distance(p1, p2)
 
     // Distance from p2 to p3: |15-10| + |35-20| = 5 + 15 = 20
-    val d2 = computeDistance(p2, p3)
+    val d2 = compute_distance(p2, p3)
 
     // Distance from p1 to p3: |15| + |35| = 50
-    val d3 = computeDistance(p1, p3)
+    val d3 = compute_distance(p1, p3)
 
     // Create a Line
     val line = Line.create(d1 + d2)  // 30 + 20 = 50
 
-    exit(d1 + d2 + line.getLength() - 25)  // 30 + 20 + 50 - 25 = 75
+    exit(d1 + d2 + line.get_length() - 25)  // 30 + 20 + 50 - 25 = 75
 }

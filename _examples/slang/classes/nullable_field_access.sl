@@ -8,11 +8,11 @@ Container = class {
         return Heap.new(Container{ v })
     }
 
-    getValue = (self: &Container) -> s64 {
+    get_value = (self: &Container) -> s64 {
         return self.value
     }
 
-    setValue = (self: &&Container, v: s64) {
+    set_value = (self: &&Container, v: s64) {
         self.value = v
     }
 }
@@ -20,10 +20,10 @@ Container = class {
 main = () {
     // Test with values
     val c1 = Container.create(10)
-    val v1 = c1.getValue()  // 10
+    val v1 = c1.get_value()  // 10
 
     val c2 = Container.create(15)
-    val v2 = c2.getValue()  // 15
+    val v2 = c2.get_value()  // 15
 
     exit(v1 + v2)  // 10 + 15 = 25
 }

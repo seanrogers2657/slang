@@ -1,6 +1,6 @@
 # Status
 
-DRAFT, 2026-01-24
+IMPLEMENTED, 2026-01-27
 
 # Summary/Motivation
 

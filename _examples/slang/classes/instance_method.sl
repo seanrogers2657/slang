@@ -4,7 +4,7 @@
 Counter = class {
     var count: s64
 
-    getCount = (self: &Counter) -> s64 {
+    get_count = (self: &Counter) -> s64 {
         return self.count
     }
 

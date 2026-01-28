@@ -41,9 +41,8 @@ main = () {
     // accumulate: base(10) + 2 + 4 + 6 + 8 = 10 + 20 = 30
     val r2 = calc.accumulate(4)
 
-    // transform: (13 * 2) + 10 = 26 + 10... wait that's 36
-    // Let me use r1(33) + r2(30) = 63... needs to be 89
-    // Add transform(13) = 13*2 + 10 = 36, but 33 + 30 = 63, need 26 more
+    // transform: (8 * 2) + 10 = 26
+    // r1(33) + r2(30) + r3(26) = 89
     val r3 = calc.transform(8)  // 8*2 + 10 = 26
 
     exit(r1 + r2 + r3)  // 33 + 30 + 26 = 89

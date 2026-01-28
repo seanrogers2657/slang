@@ -9,7 +9,7 @@ Point = class {
         return Heap.new(Point{ x, y })
     }
 
-    setX = (self: &&Point, newX: s64) {
+    set_x = (self: &&Point, newX: s64) {
         self.x = newX
     }
 
@@ -23,12 +23,12 @@ main = () {
     val copied = original.copy()  // Deep copy
 
     // Modify original
-    original.setX(100)
+    original.set_x(100)
 
     // Verify copy is independent
-    val originalSum = original.sum()  // 100 + 5 = 105
-    val copiedSum = copied.sum()      // 10 + 5 = 15 (unchanged)
+    val original_sum = original.sum()  // 100 + 5 = 105
+    val copied_sum = copied.sum()      // 10 + 5 = 15 (unchanged)
 
     // 105 - 80 = 25
-    exit(originalSum - 80)
+    exit(original_sum - 80)
 }

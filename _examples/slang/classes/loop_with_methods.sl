@@ -26,8 +26,8 @@ main = () {
 
     // For loop calling methods
     for (var i = 1; i <= 10; i = i + 1) {
-        acc.add(i)  // Add 1+2+3+...+10 = 55
+        acc.add(i)  // Add 1+2+3+...+10 = 55 (add is fine as-is)
     }
 
-    exit(acc.get())
+    exit(acc.get())  // get is fine as-is
 }

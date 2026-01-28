@@ -24,9 +24,9 @@ main = () {
     list = prepend(list, 5)
 
     // Access head value using safe call
-    val headVal = list?.value
-    assert(headVal != null, "head value should exist")
-    if headVal != null {
+    val head_val = list?.value
+    assert(head_val != null, "head value should exist")
+    if head_val != null {
         print("Head value exists")
     }
 

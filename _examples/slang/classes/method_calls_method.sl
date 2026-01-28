@@ -6,23 +6,23 @@ Point = class {
     val y: s64
 
     // Method that calls another method on self
-    squaredMagnitude = (self: &Point) -> s64 {
-        val xSq = self.getXSquared()
-        val ySq = self.getYSquared()
-        return xSq + ySq
+    squared_magnitude = (self: &Point) -> s64 {
+        val x_sq = self.get_x_squared()
+        val y_sq = self.get_y_squared()
+        return x_sq + y_sq
     }
 
-    getXSquared = (self: &Point) -> s64 {
+    get_x_squared = (self: &Point) -> s64 {
         return self.x * self.x
     }
 
-    getYSquared = (self: &Point) -> s64 {
+    get_y_squared = (self: &Point) -> s64 {
         return self.y * self.y
     }
 }
 
 main = () {
     val p = Heap.new(Point{ 3, 4 })
-    val mag = p.squaredMagnitude()  // 3*3 + 4*4 = 9 + 16 = 25
+    val mag = p.squared_magnitude()  // 3*3 + 4*4 = 9 + 16 = 25
     exit(mag)
 }

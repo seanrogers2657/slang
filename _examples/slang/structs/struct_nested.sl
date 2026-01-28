@@ -6,12 +6,12 @@ Point = struct {
 }
 
 Rectangle = struct {
-    val topLeft: Point
-    val bottomRight: Point
+    val top_left: Point
+    val bottom_right: Point
 }
 
 main = () {
     val rect = Rectangle{ Point{ 0, 0 }, Point{ 100, 100 } }
-    print(rect.topLeft.x)
-    print(rect.bottomRight.x)
+    print(rect.top_left.x)
+    print(rect.bottom_right.x)
 }

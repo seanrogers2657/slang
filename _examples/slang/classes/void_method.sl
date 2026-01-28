@@ -2,7 +2,7 @@
 // Test void methods (methods with no return value)
 
 Logger = class {
-    var lastValue: s64
+    var last_value: s64
 
     create = () -> *Logger {
         return Heap.new(Logger{ 0 })
@@ -10,22 +10,22 @@ Logger = class {
 
     // Void method with explicit void return type
     log = (self: &&Logger, value: s64) {
-        self.lastValue = value
+        self.last_value = value
     }
 
     // Void method that does multiple things
     reset = (self: &&Logger) {
-        self.lastValue = 0
+        self.last_value = 0
     }
 
     // Void static method
-    staticLog = (value: s64) {
+    static_log = (value: s64) {
         // Just does something without returning
         val temp = value * 2
     }
 
-    getLast = (self: &Logger) -> s64 {
-        return self.lastValue
+    get_last = (self: &Logger) -> s64 {
+        return self.last_value
     }
 }
 
@@ -34,16 +34,16 @@ main = () {
 
     // Call void methods
     logger.log(10)
-    val v1 = logger.getLast()  // 10
+    val v1 = logger.get_last()  // 10
 
     logger.log(20)
-    val v2 = logger.getLast()  // 20
+    val v2 = logger.get_last()  // 20
 
     logger.reset()
-    val v3 = logger.getLast()  // 0
+    val v3 = logger.get_last()  // 0
 
     // Call static void method (just verify it doesn't crash)
-    Logger.staticLog(100)
+    Logger.static_log(100)
 
     exit(v1 + v2 + v3)  // 10 + 20 + 0 = 30
 }

@@ -9,19 +9,19 @@ Point = class {
         return Heap.new(Point{ x, y })
     }
 
-    getX = (self: &Point) -> s64 {
+    get_x = (self: &Point) -> s64 {
         return self.x
     }
 
-    getY = (self: &Point) -> s64 {
+    get_y = (self: &Point) -> s64 {
         return self.y
     }
 
-    setX = (self: &&Point, newX: s64) {
+    set_x = (self: &&Point, newX: s64) {
         self.x = newX
     }
 
-    setY = (self: &&Point, newY: s64) {
+    set_y = (self: &&Point, newY: s64) {
         self.y = newY
     }
 
@@ -31,8 +31,8 @@ Point = class {
 }
 
 // Free function that takes two class instances
-addPoints = (p1: &Point, p2: &Point) -> s64 {
-    return p1.getX() + p1.getY() + p2.getX() + p2.getY()
+add_points = (p1: &Point, p2: &Point) -> s64 {
+    return p1.get_x() + p1.get_y() + p2.get_x() + p2.get_y()
 }
 
 main = () {
@@ -40,12 +40,12 @@ main = () {
     val p2 = Point.create(5, 5)
 
     // Use free function with class parameters
-    val sum = addPoints(p1, p2)  // 10 + 20 + 5 + 5 = 40
+    val sum = add_points(p1, p2)  // 10 + 20 + 5 + 5 = 40
 
     // Modify p1
-    p1.setX(15)  // p1 = (15, 20)
+    p1.set_x(15)  // p1 = (15, 20)
 
-    val newSum = p1.sum()  // 15 + 20 = 35
+    val new_sum = p1.sum()  // 15 + 20 = 35
 
-    exit(sum + newSum - 25)  // 40 + 35 - 25 = 50
+    exit(sum + new_sum - 25)  // 40 + 35 - 25 = 50
 }

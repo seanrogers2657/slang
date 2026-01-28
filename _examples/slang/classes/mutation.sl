@@ -19,7 +19,7 @@ Counter = class {
         self.value = self.value * 2
     }
 
-    addAmount = (self: &&Counter, amount: s64) {
+    add_amount = (self: &&Counter, amount: s64) {
         self.value = self.value + amount
     }
 }
@@ -27,6 +27,6 @@ Counter = class {
 main = () {
     val c = Heap.new(Counter{ 10 })
     c.double()         // 20
-    c.addAmount(5)     // 25
+    c.add_amount(5)     // 25
     exit(c.get())
 }

@@ -36,8 +36,8 @@ main = () {
 
     // Allocate 100,000 large nodes - requires many 1MB arenas
     for ; count < 100000; count = count + 1 {
-        val newNode = Heap.new(LargeNode{ head, count, count, count, count, count, count, count, count, count, count, count, count, count, count, count, count })
-        head = newNode
+        val new_node = Heap.new(LargeNode{ head, count, count, count, count, count, count, count, count, count, count, count, count, count, count, count, count })
+        head = new_node
         sleep(100 * 1000)  // 0.1ms per allocation for profiling
     }
 

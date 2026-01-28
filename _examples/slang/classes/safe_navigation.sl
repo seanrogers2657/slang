@@ -10,7 +10,7 @@ Counter = class {
     }
 
     // Instance method that returns a value
-    getValue = (self: &Counter) -> s64 {
+    get_value = (self: &Counter) -> s64 {
         return self.value
     }
 
@@ -23,12 +23,12 @@ Counter = class {
 main = () {
     // Test 1: Safe call on non-null returns the value
     val counter: *Counter? = Counter.create(10)
-    val v1 = counter?.getValue()
+    val v1 = counter?.get_value()
     // v1 is s64? = 10
 
     // Test 2: Safe call on null returns null (no crash)
-    val nullCounter: *Counter? = null
-    val v2 = nullCounter?.getValue()
+    val null_counter: *Counter? = null
+    val v2 = null_counter?.get_value()
     // v2 is s64? = null
 
     // For exit code: v1 should be 10, v2 should be 0 (null)

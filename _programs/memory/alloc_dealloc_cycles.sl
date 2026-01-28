@@ -26,8 +26,8 @@ main = () {
         var head: *Node? = null
         var count = 0
         while count < 50000 {
-            val newNode = Heap.new(Node{ head, count, count, count, count })
-            head = newNode
+            val new_node = Heap.new(Node{ head, count, count, count, count })
+            head = new_node
             count = count + 1
         }
         assert(count == 50000, "should allocate 50000 nodes")

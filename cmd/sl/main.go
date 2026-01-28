@@ -4,13 +4,16 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/seanrogers2657/slang/assembler"
 	nativeasm "github.com/seanrogers2657/slang/assembler/slasm"
 	"github.com/seanrogers2657/slang/assembler/system"
 	"github.com/seanrogers2657/slang/compiler/ast"
-	"github.com/seanrogers2657/slang/compiler/codegen"
+	"github.com/seanrogers2657/slang/compiler/ir"
+	"github.com/seanrogers2657/slang/compiler/ir/backend"
+	"github.com/seanrogers2657/slang/compiler/ir/backend/arm64"
 	"github.com/seanrogers2657/slang/compiler/lexer"
 	"github.com/seanrogers2657/slang/compiler/parser"
 	"github.com/seanrogers2657/slang/compiler/semantic"
@@ -272,14 +275,61 @@ func formatTypedExpression(sb *strings.Builder, expr semantic.TypedExpression, p
 	}
 }
 
-// toErrorPos converts an ast.Position to an errors.Position
-func toErrorPos(line, column, offset int) errors.Position {
-	return errors.Position{Line: line, Column: column, Offset: offset}
+// printIRStats prints statistics about the IR program
+func printIRStats(prog *ir.Program) {
+	fmt.Println("IR Statistics:")
+
+	// Count totals
+	totalBlocks := 0
+	totalValues := 0
+	opCounts := make(map[ir.Op]int)
+
+	for _, fn := range prog.Functions {
+		totalBlocks += len(fn.Blocks)
+		for _, block := range fn.Blocks {
+			totalValues += len(block.Values)
+			for _, val := range block.Values {
+				opCounts[val.Op]++
+			}
+		}
+	}
+
+	fmt.Printf("  • Functions: %d\n", len(prog.Functions))
+	fmt.Printf("  • Structs: %d\n", len(prog.Structs))
+	fmt.Printf("  • Globals: %d\n", len(prog.Globals))
+	fmt.Printf("  • Strings: %d\n", len(prog.Strings))
+	fmt.Printf("  • Blocks: %d\n", totalBlocks)
+	fmt.Printf("  • Values: %d\n", totalValues)
+
+	// Show operation breakdown if there are values
+	if len(opCounts) > 0 {
+		// Sort operations by count (descending) for consistent output
+		type opCount struct {
+			op    ir.Op
+			count int
+		}
+		var sorted []opCount
+		for op, count := range opCounts {
+			sorted = append(sorted, opCount{op, count})
+		}
+		sort.Slice(sorted, func(i, j int) bool {
+			if sorted[i].count != sorted[j].count {
+				return sorted[i].count > sorted[j].count
+			}
+			return sorted[i].op.String() < sorted[j].op.String()
+		})
+
+		fmt.Println("\n  Operation counts:")
+		for _, oc := range sorted {
+			fmt.Printf("    %-12s %d\n", oc.op.String()+":", oc.count)
+		}
+	}
+	fmt.Println()
 }
 
-// compileSource performs the full compilation pipeline with error checking
-// If verbose is true, debug output is printed for each stage
-func compileSource(filename string, verbose bool, timer *timing.Timer) (string, error) {
+// compileSourceWithIR performs compilation using the IR pipeline
+// This is the new compilation path that uses SSA-form IR and the ARM64 backend
+func compileSourceWithIR(filename string, verbose bool, timer *timing.Timer) (string, error) {
 	// Read source file
 	if timer != nil {
 		timer.Start("Read Source")
@@ -318,9 +368,7 @@ func compileSource(filename string, verbose bool, timer *timing.Timer) (string, 
 		timer.End()
 	}
 
-	// Add lexer errors (they already have correct positions)
 	allErrors = append(allErrors, lex.Errors...)
-
 	if len(allErrors) > 0 {
 		fmt.Println(errors.FormatErrors(allErrors, sourceLines))
 		return "", fmt.Errorf("compilation failed")
@@ -342,9 +390,7 @@ func compileSource(filename string, verbose bool, timer *timing.Timer) (string, 
 		timer.End()
 	}
 
-	// Add parser errors (they already have correct positions)
 	allErrors = append(allErrors, pars.Errors...)
-
 	if len(allErrors) > 0 {
 		fmt.Println(errors.FormatErrors(allErrors, sourceLines))
 		return "", fmt.Errorf("compilation failed")
@@ -378,23 +424,75 @@ func compileSource(filename string, verbose bool, timer *timing.Timer) (string, 
 		fmt.Println(formatTypedAST(typedAST))
 	}
 
-	// Code generation
+	// IR Generation
 	if timer != nil {
-		timer.Start("Code Generation")
+		timer.Start("IR Generation")
 	}
-	// Use typed code generator for type-aware code generation with filename for stack traces
-	typedCodeGenerator := codegen.NewTypedCodeGeneratorWithFilename(typedAST, sourceLines, filename)
-	assemblyOutput, err := typedCodeGenerator.Generate()
+	irProg, err := ir.Generate(typedAST)
 	if err != nil {
-		return "", fmt.Errorf("code generation failed: %w", err)
+		return "", fmt.Errorf("IR generation failed: %w", err)
 	}
 	if timer != nil {
 		timer.End()
 	}
 
-	// Verbose: print code generation output
+	// Verbose: print IR
 	if verbose {
-		printSection("CODE GENERATION OUTPUT")
+		printSection("IR OUTPUT")
+		fmt.Println(ir.String(irProg))
+
+		// Print IR statistics
+		printIRStats(irProg)
+	}
+
+	// Validate IR
+	irErrors := ir.Validate(irProg)
+
+	// Verbose: print validation results
+	if verbose {
+		printSection("IR VALIDATION")
+		if len(irErrors) == 0 {
+			fmt.Println("✓ IR validation passed")
+			fmt.Printf("  • %d function(s) validated\n", len(irProg.Functions))
+		} else {
+			fmt.Printf("✗ IR validation failed with %d error(s):\n", len(irErrors))
+			for _, e := range irErrors {
+				fmt.Printf("  • %s\n", e.Error())
+			}
+		}
+		fmt.Println()
+	}
+
+	if len(irErrors) > 0 {
+		if !verbose {
+			// If not verbose, still print the errors
+			for _, e := range irErrors {
+				fmt.Println(e.Error())
+			}
+		}
+		return "", fmt.Errorf("IR validation failed")
+	}
+
+	// ARM64 Code Generation
+	if timer != nil {
+		timer.Start("ARM64 Backend")
+	}
+	config := &backend.Config{
+		Filename:    filename,
+		SourceLines: sourceLines,
+	}
+	arm64Backend := arm64.New(config)
+	assemblyOutput, err := arm64Backend.Generate(irProg)
+	if err != nil {
+		return "", fmt.Errorf("ARM64 code generation failed: %w", err)
+	}
+	if timer != nil {
+		timer.End()
+	}
+
+	// Verbose: print assembly output
+	if verbose {
+		printSection("ARM64 ASSEMBLY OUTPUT")
 		fmt.Printf("Generated Assembly (%d bytes):\n", len(assemblyOutput))
 		printDivider()
 		fmt.Println(assemblyOutput)
@@ -405,31 +503,29 @@ func compileSource(filename string, verbose bool, timer *timing.Timer) (string, 
 
 // buildExecutable performs the full build pipeline: compile, assemble, and link
 // If timer is provided, stages will be timed
+// buildExecutable compiles a source file to an executable.
 // assemblerType specifies which assembler to use: "system" or "native"
 // verbose enables debug output for all compilation stages and the native assembler
-func buildExecutable(filename string, assemblerType string, verbose bool, timer *timing.Timer) error {
-	// Compile the source
-	assemblyOutput, err := compileSource(filename, verbose, timer)
+// Returns the assembly timing summary (empty string for system assembler)
+func buildExecutable(filename string, assemblerType string, verbose bool, timer *timing.Timer) (string, error) {
+	// Compile the source using IR-based pipeline
+	assemblyOutput, err := compileSourceWithIR(filename, verbose, timer)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Create assembler based on type
+	var nasm *nativeasm.NativeAssembler
 	var asm assembler.Assembler
 	switch assemblerType {
 	case "native":
-		nasm := nativeasm.New()
+		nasm = nativeasm.New()
 		nasm.Logger.SetEnabled(verbose)
 		asm = nasm
 	case "system":
 		asm = system.New()
 	default:
-		return fmt.Errorf("unknown assembler type: %s (use 'system' or 'native')", assemblerType)
-	}
-
-	// Build the executable
-	if timer != nil {
-		timer.Start("Assemble & Link")
+		return "", fmt.Errorf("unknown assembler type: %s (use 'system' or 'native')", assemblerType)
 	}
 
 	opts := assembler.BuildOptions{
@@ -440,14 +536,16 @@ func buildExecutable(filename string, assemblerType string, verbose bool, timer 
 	}
 
 	if err := asm.Build(assemblyOutput, opts); err != nil {
-		return fmt.Errorf("[assemble] %w", err)
+		return "", fmt.Errorf("[assemble] %w", err)
 	}
 
-	if timer != nil {
-		timer.End()
+	// Return assembly timing summary if using native assembler
+	var asmSummary string
+	if nasm != nil {
+		asmSummary = nasm.TimingSummary()
 	}
 
-	return nil
+	return asmSummary, nil
 }
 
 func main() {
@@ -482,13 +580,17 @@ func main() {
 					verbose := c.Bool("verbose")
 					timer := timing.NewTimer()
 
-					// Build the executable with timing
-					if err := buildExecutable(file, assemblerType, verbose, timer); err != nil {
+					// Build the executable
+					asmSummary, err := buildExecutable(file, assemblerType, verbose, timer)
+					if err != nil {
 						return err
 					}
 
 					fmt.Println("Compilation successful")
 					fmt.Println(timer.Summary())
+					if asmSummary != "" {
+						fmt.Print(asmSummary)
+					}
 					return nil
 				},
 			},
@@ -519,13 +621,17 @@ func main() {
 					verbose := c.Bool("verbose")
 					timer := timing.NewTimer()
 
-					// Build the executable with timing
-					if err := buildExecutable(file, assemblerType, verbose, timer); err != nil {
+					// Build the executable
+					asmSummary, err := buildExecutable(file, assemblerType, verbose, timer)
+					if err != nil {
 						return err
 					}
 
-					// Show compilation summary before execution
+					// Show compilation and assembly summaries before execution
 					fmt.Println(timer.Summary())
+					if asmSummary != "" {
+						fmt.Print(asmSummary)
+					}
 
 					// Execute the compiled binary
 					cmd := exec.Command("build/output")

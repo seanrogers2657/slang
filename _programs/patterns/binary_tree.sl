@@ -32,6 +32,7 @@ main = () {
     )
 
     // Access root value directly (tree is *TreeNode, not nullable)
+    assert(tree.value == 4, "root value should be 4")
     print("Root value:")
     print(tree.value)
 
@@ -39,6 +40,8 @@ main = () {
     val leftVal = tree.left?.value
     val rightVal = tree.right?.value
 
+    assert(leftVal != null, "left child should exist")
+    assert(rightVal != null, "right child should exist")
     if leftVal != null {
         print("Left child exists")
     }
@@ -52,11 +55,17 @@ main = () {
     val rightLeftVal = tree.right?.left?.value
     val rightRightVal = tree.right?.right?.value
 
+    assert(leftLeftVal != null, "left-left grandchild should exist")
+    assert(leftRightVal != null, "left-right grandchild should exist")
+    assert(rightLeftVal != null, "right-left grandchild should exist")
+    assert(rightRightVal != null, "right-right grandchild should exist")
+
     if leftLeftVal != null { print("Left-left grandchild exists") }
     if leftRightVal != null { print("Left-right grandchild exists") }
     if rightLeftVal != null { print("Right-left grandchild exists") }
     if rightRightVal != null { print("Right-right grandchild exists") }
 
     print("Done - entire tree freed automatically")
+    print("Binary tree test passed!")
     // All 7 nodes freed when tree goes out of scope
 }

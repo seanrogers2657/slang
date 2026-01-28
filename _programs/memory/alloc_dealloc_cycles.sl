@@ -30,11 +30,14 @@ main = () {
             head = newNode
             count = count + 1
         }
+        assert(count == 50000, "should allocate 50000 nodes")
+        assert(head != null, "head should not be null after allocation")
         sleep(500 * 1000 * 1000)  // 500ms to observe allocation
 
         // Deallocate by setting to null
         print("  Deallocating...")
         head = null
+        assert(head == null, "head should be null after deallocation")
 
         // Pause 2-3 seconds before next cycle
         print("  Pausing...")
@@ -43,5 +46,6 @@ main = () {
         cycle = cycle + 1
     }
 
+    assert(cycle == 10, "should complete 10 cycles")
     print("Done - 10 cycles complete")
 }

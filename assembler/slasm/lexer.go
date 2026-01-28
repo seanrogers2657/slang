@@ -2,7 +2,6 @@ package slasm
 
 import (
 	"fmt"
-	"strings"
 )
 
 // TokenType represents the type of token in assembly source
@@ -51,7 +50,29 @@ type Lexer struct {
 	pos     int
 	line    int
 	column  int
-	current rune
+	current byte
+}
+
+// registerSet contains all valid ARM64 register names for O(1) lookup
+var registerSet = func() map[string]struct{} {
+	regs := make(map[string]struct{}, 70)
+	// x0-x30, w0-w30
+	for i := 0; i <= 30; i++ {
+		regs[fmt.Sprintf("x%d", i)] = struct{}{}
+		regs[fmt.Sprintf("w%d", i)] = struct{}{}
+	}
+	// Special registers
+	regs["sp"] = struct{}{}
+	regs["xzr"] = struct{}{}
+	regs["wzr"] = struct{}{}
+	regs["lr"] = struct{}{}
+	return regs
+}()
+
+// isRegisterFast checks if a string is a valid ARM64 register using map lookup
+func isRegisterFast(name string) bool {
+	_, ok := registerSet[name]
+	return ok
 }
 
 // NewLexer creates a new lexer for the given source code
@@ -63,7 +84,7 @@ func NewLexer(source string) *Lexer {
 		column: 1,
 	}
 	if len(source) > 0 {
-		l.current = rune(source[0])
+		l.current = source[0]
 	}
 	return l
 }
@@ -208,13 +229,13 @@ func (l *Lexer) advance() {
 	}
 	l.pos++
 	if l.pos < len(l.source) {
-		l.current = rune(l.source[l.pos])
+		l.current = l.source[l.pos]
 	}
 }
 
-func (l *Lexer) peek() rune {
+func (l *Lexer) peek() byte {
 	if l.pos+1 < len(l.source) {
-		return rune(l.source[l.pos+1])
+		return l.source[l.pos+1]
 	}
 	return 0
 }
@@ -225,104 +246,79 @@ func (l *Lexer) skipWhitespace() {
 	}
 }
 
-func (l *Lexer) isIdentifierStart(ch rune) bool {
+func (l *Lexer) isIdentifierStart(ch byte) bool {
 	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
 }
 
-func (l *Lexer) isIdentifierChar(ch rune) bool {
+func (l *Lexer) isIdentifierChar(ch byte) bool {
 	return l.isIdentifierStart(ch) || (ch >= '0' && ch <= '9')
 }
 
 func (l *Lexer) readComment(line, column int) Token {
-	var sb strings.Builder
+	start := l.pos
 	for l.pos < len(l.source) && l.current != '\n' {
-		sb.WriteRune(l.current)
 		l.advance()
 	}
-	return Token{Type: TokenComment, Value: sb.String(), Line: line, Column: column}
+	return Token{Type: TokenComment, Value: l.source[start:l.pos], Line: line, Column: column}
 }
 
 func (l *Lexer) readDirective(line, column int) Token {
-	var sb strings.Builder
-	// Include the leading .
-	sb.WriteRune(l.current)
-	l.advance()
+	start := l.pos
+	l.advance() // skip the leading '.'
 
 	// Read the rest of the directive name
 	for l.pos < len(l.source) && l.isIdentifierChar(l.current) {
-		sb.WriteRune(l.current)
 		l.advance()
 	}
-	return Token{Type: TokenDirective, Value: sb.String(), Line: line, Column: column}
+	return Token{Type: TokenDirective, Value: l.source[start:l.pos], Line: line, Column: column}
 }
 
 func (l *Lexer) readNumber(line, column int) Token {
-	var sb strings.Builder
+	start := l.pos
 
 	// Handle negative numbers
 	if l.current == '-' {
-		sb.WriteRune(l.current)
 		l.advance()
 	}
 
 	// Check for hex prefix (0x or 0X)
 	if l.current == '0' && l.pos+1 < len(l.source) {
-		next := rune(l.source[l.pos+1])
+		next := l.source[l.pos+1]
 		if next == 'x' || next == 'X' {
-			sb.WriteRune(l.current) // '0'
-			l.advance()
-			sb.WriteRune(l.current) // 'x' or 'X'
-			l.advance()
+			l.advance() // '0'
+			l.advance() // 'x' or 'X'
 			// Read hex digits
 			for l.pos < len(l.source) && l.isHexDigit(l.current) {
-				sb.WriteRune(l.current)
 				l.advance()
 			}
-			return Token{Type: TokenInteger, Value: sb.String(), Line: line, Column: column}
+			return Token{Type: TokenInteger, Value: l.source[start:l.pos], Line: line, Column: column}
 		}
 	}
 
 	// Read decimal digits
 	for l.pos < len(l.source) && l.current >= '0' && l.current <= '9' {
-		sb.WriteRune(l.current)
 		l.advance()
 	}
-	return Token{Type: TokenInteger, Value: sb.String(), Line: line, Column: column}
+	return Token{Type: TokenInteger, Value: l.source[start:l.pos], Line: line, Column: column}
 }
 
-func (l *Lexer) isHexDigit(ch rune) bool {
+func (l *Lexer) isHexDigit(ch byte) bool {
 	return (ch >= '0' && ch <= '9') ||
 		(ch >= 'a' && ch <= 'f') ||
 		(ch >= 'A' && ch <= 'F')
 }
 
 func (l *Lexer) readString(line, column int) Token {
-	var sb strings.Builder
 	l.advance() // Skip opening quote
+	start := l.pos
 
+	// Fast path: check if string has no escapes
+	hasEscape := false
 	for l.pos < len(l.source) && l.current != '"' && l.current != '\n' {
 		if l.current == '\\' {
-			// Handle escape sequences
-			l.advance()
-			if l.pos < len(l.source) && l.current != '\n' {
-				switch l.current {
-				case 'n':
-					sb.WriteString("\\n")
-				case 't':
-					sb.WriteString("\\t")
-				case '\\':
-					sb.WriteString("\\\\")
-				case '"':
-					sb.WriteRune('"')
-				default:
-					sb.WriteRune(l.current)
-				}
-				l.advance()
-			}
-		} else {
-			sb.WriteRune(l.current)
-			l.advance()
+			hasEscape = true
 		}
+		l.advance()
 	}
 
 	// Check for unterminated string (hit EOF or newline before closing quote)
@@ -330,34 +326,63 @@ func (l *Lexer) readString(line, column int) Token {
 		return Token{Type: TokenError, Value: "unterminated string literal", Line: line, Column: column}
 	}
 
+	value := l.source[start:l.pos]
+
+	// Only process escapes if needed (rare case)
+	if hasEscape {
+		value = processEscapes(value)
+	}
+
 	l.advance() // Skip closing quote
-	return Token{Type: TokenString, Value: sb.String(), Line: line, Column: column}
+	return Token{Type: TokenString, Value: value, Line: line, Column: column}
+}
+
+// processEscapes handles escape sequences in strings (only called when needed)
+func processEscapes(s string) string {
+	result := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+			switch s[i] {
+			case 'n':
+				result = append(result, '\\', 'n')
+			case 't':
+				result = append(result, '\\', 't')
+			case '\\':
+				result = append(result, '\\', '\\')
+			case '"':
+				result = append(result, '"')
+			default:
+				result = append(result, s[i])
+			}
+		} else {
+			result = append(result, s[i])
+		}
+	}
+	return string(result)
 }
 
 func (l *Lexer) readIdentifier(line, column int) Token {
-	var sb strings.Builder
+	start := l.pos
 	for l.pos < len(l.source) && l.isIdentifierChar(l.current) {
-		sb.WriteRune(l.current)
 		l.advance()
 	}
-	value := sb.String()
+	value := l.source[start:l.pos]
 
 	// Check for conditional branch: b.cond (e.g., b.eq, b.ne, b.lt, b.gt, etc.)
 	if value == "b" && l.current == '.' {
 		l.advance() // consume the '.'
-		var condSb strings.Builder
+		condStart := l.pos
 		for l.pos < len(l.source) && l.isIdentifierChar(l.current) {
-			condSb.WriteRune(l.current)
 			l.advance()
 		}
-		cond := condSb.String()
 		// Return b.cond regardless of whether it's a valid condition code
 		// (let the encoder handle validation)
-		return Token{Type: TokenIdentifier, Value: "b." + cond, Line: line, Column: column}
+		return Token{Type: TokenIdentifier, Value: "b." + l.source[condStart:l.pos], Line: line, Column: column}
 	}
 
-	// Check if it's a register using shared utility
-	if IsRegister(value) {
+	// Check if it's a register using fast map lookup
+	if isRegisterFast(value) {
 		return Token{Type: TokenRegister, Value: value, Line: line, Column: column}
 	}
 

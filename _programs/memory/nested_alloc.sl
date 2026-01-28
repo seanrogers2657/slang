@@ -26,6 +26,8 @@ main = () {
     }
 
     // Expected: 3 * (1000 * 1001 / 2) = 1501500
+    assert(sum == 1501500, "sum should be 1501500")
+    assert(i == 1001, "should complete 1000 iterations")
     print(sum)
     print("Nested allocation test passed!")
 }

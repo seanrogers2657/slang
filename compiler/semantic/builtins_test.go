@@ -15,7 +15,7 @@ func TestNewBuiltinRegistry(t *testing.T) {
 	}
 
 	// Verify default builtins are registered
-	defaults := []string{"exit", "print", "len", "sleep"}
+	defaults := []string{"exit", "print", "len", "sleep", "assert"}
 	for _, name := range defaults {
 		if _, ok := registry.Lookup(name); !ok {
 			t.Errorf("expected default builtin %q to be registered", name)
@@ -71,11 +71,11 @@ func TestBuiltinRegistry_All(t *testing.T) {
 	registry := NewBuiltinRegistry()
 
 	all := registry.All()
-	if len(all) != 4 {
-		t.Errorf("expected 4 default builtins, got %d", len(all))
+	if len(all) != 5 {
+		t.Errorf("expected 5 default builtins, got %d", len(all))
 	}
 
-	expectedBuiltins := []string{"exit", "print", "len", "sleep"}
+	expectedBuiltins := []string{"exit", "print", "len", "sleep", "assert"}
 	for _, name := range expectedBuiltins {
 		if _, ok := all[name]; !ok {
 			t.Errorf("expected %q in All() result", name)
@@ -142,6 +142,25 @@ func TestBuiltinRegistry_DefaultBuiltins(t *testing.T) {
 		}
 		if fn.ParamTypes[0] != TypeS64 {
 			t.Errorf("expected s64 param, got %v", fn.ParamTypes[0])
+		}
+	})
+
+	t.Run("assert builtin", func(t *testing.T) {
+		fn, ok := registry.Lookup("assert")
+		if !ok {
+			t.Fatal("assert not found")
+		}
+		if len(fn.ParamTypes) != 2 {
+			t.Errorf("expected 2 params, got %d", len(fn.ParamTypes))
+		}
+		if fn.ParamTypes[0] != TypeBoolean {
+			t.Errorf("expected bool param, got %v", fn.ParamTypes[0])
+		}
+		if fn.ParamTypes[1] != TypeString {
+			t.Errorf("expected string param, got %v", fn.ParamTypes[1])
+		}
+		if fn.ReturnType != TypeVoid {
+			t.Errorf("expected void return, got %v", fn.ReturnType)
 		}
 	})
 }

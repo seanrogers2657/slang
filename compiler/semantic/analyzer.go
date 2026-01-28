@@ -1075,7 +1075,7 @@ func (a *Analyzer) analyzeBlockStmt(block *ast.BlockStmt) *TypedBlockStmt {
 }
 
 // analyzeBlockStmtForExpression analyzes a block in expression context.
-// The last statement, if it's an IfStmt, is analyzed as an expression.
+// The last statement, if it's an IfStmt (directly or wrapped in ExprStmt), is analyzed as an expression.
 func (a *Analyzer) analyzeBlockStmtForExpression(block *ast.BlockStmt) *TypedBlockStmt {
 	typedStmts := make([]TypedStatement, 0, len(block.Statements))
 
@@ -1084,8 +1084,17 @@ func (a *Analyzer) analyzeBlockStmtForExpression(block *ast.BlockStmt) *TypedBlo
 		// For the last statement, check if it's an IfStmt that should be an expression
 		if i == len(block.Statements)-1 {
 			if ifStmt, ok := stmt.(*ast.IfStmt); ok {
-				// Analyze as expression to get proper type
+				// Direct IfStmt - analyze as expression to get proper type
 				typedStmt = a.analyzeIfExpression(ifStmt).(*TypedIfStmt)
+			} else if exprStmt, ok := stmt.(*ast.ExprStmt); ok {
+				// Check if it's an ExprStmt containing an IfStmt
+				if ifStmt, ok := exprStmt.Expr.(*ast.IfStmt); ok {
+					// Analyze the IfStmt as expression and wrap in ExprStmt
+					typedIf := a.analyzeIfExpression(ifStmt).(*TypedIfStmt)
+					typedStmt = &TypedExprStmt{Expr: typedIf}
+				} else {
+					typedStmt = a.analyzeStatement(stmt)
+				}
 			} else {
 				typedStmt = a.analyzeStatement(stmt)
 			}

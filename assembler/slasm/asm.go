@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/seanrogers2657/slang/assembler"
+	"github.com/seanrogers2657/slang/internal/timing"
 )
 
 // NativeAssembler is a custom implementation of Assembler that directly generates
@@ -20,6 +21,8 @@ type NativeAssembler struct {
 	SDKPath string
 	// Logger for assembler output (defaults to enabled stderr logger)
 	Logger *Logger
+	// Timer for tracking assembly stages (optional)
+	Timer *timing.Timer
 }
 
 // New creates a new NativeAssembler with default settings
@@ -29,7 +32,13 @@ func New() *NativeAssembler {
 		EntryPoint: "_start",
 		SystemLibs: true,
 		Logger:     NewDefaultLogger(false), // Disabled by default, enable with --verbose
+		Timer:      timing.NewTimer(),
 	}
+}
+
+// TimingSummary returns a formatted string with timing information for the assembly stages
+func (a *NativeAssembler) TimingSummary() string {
+	return a.Timer.SummaryWithTitle("Assembly Summary")
 }
 
 // Assemble converts an assembly file (.s) to an object file (.o)
@@ -199,33 +208,36 @@ func (a *NativeAssembler) Link(objectFiles []string, outputPath string) error {
 func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) error {
 	a.Logger.Header("========== SLASM ASSEMBLER - BUILD PIPELINE ==========")
 
-	// Write intermediate files if paths are specified
-	if opts.AssemblyPath != "" {
-		// Ensure directory exists
-		if err := os.MkdirAll("build", 0755); err != nil {
-			return fmt.Errorf("failed to create build directory: %w", err)
-		}
-		if err := os.WriteFile(opts.AssemblyPath, []byte(assembly), 0644); err != nil {
-			return fmt.Errorf("failed to write assembly file: %w", err)
-		}
-		a.Logger.Printf("Wrote assembly to %s\n", opts.AssemblyPath)
-	}
+	// Reset timer for this build
+	a.Timer = timing.NewTimer()
 
-	// Create placeholder object file (slasm doesn't use separate object files)
-	if opts.ObjectPath != "" && opts.KeepIntermediates {
-		// Ensure directory exists
-		if err := os.MkdirAll("build", 0755); err != nil {
-			return fmt.Errorf("failed to create build directory: %w", err)
-		}
-		// Write a placeholder comment - slasm goes directly to executable
-		placeholder := []byte("// slasm object placeholder - direct compilation to executable\n")
-		if err := os.WriteFile(opts.ObjectPath, placeholder, 0644); err != nil {
-			return fmt.Errorf("failed to write object file placeholder: %w", err)
-		}
-		a.Logger.Printf("Wrote object placeholder to %s\n", opts.ObjectPath)
+	// Write intermediate files asynchronously (these are just for debugging/inspection)
+	if opts.AssemblyPath != "" || (opts.ObjectPath != "" && opts.KeepIntermediates) {
+		go func() {
+			// Ensure directory exists
+			if err := os.MkdirAll("build", 0755); err != nil {
+				a.Logger.Printf("Warning: failed to create build directory: %v\n", err)
+				return
+			}
+
+			if opts.AssemblyPath != "" {
+				if err := os.WriteFile(opts.AssemblyPath, []byte(assembly), 0644); err != nil {
+					a.Logger.Printf("Warning: failed to write assembly file: %v\n", err)
+				}
+			}
+
+			// Create placeholder object file (slasm doesn't use separate object files)
+			if opts.ObjectPath != "" && opts.KeepIntermediates {
+				placeholder := []byte("// slasm object placeholder - direct compilation to executable\n")
+				if err := os.WriteFile(opts.ObjectPath, placeholder, 0644); err != nil {
+					a.Logger.Printf("Warning: failed to write object file placeholder: %v\n", err)
+				}
+			}
+		}()
 	}
 
 	// Step 1: Lex the assembly source
+	a.Timer.Start("Lexer")
 	a.Logger.Section("STEP 1: LEXER")
 	a.Logger.Printf("Input assembly:\n%s\n\n", assembly)
 
@@ -234,6 +246,7 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	if err != nil {
 		return fmt.Errorf("lexer error: %w", err)
 	}
+	a.Timer.End()
 
 	a.Logger.Printf("Lexer produced %d tokens:\n", len(tokens))
 	for i, token := range tokens {
@@ -242,6 +255,7 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	a.Logger.Println()
 
 	// Step 2: Parse tokens into IR
+	a.Timer.Start("Parser")
 	a.Logger.Section("STEP 2: PARSER")
 
 	parser := NewParser(tokens)
@@ -249,6 +263,7 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	if err != nil {
 		return fmt.Errorf("parser error: %w", err)
 	}
+	a.Timer.End()
 
 	a.Logger.Printf("Parser produced %d section(s):\n", len(program.Sections))
 	for i, section := range program.Sections {
@@ -274,6 +289,7 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	a.Logger.Printf("\n")
 
 	// Step 3: Calculate layout and build symbol table
+	a.Timer.Start("Layout & Symbols")
 	a.Logger.Section("STEP 3: LAYOUT & SYMBOL TABLE")
 
 	layout := NewLayout(program)
@@ -281,6 +297,7 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	if err != nil {
 		return fmt.Errorf("layout error: %w", err)
 	}
+	a.Timer.End()
 
 	symbolTable := layout.GetSymbolTable()
 	a.Logger.Printf("Symbol table (before adjustment):\n")
@@ -357,6 +374,7 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	a.Logger.Printf("\n")
 
 	// Step 4: Encode instructions to machine code
+	a.Timer.Start("Encoding")
 	a.Logger.Section("STEP 4: INSTRUCTION ENCODING")
 
 	encoder := NewEncoder(layout.GetSymbolTable(), layout.GetConstants())
@@ -470,8 +488,10 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 		a.Logger.Printf("Encoded %d data items (%d bytes)\n", dataItemCount, len(dataBytes))
 	}
 	a.Logger.Printf("Complete machine code: %x\n\n", codeBytes)
+	a.Timer.End()
 
 	// Step 5: Generate Mach-O executable
+	a.Timer.Start("Mach-O Generation")
 	a.Logger.Section("STEP 5: MACH-O GENERATION")
 
 	writer := NewMachOWriter(a.Arch, a.Logger)
@@ -481,8 +501,10 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	}
 
 	a.Logger.Printf("Generated Mach-O executable: %s\n", opts.OutputPath)
+	a.Timer.End()
 
 	// Step 6: Make the file executable
+	a.Timer.Start("Set Permissions")
 	a.Logger.Section("\nSTEP 6: FILE PERMISSIONS")
 
 	err = makeExecutable(opts.OutputPath)
@@ -492,6 +514,7 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 
 	a.Logger.Printf("Set executable permissions (0755)\n")
 	a.Logger.Printf("Code signature: embedded during Mach-O generation\n")
+	a.Timer.End()
 
 	// Summary
 	a.Logger.Printf("\n========== BUILD SUMMARY ==========\n")

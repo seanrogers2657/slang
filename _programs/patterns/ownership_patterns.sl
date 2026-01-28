@@ -88,6 +88,8 @@ doubled = (p: *Point) -> *Point {
 main = () {
     print("=== Pattern 1: Borrow to read ===")
     val p1 = createPoint(3, 4)
+    assert(distance(p1) == 25, "distance should be 25 (3*3 + 4*4)")
+    assert(areSamePoint(p1, p1), "point should equal itself")
     print(distance(p1))          // 25 (3*3 + 4*4)
     print(areSamePoint(p1, p1))  // true
     // p1 still valid
@@ -95,9 +97,13 @@ main = () {
     print("=== Pattern 2: Borrow to mutate ===")
     var p2 = createPoint(10, 20)
     scale(p2, 2)
+    assert(p2.x == 20, "x should be 20 after scale")
+    assert(p2.y == 40, "y should be 40 after scale")
     print(p2.x)  // 20
     print(p2.y)  // 40
     translate(p2, 5, 5)
+    assert(p2.x == 25, "x should be 25 after translate")
+    assert(p2.y == 45, "y should be 45 after translate")
     print(p2.x)  // 25
     print(p2.y)  // 45
     // p2 still valid
@@ -105,26 +111,34 @@ main = () {
     print("=== Pattern 3: Take ownership ===")
     val p3 = createPoint(7, 8)
     val sum = consume(p3)
+    assert(sum == 15, "sum should be 15 (7+8)")
     print(sum)  // 15
     // p3 is now invalid
 
     print("=== Pattern 4: Return ownership ===")
     val p4 = createPoint(100, 200)
     val p5 = clone(p4)
+    assert(p5.x == 100, "cloned x should be 100")
     print(p5.x)  // 100
     scale(p4, 0)
+    assert(p4.x == 0, "scaled x should be 0")
+    assert(p5.x == 100, "clone should be unaffected")
     print(p4.x)  // 0
     print(p5.x)  // 100 (clone unaffected)
 
     val mid = midpoint(p4, p5)
+    assert(mid.x == 50, "midpoint x should be 50")
     print(mid.x)  // 50
 
     print("=== Pattern 5: Transform and return ===")
     val p6 = createPoint(5, 10)
     val p7 = doubled(p6)
     // p6 is now invalid
+    assert(p7.x == 10, "doubled x should be 10")
+    assert(p7.y == 20, "doubled y should be 20")
     print(p7.x)  // 10
     print(p7.y)  // 20
 
     print("Done")
+    print("Ownership patterns test passed!")
 }

@@ -69,6 +69,11 @@ func (r *BuiltinRegistry) registerDefaults() {
 		ReturnType: TypeVoid,
 		NoReturn:   false,
 	})
+	r.Register("assert", BuiltinFunc{
+		ParamTypes: []Type{TypeBoolean, TypeString}, // condition, message
+		ReturnType: TypeVoid,
+		NoReturn:   false,
+	})
 }
 
 // defaultBuiltinRegistry is the shared default registry

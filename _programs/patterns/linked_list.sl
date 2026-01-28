@@ -25,6 +25,7 @@ main = () {
 
     // Access head value using safe call
     val headVal = list?.value
+    assert(headVal != null, "head value should exist")
     if headVal != null {
         print("Head value exists")
     }
@@ -37,6 +38,14 @@ main = () {
     val v5 = list?.next?.next?.next?.next?.value
     val v6 = list?.next?.next?.next?.next?.next?.value  // null - past end
 
+    // Verify all values exist except v6
+    assert(v1 != null, "v1 should exist")
+    assert(v2 != null, "v2 should exist")
+    assert(v3 != null, "v3 should exist")
+    assert(v4 != null, "v4 should exist")
+    assert(v5 != null, "v5 should exist")
+    assert(v6 == null, "v6 should be null (past end)")
+
     // Check which values exist
     if v1 != null { print("v1 exists") }
     if v2 != null { print("v2 exists") }
@@ -46,5 +55,7 @@ main = () {
     if v6 == null { print("v6 is null (past end of list)") }
 
     print("Done - list will be freed automatically")
+    print("Linked list test passed!")
+    exit(0)
     // All 5 nodes freed when list goes out of scope
 }

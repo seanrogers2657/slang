@@ -18,12 +18,13 @@ main = () {
     var i = 1
 
     // 50,000 iterations of allocate/deallocate
-    for ; i <= 5000000; i = i + 1 {
+    for ; i <= 50000; i = i + 1 {
         sum = sum + allocateAndUse(i)
-        sleep(1000)
     }
 
     // Expected: 6 * (50000 * 50001 / 2) = 7500150000
+    assert(sum == 7500150000, "sum should be 7500150000")
+    assert(i == 50001, "should complete 50000 iterations")
     print(sum)
     print("Memory stress test passed!")
 }

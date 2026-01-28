@@ -62,6 +62,11 @@ func (t *Timer) Total() time.Duration {
 
 // Summary returns a formatted string with timing information for all stages
 func (t *Timer) Summary() string {
+	return t.SummaryWithTitle("Compilation Summary")
+}
+
+// SummaryWithTitle returns a formatted string with timing information and a custom title
+func (t *Timer) SummaryWithTitle(title string) string {
 	// End any running stage
 	t.End()
 
@@ -73,7 +78,7 @@ func (t *Timer) Summary() string {
 	total := t.Total()
 
 	sb.WriteString("\n")
-	sb.WriteString("Compilation Summary:\n")
+	sb.WriteString(title + ":\n")
 	sb.WriteString(strings.Repeat("-", 50) + "\n")
 
 	// Find the longest stage name for alignment

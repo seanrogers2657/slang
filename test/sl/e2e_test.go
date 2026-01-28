@@ -2,6 +2,7 @@
 package sl_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,10 +10,13 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/seanrogers2657/slang/assembler"
 	"github.com/seanrogers2657/slang/assembler/slasm"
-	"github.com/seanrogers2657/slang/compiler/codegen"
+	"github.com/seanrogers2657/slang/compiler/ir"
+	"github.com/seanrogers2657/slang/compiler/ir/backend"
+	"github.com/seanrogers2657/slang/compiler/ir/backend/arm64"
 	"github.com/seanrogers2657/slang/compiler/lexer"
 	"github.com/seanrogers2657/slang/compiler/parser"
 	"github.com/seanrogers2657/slang/compiler/semantic"
@@ -110,11 +114,20 @@ func runSlangTest(t *testing.T, tc *testutil.TestExpectation) {
 		t.Fatalf("expected %s error but compilation succeeded", tc.ErrorStage)
 	}
 
-	// Code generation stage - uses typed AST for runtime checks
-	sourceLines := strings.Split(string(source), "\n")
-	generator := codegen.NewTypedCodeGeneratorWithFilename(typedAST, sourceLines, tc.FilePath)
-	asmOutput, err := generator.Generate()
+	// Code generation stage - IR pipeline
+	irProg, irErr := ir.Generate(typedAST)
+	if irErr != nil {
+		if tc.ExpectError && tc.ErrorStage == "codegen" {
+			if tc.ErrorContains != "" && !strings.Contains(irErr.Error(), tc.ErrorContains) {
+				t.Errorf("error should contain %q, got: %v", tc.ErrorContains, irErr)
+			}
+			return
+		}
+		t.Fatalf("IR generation error: %v", irErr)
+	}
 
+	arm64Backend := arm64.New(backend.DefaultConfig())
+	asmOutput, err := arm64Backend.Generate(irProg)
 	if err != nil {
 		if tc.ExpectError && tc.ErrorStage == "codegen" {
 			if tc.ErrorContains != "" && !strings.Contains(err.Error(), tc.ErrorContains) {
@@ -122,7 +135,7 @@ func runSlangTest(t *testing.T, tc *testutil.TestExpectation) {
 			}
 			return
 		}
-		t.Fatalf("codegen error: %v", err)
+		t.Fatalf("ARM64 backend error: %v", err)
 	}
 
 	// If stdout expectations exist, build and run
@@ -153,12 +166,20 @@ func runWithSlasm(t *testing.T, tc *testutil.TestExpectation, asmOutput string) 
 func runAndCheck(t *testing.T, tc *testutil.TestExpectation, outputPath string) {
 	t.Helper()
 
-	// Execute the built program
-	cmd := exec.Command(outputPath)
+	// Execute the built program with a 10-second timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, outputPath)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
+
+	// Check for timeout
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("test timed out after 10 seconds (possible infinite loop)")
+	}
 
 	actualExit := 0
 	if exitErr, ok := err.(*exec.ExitError); ok {
@@ -192,19 +213,6 @@ func runAndCheck(t *testing.T, tc *testutil.TestExpectation, outputPath string) 
 			t.Errorf("stderr should contain %q, got: %q", tc.StderrContains, stderr.String())
 		}
 	}
-}
-
-func checkErrorContains(t *testing.T, errors []error, contains string) {
-	t.Helper()
-	if contains == "" {
-		return
-	}
-	for _, err := range errors {
-		if strings.Contains(err.Error(), contains) {
-			return
-		}
-	}
-	t.Errorf("no error contains %q, got: %v", contains, errors)
 }
 
 // checkCompilerErrorContains checks if any CompilerError contains the expected string.
@@ -307,13 +315,16 @@ func testProgramCompiles(t *testing.T, filePath string) {
 		t.Fatalf("semantic errors: %v", semanticErrors)
 	}
 
-	// Code generation stage
-	sourceLines := strings.Split(string(source), "\n")
-	generator := codegen.NewTypedCodeGeneratorWithFilename(typedAST, sourceLines, filePath)
-	_, err = generator.Generate()
+	// Code generation stage - IR pipeline
+	irProg, irErr := ir.Generate(typedAST)
+	if irErr != nil {
+		t.Fatalf("IR generation error: %v", irErr)
+	}
 
+	arm64Backend := arm64.New(backend.DefaultConfig())
+	_, err = arm64Backend.Generate(irProg)
 	if err != nil {
-		t.Fatalf("codegen error: %v", err)
+		t.Fatalf("ARM64 backend error: %v", err)
 	}
 
 	// Success - program compiles without execution

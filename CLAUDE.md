@@ -31,12 +31,13 @@ This repository follows strict organizational rules:
 
 ## Project Overview
 
-**Slang** is a compiler for a simple programming language written in Go. It targets ARM64 assembly for macOS. The compiler follows a traditional four-stage pipeline:
+**Slang** is a compiler for a simple programming language written in Go. It targets ARM64 assembly for macOS. The compiler follows a five-stage pipeline:
 
 1. **Lexer** (`compiler/lexer`) - Tokenizes source code into tokens
 2. **Parser** (`compiler/parser`) - Builds an Abstract Syntax Tree (AST) from tokens
 3. **Semantic Analyzer** (`compiler/semantic`) - Performs type checking and semantic analysis
-4. **Code Generator** (`compiler/codegen`) - Generates ARM64 assembly from the AST
+4. **IR Generator** (`compiler/ir`) - Converts typed AST to SSA-based Intermediate Representation
+5. **ARM64 Backend** (`compiler/ir/backend/arm64`) - Generates ARM64 assembly from IR
 
 The compiler currently supports:
 - **Variables**: Immutable (`val`) and mutable (`var`) variables (e.g., `val x = 5`, `var y = 10`)
@@ -70,6 +71,7 @@ The compiler currently supports:
   - `exit(code)` - exit program with specified exit code
   - `len(array)` - get array length
   - `sleep(nanoseconds)` - sleep for specified duration
+  - `assert(condition, message)` - if condition is false, prints message to stderr and exits with code 1
   - `Heap.new(value)` - allocate a struct on the heap (returns `*T`)
 - **Comments**: Line comments with `//` (e.g., `// this is a comment`)
 
@@ -143,11 +145,12 @@ go run cmd/slm/main.go test-verbose
 # Generate HTML coverage report
 go run cmd/slm/main.go test-coverage
 
-# Run specific component tests
-go run cmd/slm/main.go test-lexer        # Frontend lexer only
-go run cmd/slm/main.go test-parser       # Frontend parser only
-go run cmd/slm/main.go test-codegen      # Backend assembly generator only
-go run cmd/slm/main.go test-integration  # End-to-end integration tests
+# Run specific component tests (using go test directly)
+go test ./compiler/lexer/...             # Frontend lexer only
+go test ./compiler/parser/...            # Frontend parser only
+go test ./compiler/semantic/...          # Semantic analyzer only
+go test ./compiler/ir/...                # IR generator and backend tests
+go test ./test/sl/...                    # End-to-end integration tests
 
 # Additional test commands
 go run cmd/slm/main.go test-report       # Detailed pass/fail report
@@ -195,13 +198,13 @@ Parser (AST construction)
     ↓
 Semantic Analyzer (type checking & validation)
     ↓
-Code Generator (ARM64 assembly)
+IR Generator (SSA-based intermediate representation)
+    ↓
+ARM64 Backend (code generation)
     ↓
 Assembly Output (.s file)
     ↓
-Assembler (as) → Object file (.o)
-    ↓
-Linker (ld) → Executable binary
+Assembler (slasm) → Executable binary
     ↓
 [Optional: Execute] (run command only)
 ```
@@ -251,16 +254,25 @@ Linker (ld) → Executable binary
   - Optional hints for fixing the error
   - Summary of total errors/warnings
 
-**Code Generator** (`compiler/codegen/codegen.go`):
-- `AsGenerator` interface with `Generate() (string, error)`
-- `CodeGenContext` - Tracks variable stack offsets during code generation
-- Generates ARM64 assembly targeting macOS
-- Variable storage:
-  - Variables stored on stack relative to frame pointer (x29)
-  - 16-byte aligned stack slots
-  - Proper handling of nested expressions with register spilling
-- All operations store result in register `x2`
-- Uses ARM64 instructions: `add`, `sub`, `mul`, `sdiv`, `cmp`, `cset`, `msub`, `str`, `ldr`, `stp`, `ldp`, `cbz`, `cbnz`, `b`
+**IR Generator** (`compiler/ir/generator.go`):
+- Converts typed AST to SSA (Static Single Assignment) form
+- Uses the "Simple and Efficient Construction of SSA Form" algorithm
+- Handles phi node insertion for variables that join at control flow merge points
+- Block sealing to complete phi node operands when all predecessors are known
+- IR types: `IntType`, `BoolType`, `PtrType`, `StructType`, `ArrayType`, `NullableType`
+- IR operations: `OpAdd`, `OpSub`, `OpMul`, `OpDiv`, `OpMod`, `OpLoad`, `OpStore`, `OpCall`, `OpPhi`, etc.
+
+**ARM64 Backend** (`compiler/ir/backend/arm64/backend.go`):
+- Generates ARM64 assembly from IR
+- Simple stack-based register allocation
+- Function prologue/epilogue with proper frame pointer management
+- Phi node handling at control flow edges
+- Runtime checks for:
+  - Division/modulo by zero
+  - Array bounds checking
+  - Signed/unsigned integer overflow detection
+- Stack trace printing on panic
+- Deep copy for nested owned pointers
 
 ### ARM64 Assembly Details
 
@@ -310,12 +322,11 @@ _start:
 
 ## Testing Strategy
 
-The project has comprehensive test coverage:
-- Codegen (Assembly Generator): 62.5%
-- Lexer: 96.7%
-- Parser: 60.4%
-- Semantic Analyzer: 62.2%
-- Error Framework: 89.6%
+The project has comprehensive test coverage across all compiler stages:
+- Lexer, Parser, Semantic Analyzer - unit tests in respective packages
+- IR Generator - unit tests in `compiler/ir/generator_test.go`
+- ARM64 Backend - unit tests in `compiler/ir/backend/arm64/backend_test.go`
+- End-to-End - 275+ tests covering all language features
 
 All tests follow table-driven patterns with subtests using `t.Run()`. See `docs/TESTING.md` for detailed testing documentation.
 
@@ -370,7 +381,7 @@ Supported directives:
 
 ### Adding a New Operator
 
-When adding a new operator, you must update three files:
+When adding a new operator, you must update four files:
 
 1. **Lexer** (`compiler/lexer/lexer.go`):
    - Add `TokenType<OperatorName>` constant to the enum
@@ -379,16 +390,19 @@ When adding a new operator, you must update three files:
 2. **Parser** (`compiler/parser/parser.go`):
    - Add case in `ParseBinaryExpression()` switch statement
 
-3. **Code Generator** (`compiler/codegen/codegen.go`):
-   - Add case in `GenerateExprWithContext()` switch statement with ARM64 instructions
+3. **IR Generator** (`compiler/ir/generator.go`):
+   - Add case in `generateBinaryExpr()` to emit the appropriate IR operation
 
-4. **Tests**: Update test files for all three components
+4. **ARM64 Backend** (`compiler/ir/backend/arm64/backend.go`):
+   - Add case in the operation switch to generate ARM64 instructions
 
-5. **E2E Tests**: Add example files to `_examples/slang/` with `@test:` directives
+5. **Tests**: Update test files for all components
+
+6. **E2E Tests**: Add example files to `_examples/slang/` with `@test:` directives
 
 ### Adding a New Built-in Function
 
-Built-in functions are registered in a central registry and handled specially by the semantic analyzer and code generator.
+Built-in functions are registered in a central registry and handled specially by the semantic analyzer and IR generator.
 
 1. **Registry** (`compiler/semantic/builtins.go`):
    - Add entry to the `Builtins` map with parameter types, return type, and flags
@@ -403,13 +417,12 @@ Built-in functions are registered in a central registry and handled specially by
    }
    ```
 
-2. **Code Generator - Typed** (`compiler/codegen/typed_codegen.go`):
+2. **IR Generator** (`compiler/ir/generator.go`):
    - Add case in `generateBuiltinCall()` switch statement
-   - Implement the generation function (e.g., `generateExitBuiltin()`)
+   - Implement the IR generation for the builtin (e.g., `OpExit`, `OpPrint`)
 
-3. **Code Generator - AST** (`compiler/codegen/codegen.go`):
-   - Add case in `generateBuiltinCallAST()` switch statement
-   - Implement the generation function (e.g., `generateExitBuiltinAST()`)
+3. **ARM64 Backend** (`compiler/ir/backend/arm64/backend.go`):
+   - Add case in the operation switch to generate ARM64 instructions/syscalls
 
 4. **E2E Tests**: Add example files to `_examples/slang/builtins/` with `@test:` directives
 

@@ -41,8 +41,11 @@ main = () {
         sleep(100 * 1000)  // 0.1ms per allocation for profiling
     }
 
+    assert(count == 100000, "should allocate 100000 nodes")
+    assert(head != null, "head should not be null")
     print("Allocated nodes:")
     print(count)
     print("Deallocating...")
     // Deallocation happens when head goes out of scope
+    print("Large alloc test passed!")
 }

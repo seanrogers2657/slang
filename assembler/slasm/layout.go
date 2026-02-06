@@ -68,6 +68,12 @@ func (l *Layout) Calculate() error {
 						l.symbolTable.MarkGlobal(arg)
 					}
 				}
+				// Mark symbols as extern (imported from another object file)
+				if v.Name == "extern" && len(v.Args) > 0 {
+					for _, arg := range v.Args {
+						l.symbolTable.MarkExtern(arg)
+					}
+				}
 
 			case *DataDeclaration:
 				// Add size of data

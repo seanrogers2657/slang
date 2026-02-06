@@ -92,6 +92,7 @@ func (a *NativeAssembler) Assemble(inputPath, outputPath string) error {
 	encoder := NewEncoder(layout.GetSymbolTable(), layout.GetConstants())
 	var codeBytes []byte
 	var dataBytes []byte
+	var textRelocations []TextRelocation
 	instructionCount := 0
 	dataItemCount := 0
 
@@ -102,11 +103,14 @@ func (a *NativeAssembler) Assemble(inputPath, outputPath string) error {
 				case *Instruction:
 					// For object files, use section-relative addresses
 					currentAddr := uint64(len(codeBytes))
-					machineCode, err := encoder.Encode(v, currentAddr)
+					result, err := encoder.EncodeWithRelocations(v, currentAddr)
 					if err != nil {
 						return fmt.Errorf("encoding error for instruction '%s': %w", v.Mnemonic, err)
 					}
-					codeBytes = append(codeBytes, machineCode...)
+					codeBytes = append(codeBytes, result.Bytes...)
+					if result.Relocation != nil {
+						textRelocations = append(textRelocations, *result.Relocation)
+					}
 					instructionCount++
 
 				case *Directive:
@@ -168,7 +172,7 @@ func (a *NativeAssembler) Assemble(inputPath, outputPath string) error {
 	// Step 6: Generate Mach-O object file
 	a.Logger.Section("STEP 6: MACH-O OBJECT FILE GENERATION")
 	writer := NewMachOWriter(a.Arch, a.Logger)
-	err = writer.WriteObjectFile(outputPath, codeBytes, dataBytes, layout.GetSymbolTable())
+	err = writer.WriteObjectFile(outputPath, codeBytes, dataBytes, layout.GetSymbolTable(), textRelocations)
 	if err != nil {
 		return fmt.Errorf("object file generation error: %w", err)
 	}

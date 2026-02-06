@@ -270,6 +270,51 @@ func (e *Encoder) Encode(inst *Instruction, address uint64) ([]byte, error) {
 	}
 }
 
+// EncodeResult contains encoded bytes and an optional relocation
+type EncodeResult struct {
+	Bytes      []byte
+	Relocation *TextRelocation
+}
+
+// EncodeWithRelocations encodes an instruction, generating relocations for extern symbols.
+// This is used during object file generation to handle cross-file function calls.
+func (e *Encoder) EncodeWithRelocations(inst *Instruction, address uint64) (*EncodeResult, error) {
+	// Check if this is a branch to an extern symbol
+	if (inst.Mnemonic == "bl" || inst.Mnemonic == "b") &&
+		len(inst.Operands) == 1 && inst.Operands[0].Type == OperandLabel {
+		labelName := inst.Operands[0].Value
+		symbol, found := e.symbolTable.Lookup(labelName)
+
+		if found && symbol.State == SymbolExtern {
+			// Generate placeholder instruction with 0 offset
+			var encoding uint32
+			if inst.Mnemonic == "bl" {
+				encoding = 0x94000000 // BL with imm26=0
+			} else {
+				encoding = 0x14000000 // B with imm26=0
+			}
+			return &EncodeResult{
+				Bytes: EncodeLittleEndian(encoding),
+				Relocation: &TextRelocation{
+					Offset:     uint32(address),
+					SymbolName: labelName,
+					Type:       ARM64_RELOC_BRANCH26,
+					PCRel:      true,
+					Length:     2, // log2(4) = 2
+					Extern:     true,
+				},
+			}, nil
+		}
+	}
+
+	// Fall back to normal encoding
+	bytes, err := e.Encode(inst, address)
+	if err != nil {
+		return nil, err
+	}
+	return &EncodeResult{Bytes: bytes}, nil
+}
+
 // Placeholder encoding functions - these will be implemented with actual ARM64 encoding logic
 
 func (e *Encoder) encodeMov(inst *Instruction) ([]byte, error) {

@@ -30,7 +30,7 @@ func NewMachOWriter(arch string, logger *Logger) *MachOWriter {
 }
 
 // WriteObjectFile writes a Mach-O object file (.o)
-func (w *MachOWriter) WriteObjectFile(outputPath string, code []byte, data []byte, symbols *SymbolTable) error {
+func (w *MachOWriter) WriteObjectFile(outputPath string, code []byte, data []byte, symbols *SymbolTable, textRelocs []TextRelocation) error {
 	// Object file structure:
 	// 1. mach_header_64 (FileType = MH_OBJECT)
 	// 2. LC_SEGMENT_64 (unnamed, containing all sections)
@@ -39,11 +39,12 @@ func (w *MachOWriter) WriteObjectFile(outputPath string, code []byte, data []byt
 	// 3. LC_SYMTAB
 	// 4. LC_DYSYMTAB
 	// 5. Section data (__text, __data)
-	// 6. Relocation entries (after each section's data, referenced by section header)
+	// 6. Relocation entries (after section data, before symbol table)
 	// 7. Symbol table (nlist64 entries)
 	// 8. String table
 
 	hasData := len(data) > 0
+	numTextRelocs := uint32(len(textRelocs))
 
 	// Calculate number of sections
 	numSections := uint32(1) // __text
@@ -75,18 +76,23 @@ func (w *MachOWriter) WriteObjectFile(outputPath string, code []byte, data []byt
 		dataSize = uint32(len(data))
 	}
 
-	// Calculate where symbol table and string table go
-	var symbolsOffset uint32
+	// Relocations go after section data, before symbol table
+	// Each relocation entry is 8 bytes (4 bytes offset + 4 bytes packed info)
+	textRelocSize := numTextRelocs * 8
+	var relocOffset uint32
 	if hasData {
-		symbolsOffset = align(dataOffset+dataSize, 8)
+		relocOffset = align(dataOffset+dataSize, 4)
 	} else {
-		symbolsOffset = align(textOffset+textSize, 8)
+		relocOffset = align(textOffset+textSize, 4)
 	}
 
-	// Build symbol table entries
-	symEntries, stringTable := w.buildObjectSymbols(symbols)
+	// Build symbol table entries with extern symbols
+	symEntries, numDefinedSyms, externSymCount, stringTable := w.buildObjectSymbolsWithExterns(symbols, textRelocs)
 	numSymbols := uint32(len(symEntries))
 	symbolTableSize := numSymbols * uint32(Nlist64Size)
+
+	// Symbol table follows relocations
+	symbolsOffset := align(relocOffset+textRelocSize, 8)
 
 	// String table follows symbol table
 	stringsOffset := symbolsOffset + symbolTableSize
@@ -104,6 +110,14 @@ func (w *MachOWriter) WriteObjectFile(outputPath string, code []byte, data []byt
 
 	bw := newBinaryWriter(file)
 
+	// Determine flags - if we have undefined symbols, don't set MH_NOUNDEFS
+	var flags uint32
+	if externSymCount == 0 {
+		flags = MH_NOUNDEFS
+	} else {
+		flags = 0 // Has undefined symbols
+	}
+
 	// Write Mach-O header
 	header := machHeader64{
 		Magic:      MH_MAGIC_64,
@@ -112,7 +126,7 @@ func (w *MachOWriter) WriteObjectFile(outputPath string, code []byte, data []byt
 		FileType:   MH_OBJECT,
 		NCmds:      numLoadCmds,
 		SizeofCmds: loadCmdsSize,
-		Flags:      MH_NOUNDEFS, // No undefined symbols in our simple case
+		Flags:      flags,
 		Reserved:   0,
 	}
 	bw.write(&header)
@@ -140,14 +154,14 @@ func (w *MachOWriter) WriteObjectFile(outputPath string, code []byte, data []byt
 	// Leave Segname empty (unnamed segment for object files)
 	bw.write(&segment)
 
-	// Write __text section header
+	// Write __text section header with relocation info
 	textSection := section64{
 		Addr:      0,
 		Size:      uint64(textSize),
 		Offset:    textOffset,
 		Align:     2, // 4-byte aligned (2^2)
-		Reloff:    0, // No relocations for now
-		Nreloc:    0,
+		Reloff:    relocOffset,
+		Nreloc:    numTextRelocs,
 		Flags:     SectionFlagPureInstructions,
 		Reserved1: 0,
 		Reserved2: 0,
@@ -164,7 +178,7 @@ func (w *MachOWriter) WriteObjectFile(outputPath string, code []byte, data []byt
 			Size:      uint64(dataSize),
 			Offset:    dataOffset,
 			Align:     3, // 8-byte aligned (2^3)
-			Reloff:    0, // No relocations for now
+			Reloff:    0, // No data relocations for now
 			Nreloc:    0,
 			Flags:     0, // S_REGULAR
 			Reserved1: 0,
@@ -188,15 +202,16 @@ func (w *MachOWriter) WriteObjectFile(outputPath string, code []byte, data []byt
 	bw.write(&symtab)
 
 	// Write LC_DYSYMTAB
+	// Symbols are ordered: local, external defined, undefined
 	dysymtab := dysymtabCommand{
 		Cmd:            LC_DYSYMTAB,
 		Cmdsize:        dysymtabCmdSize,
 		Ilocalsym:      0,
 		Nlocalsym:      0,
 		Iextdefsym:     0,
-		Nextdefsym:     numSymbols,
-		Iundefsym:      numSymbols,
-		Nundefsym:      0,
+		Nextdefsym:     numDefinedSyms,
+		Iundefsym:      numDefinedSyms,
+		Nundefsym:      externSymCount,
 		Tocoff:         0,
 		Ntoc:           0,
 		Modtaboff:      0,
@@ -235,6 +250,50 @@ func (w *MachOWriter) WriteObjectFile(outputPath string, code []byte, data []byt
 		currentPos = textOffset + textSize
 	}
 
+	// Pad to relocation section
+	if currentPos < relocOffset {
+		padding := make([]byte, relocOffset-currentPos)
+		bw.writeBytes(padding)
+	}
+
+	// Write text relocations
+	// Build a map from extern symbol name to its index in the symbol table
+	externSymbolIndex := make(map[string]uint32)
+	for i, sym := range symEntries {
+		if sym.Type == N_UNDF|N_EXT {
+			// Find the name by looking up in string table
+			for _, reloc := range textRelocs {
+				if reloc.Extern {
+					// Check if this is the symbol we're looking for
+					// by checking if it's at the right index
+					if uint32(i) >= numDefinedSyms {
+						externSymbolIndex[reloc.SymbolName] = uint32(i)
+					}
+				}
+			}
+		}
+	}
+
+	// Actually build the map properly by iterating through symEntries and string table
+	externSymbolIndex = make(map[string]uint32)
+	seen := make(map[string]bool)
+	externIdx := numDefinedSyms
+	for _, reloc := range textRelocs {
+		if reloc.Extern && !seen[reloc.SymbolName] {
+			seen[reloc.SymbolName] = true
+			externSymbolIndex[reloc.SymbolName] = externIdx
+			externIdx++
+		}
+	}
+
+	for _, reloc := range textRelocs {
+		symIdx := externSymbolIndex[reloc.SymbolName]
+		packed := PackRelocation(symIdx, reloc.PCRel, reloc.Length, reloc.Extern, reloc.Type)
+		binary.Write(file, binary.LittleEndian, int32(reloc.Offset))
+		binary.Write(file, binary.LittleEndian, packed)
+	}
+	currentPos = relocOffset + textRelocSize
+
 	// Pad to symbol table
 	if currentPos < symbolsOffset {
 		padding := make([]byte, symbolsOffset-currentPos)
@@ -263,7 +322,11 @@ func (w *MachOWriter) WriteObjectFile(outputPath string, code []byte, data []byt
 	if hasData {
 		w.logger.Printf("  __data: offset=0x%x, size=%d bytes\n", dataOffset, dataSize)
 	}
-	w.logger.Printf("  Symbol table: offset=0x%x, %d entries\n", symbolsOffset, numSymbols)
+	if numTextRelocs > 0 {
+		w.logger.Printf("  Relocations: offset=0x%x, %d entries\n", relocOffset, numTextRelocs)
+	}
+	w.logger.Printf("  Symbol table: offset=0x%x, %d entries (%d defined, %d undefined)\n",
+		symbolsOffset, numSymbols, numDefinedSyms, externSymCount)
 	w.logger.Printf("  String table: offset=0x%x, size=%d bytes\n", stringsOffset, stringTableSize)
 	w.logger.Printf("  Total size: %d bytes\n", totalSize)
 
@@ -310,6 +373,75 @@ func (w *MachOWriter) buildObjectSymbols(symbols *SymbolTable) ([]nlist64, []byt
 	return entries, stringTable
 }
 
+// buildObjectSymbolsWithExterns creates symbol table entries and string table for object file,
+// including undefined symbols from external relocations.
+// Returns: symbol entries, count of defined symbols, count of extern symbols, string table
+func (w *MachOWriter) buildObjectSymbolsWithExterns(symbols *SymbolTable, textRelocs []TextRelocation) ([]nlist64, uint32, uint32, []byte) {
+	var entries []nlist64
+	var stringTable []byte
+	stringTable = append(stringTable, 0) // String table starts with null
+
+	// First pass: defined symbols (not extern)
+	if symbols != nil {
+		symbols.ForEach(func(name string, sym *Symbol) {
+			// Skip extern symbols - they will be added as undefined
+			if sym.State == SymbolExtern {
+				return
+			}
+
+			strIdx := uint32(len(stringTable))
+			stringTable = append(stringTable, []byte(name)...)
+			stringTable = append(stringTable, 0) // Null terminator
+
+			var symType uint8 = N_SECT // Defined in section
+			if sym.Global {
+				symType |= N_EXT // External symbol
+			}
+
+			var sect uint8 = 1 // Section 1 is __text
+			if sym.Section == SectionData {
+				sect = 2 // Section 2 is __data
+			}
+
+			entry := nlist64{
+				Strx:  strIdx,
+				Type:  symType,
+				Sect:  sect,
+				Desc:  0,
+				Value: sym.Address,
+			}
+			entries = append(entries, entry)
+		})
+	}
+
+	numDefinedSyms := uint32(len(entries))
+
+	// Second pass: undefined extern symbols from relocations
+	seen := make(map[string]bool)
+	for _, reloc := range textRelocs {
+		if reloc.Extern && !seen[reloc.SymbolName] {
+			seen[reloc.SymbolName] = true
+
+			strIdx := uint32(len(stringTable))
+			stringTable = append(stringTable, []byte(reloc.SymbolName)...)
+			stringTable = append(stringTable, 0) // Null terminator
+
+			entry := nlist64{
+				Strx:  strIdx,
+				Type:  N_UNDF | N_EXT, // Undefined external symbol
+				Sect:  NO_SECT,
+				Desc:  0,
+				Value: 0,
+			}
+			entries = append(entries, entry)
+		}
+	}
+
+	externSymCount := uint32(len(entries)) - numDefinedSyms
+
+	return entries, numDefinedSyms, externSymCount, stringTable
+}
+
 // align rounds up n to the nearest multiple of alignment
 func align(n, alignment uint32) uint32 {
 	if alignment == 0 {
@@ -323,8 +455,28 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	// Calculate layout
 	layout := w.calculateLayout(code, data, relocations)
 
+	// Look up entry point symbol to get its offset within the code
+	// The symbol's Address may be either:
+	// - An absolute VM address (from Build path, where AdjustAddresses was called)
+	// - A relative offset from section start (from Linker path)
+	// We need the relative offset for the LC_MAIN entry point
+	var entryPointOffset uint64
+	if symbols != nil {
+		if sym, found := symbols.Lookup(entryPoint); found && sym.Section == SectionText {
+			if sym.Address >= VMBaseAddress {
+				// Address is absolute VM address, convert to offset from code section
+				// The VM address is: VMBaseAddress + codeOffset + symbolOffset
+				// So symbolOffset = Address - VMBaseAddress - codeOffset
+				entryPointOffset = sym.Address - VMBaseAddress - layout.codeOffset
+			} else {
+				// Address is already a relative offset
+				entryPointOffset = sym.Address
+			}
+		}
+	}
+
 	// Build load commands
-	cmds := w.buildLoadCommands(layout, code, data)
+	cmds := w.buildLoadCommands(layout, code, data, entryPointOffset)
 
 	// Create file
 	file, err := os.Create(outputPath)
@@ -339,7 +491,7 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	}
 
 	// Write segment data
-	if err := w.writeSegmentData(file, layout, code, data, relocations); err != nil {
+	if err := w.writeSegmentData(file, layout, code, data, relocations, entryPointOffset); err != nil {
 		return err
 	}
 
@@ -397,7 +549,7 @@ func (w *MachOWriter) writeHeaderAndCommands(file *os.File, layout *executableLa
 }
 
 // writeSegmentData writes the actual segment content (code, data, linkedit).
-func (w *MachOWriter) writeSegmentData(file *os.File, layout *executableLayout, code, data []byte, relocations []DataRelocation) error {
+func (w *MachOWriter) writeSegmentData(file *os.File, layout *executableLayout, code, data []byte, relocations []DataRelocation, entryPointOffset uint64) error {
 	// Seek to code offset
 	if _, err := file.Seek(int64(layout.codeOffset), 0); err != nil {
 		return err
@@ -429,7 +581,7 @@ func (w *MachOWriter) writeSegmentData(file *os.File, layout *executableLayout, 
 	}
 
 	// Write exports trie
-	exportsTrieData := generateMinimalExportsTrie(layout.codeOffset)
+	exportsTrieData := generateMinimalExportsTrie(layout.codeOffset + entryPointOffset)
 	bw.writeBytes(exportsTrieData)
 
 	// Write symbol table entry
@@ -997,7 +1149,7 @@ type loadCommands struct {
 }
 
 // buildLoadCommands constructs all Mach-O structures from the layout.
-func (w *MachOWriter) buildLoadCommands(layout *executableLayout, code, data []byte) *loadCommands {
+func (w *MachOWriter) buildLoadCommands(layout *executableLayout, code, data []byte, entryPointOffset uint64) *loadCommands {
 	cmds := &loadCommands{}
 
 	// Header
@@ -1140,10 +1292,12 @@ func (w *MachOWriter) buildLoadCommands(layout *executableLayout, code, data []b
 	copy(cmds.dylibPath, LibSystemPath)
 
 	// Entry point
+	// EntryOff is the file offset to the entry point function
+	// If entryPointOffset is non-zero, add it to the code offset
 	cmds.entryPoint = entryPointCommand{
 		Cmd:       LC_MAIN,
 		Cmdsize:   EntryPointCmdSize,
-		EntryOff:  layout.codeOffset,
+		EntryOff:  layout.codeOffset + entryPointOffset,
 		StackSize: 0,
 	}
 

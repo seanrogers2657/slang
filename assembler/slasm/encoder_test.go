@@ -2785,3 +2785,112 @@ func TestEncodeStrh(t *testing.T) {
 		})
 	}
 }
+
+func TestEncodeWithRelocations_ExternSymbol(t *testing.T) {
+	// Create a symbol table with an extern symbol
+	st := NewSymbolTable()
+	st.MarkExtern("_external_func")
+
+	encoder := NewEncoder(st, nil)
+
+	// Test bl to extern symbol generates relocation
+	t.Run("bl extern generates relocation", func(t *testing.T) {
+		inst := &Instruction{
+			Mnemonic: "bl",
+			Operands: []*Operand{
+				{Type: OperandLabel, Value: "_external_func"},
+			},
+		}
+
+		result, err := encoder.EncodeWithRelocations(inst, 0x10)
+		if err != nil {
+			t.Fatalf("EncodeWithRelocations failed: %v", err)
+		}
+
+		// Should have bytes (BL with imm26=0)
+		expectedHex := "00000094" // 0x94000000 little-endian
+		if hex.EncodeToString(result.Bytes) != expectedHex {
+			t.Errorf("Expected %s, got %s", expectedHex, hex.EncodeToString(result.Bytes))
+		}
+
+		// Should have relocation
+		if result.Relocation == nil {
+			t.Fatal("Expected relocation, got nil")
+		}
+		if result.Relocation.Offset != 0x10 {
+			t.Errorf("Expected relocation offset 0x10, got 0x%x", result.Relocation.Offset)
+		}
+		if result.Relocation.SymbolName != "_external_func" {
+			t.Errorf("Expected symbol name '_external_func', got '%s'", result.Relocation.SymbolName)
+		}
+		if result.Relocation.Type != ARM64_RELOC_BRANCH26 {
+			t.Errorf("Expected relocation type BRANCH26, got %d", result.Relocation.Type)
+		}
+		if !result.Relocation.PCRel {
+			t.Error("Expected PCRel to be true")
+		}
+		if !result.Relocation.Extern {
+			t.Error("Expected Extern to be true")
+		}
+	})
+
+	// Test b to extern symbol generates relocation
+	t.Run("b extern generates relocation", func(t *testing.T) {
+		inst := &Instruction{
+			Mnemonic: "b",
+			Operands: []*Operand{
+				{Type: OperandLabel, Value: "_external_func"},
+			},
+		}
+
+		result, err := encoder.EncodeWithRelocations(inst, 0x20)
+		if err != nil {
+			t.Fatalf("EncodeWithRelocations failed: %v", err)
+		}
+
+		// Should have bytes (B with imm26=0)
+		expectedHex := "00000014" // 0x14000000 little-endian
+		if hex.EncodeToString(result.Bytes) != expectedHex {
+			t.Errorf("Expected %s, got %s", expectedHex, hex.EncodeToString(result.Bytes))
+		}
+
+		// Should have relocation
+		if result.Relocation == nil {
+			t.Fatal("Expected relocation, got nil")
+		}
+		if result.Relocation.Offset != 0x20 {
+			t.Errorf("Expected relocation offset 0x20, got 0x%x", result.Relocation.Offset)
+		}
+	})
+
+	// Test bl to defined symbol does NOT generate relocation
+	t.Run("bl defined symbol no relocation", func(t *testing.T) {
+		st2 := NewSymbolTable()
+		st2.Define("_local_func", 0x100, SectionText, 0, 0)
+		encoder2 := NewEncoder(st2, nil)
+
+		inst := &Instruction{
+			Mnemonic: "bl",
+			Operands: []*Operand{
+				{Type: OperandLabel, Value: "_local_func"},
+			},
+		}
+
+		result, err := encoder2.EncodeWithRelocations(inst, 0x0)
+		if err != nil {
+			t.Fatalf("EncodeWithRelocations failed: %v", err)
+		}
+
+		// Should have no relocation
+		if result.Relocation != nil {
+			t.Errorf("Expected no relocation for defined symbol, got %+v", result.Relocation)
+		}
+
+		// Should have valid encoding (branch offset = 0x100/4 = 64 = 0x40)
+		// BL encoding: 0x94000040 -> little-endian: 40 00 00 94
+		expectedHex := "40000094"
+		if hex.EncodeToString(result.Bytes) != expectedHex {
+			t.Errorf("Expected %s, got %s", expectedHex, hex.EncodeToString(result.Bytes))
+		}
+	})
+}

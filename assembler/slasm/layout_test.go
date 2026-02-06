@@ -563,3 +563,57 @@ func TestLayout_ValidConstants(t *testing.T) {
 		t.Errorf("expected CONST_B = 100, got %d", constants["CONST_B"])
 	}
 }
+
+func TestLayout_ExternDirective(t *testing.T) {
+	// Create a program with .extern directive for external symbol
+	program := &Program{
+		Sections: []*Section{
+			{
+				Type: SectionText,
+				Items: []Item{
+					&Directive{Name: "global", Args: []string{"_start"}},
+					&Directive{Name: "extern", Args: []string{"_external_func"}},
+					&Label{Name: "_start"},
+					&Instruction{Mnemonic: "mov", Operands: []*Operand{
+						{Type: OperandRegister, Value: "x0"},
+						{Type: OperandImmediate, Value: "1"},
+					}},
+					&Instruction{Mnemonic: "bl", Operands: []*Operand{
+						{Type: OperandLabel, Value: "_external_func"},
+					}},
+					&Instruction{Mnemonic: "ret"},
+				},
+			},
+		},
+	}
+
+	layout := NewLayout(program)
+	err := layout.Calculate()
+
+	if err != nil {
+		t.Fatalf("layout calculation failed: %v", err)
+	}
+
+	st := layout.GetSymbolTable()
+
+	// Check that _start is defined and global
+	startSym, exists := st.Lookup("_start")
+	if !exists {
+		t.Fatal("expected _start symbol to exist")
+	}
+	if !startSym.Global {
+		t.Error("expected _start to be global")
+	}
+	if startSym.State != SymbolDefined {
+		t.Errorf("expected _start to be defined, got state %v", startSym.State)
+	}
+
+	// Check that _external_func is extern
+	externSym, exists := st.Lookup("_external_func")
+	if !exists {
+		t.Fatal("expected _external_func symbol to exist")
+	}
+	if externSym.State != SymbolExtern {
+		t.Errorf("expected _external_func to be extern, got state %v", externSym.State)
+	}
+}

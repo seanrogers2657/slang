@@ -54,11 +54,11 @@ These decisions were made during proposal planning:
     - **Within a file**: top-to-bottom source order
     - Circular initialization dependencies within a package (e.g., `val x = y + 1` in `a.sl` and `val y = x + 1` in `b.sl`) are a compile error
 
-10. **Compilation Model**: The compiler starts from the entry file (containing `main`), discovers all `.sl` files in the entry file's directory (the root package) and all imports transitively by scanning the `packages/` directory, topologically sorts packages, and compiles in dependency order. Each package is compiled once regardless of how many packages import it. The entry file can be located anywhere and the `sl` tool can be invoked from any directory. The directory containing the entry file is the root package -- it may contain additional `.sl` files that are part of the same package. Only the specific file passed to `sl build` or `sl run` may define `main` -- other `.sl` files in the same root directory and all other packages must not contain `main` functions. If any package fails to compile, the build fails. Phase 1 collects all lexer, parser, and module errors before halting. Phase 2 stops at the first semantic error since later packages depend on earlier ones. All `.sl` files within a package directory are parsed before semantic analysis begins. The analyzer's two-pass approach (register all names, then type-check) enables forward references across files within the same package. Subdirectories within a package are not recursed into automatically -- they are independent packages that must be imported separately if needed (e.g., `import("math/integers")`).
+10. **Compilation Model**: `SlPackageCompiler` receives an explicit list of `.sl` files for the root package from its caller. The `sl` CLI discovers all `.sl` files in the entry file's directory and passes them in; tests pass just the single entry file. The compiler then discovers all imports transitively by scanning the `packages/` directory, topologically sorts packages, and compiles in dependency order. Each package is compiled once regardless of how many packages import it. The entry file can be located anywhere and the `sl` tool can be invoked from any directory. The directory containing the entry file is the root package -- it may contain additional `.sl` files that are part of the same package. The root package must contain a `main` function (compile error if missing). Only the specific file passed to `sl build` or `sl run` may define `main` -- other `.sl` files in the same root directory and all imported packages must not contain `main` functions (compile error: "package '<name>' must not declare a 'main' function"). If any package fails to compile, the build fails. Phase 1 collects all lexer, parser, and module errors before halting. Phase 2 stops at the first semantic error since later packages depend on earlier ones. All `.sl` files within a package directory are parsed before semantic analysis begins. The analyzer's two-pass approach (register all names, then type-check) enables forward references across files within the same package. Subdirectories within a package are not recursed into automatically -- they are independent packages that must be imported separately if needed (e.g., `import("math/integers")`).
 
 11. **Name Conflicts**: If two imports would create the same binding name, the compiler reports an error. The user must alias one of them. Import binding names also participate in same-package duplicate name checking -- if an import binding has the same name as a declaration in a sibling file of the same package, this is a compile error.
 
-12. **No Ownership Transfer of Global Variables**: Top-level `var` declarations with owned pointer types (`*T`) cannot be moved out of. Reading a global `*T` yields an implicit borrow (`&T` or `&&T` depending on context), never a move. This applies transitively -- if a global struct contains a `*T` field, that field also cannot be moved out of. To obtain an independent owned value, the caller must use `.copy()`. This prevents accidental invalidation of global state -- moving out of a global would leave it in an unusable state for the rest of the program. Primitive types (`s64`, `bool`, etc.) are unaffected since they are copied by value.
+12. **Global Variable Mutability**: Top-level `var` declarations are mutable and can be read and written by any package that imports them (e.g., `config.count = 5`). Top-level `val` declarations are read-only. Access control (restricting which packages can mutate a global) is deferred to the visibility SEP. Top-level `var` declarations with owned pointer types (`*T`) cannot be moved out of. Reading a global `*T` yields an implicit borrow (`&T` or `&&T` depending on context), never a move. This applies transitively -- if a global struct contains a `*T` field, that field also cannot be moved out of. To obtain an independent owned value, the caller must use `.copy()`. This prevents accidental invalidation of global state -- moving out of a global would leave it in an unusable state for the rest of the program. Primitive types (`s64`, `bool`, etc.) are unaffected since they are copied by value.
 
 13. **Same-Package Access**: Within a directory package, files see each other's declarations directly using unqualified names (no imports needed). This follows Go's model. Duplicate names across files in the same package are a compile error.
 
@@ -112,7 +112,7 @@ type Position struct {
 }
 ```
 
-Note: `ir.Position` already has a `File` field. This closes the gap between the AST and IR layers.
+Note: `ir.Position` already has a `File` field. This closes the gap between the AST and IR layers. The separate `errors.Position` type is left unchanged — `errors.CompilerError` continues using its own `Filename` field. When constructing errors from AST nodes, the `File` from `ast.Position` is copied into `CompilerError.Filename`. Unifying the two position types is deferred.
 
 Add import declaration:
 ```go
@@ -123,11 +123,23 @@ type ImportDecl struct {
 }
 ```
 
+Add top-level variable declaration as a new `Declaration` type. Top-level variables have different semantics from in-function variables (global heap allocation, init ordering, package exports), so they get a dedicated AST node rather than reusing `VarDeclStmt`:
+```go
+type TopLevelVarDecl struct {
+    Name          string     // variable name
+    Mutable       bool       // true for var, false for val
+    TypeAnnotation string    // explicit type annotation (e.g., "s64", "geo.Point"), empty if inferred
+    Value         Expression // initializer expression
+    StartPos      Position
+    EndPos        Position
+}
+```
+
 Add `Imports` field to the existing `Program`:
 ```go
 type Program struct {
-    Imports      []*ImportDecl   // import declarations (new)
-    Declarations []Declaration   // all other declarations (existing)
+    Imports      []*ImportDecl      // import declarations (new)
+    Declarations []Declaration      // all other declarations (existing, plus TopLevelVarDecl)
     // ... existing fields ...
 }
 ```
@@ -144,7 +156,23 @@ Parses as:
 - Name: `"math"`
 - Path: `"math"`
 
-**Qualified type names in annotations**: The parser must accept qualified names (`pkg.Type`) anywhere a type is currently accepted. This includes nullable types (`pkg.Type?`), pointer types (`*pkg.Type`), and borrow types (`&pkg.Type`, `&&pkg.Type`). The parser treats `pkg.Type` as a single type reference, not a dot expression.
+**Qualified type names in annotations**: The parser must accept qualified names (`pkg.Type`) anywhere a type is currently accepted. This includes nullable types (`pkg.Type?`), pointer types (`*pkg.Type`), and borrow types (`&pkg.Type`, `&&pkg.Type`). The existing `parseTypeName()` returns a string (e.g., `"*Point"`, `"s64?"`). For qualified types, after consuming the type identifier, the parser checks for `.` followed by another identifier and produces a dotted string (e.g., `"geo.Point"`). No new AST node is needed — the semantic analyzer splits on `.` to resolve the package namespace and type name.
+
+```go
+// In parseTypeName(), after consuming the type identifier:
+// Check for qualified type: pkg.Type (e.g., geo.Point)
+if p.CurrentToken().Type == lexer.TokenTypeDot {
+    p.advance() // consume '.'
+    if p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+        p.addError(...)
+        return "", typePos
+    }
+    typeName = typeName + "." + p.CurrentToken().Value
+    p.advance() // consume qualified name
+}
+```
+
+This naturally composes with existing modifiers: `*geo.Point` parses as `"*" + parseTypeName()` which produces `"*geo.Point"`. Same for `&geo.Point`, `&&geo.Point`, and `geo.Point?`.
 
 ```slang
 geo = import("geometry")
@@ -154,6 +182,47 @@ transform = (p: &geo.Point) -> *geo.Point {
     // ...
 }
 ```
+
+**Qualified struct literal construction**: The parser must handle `geo.Point{ 1, 2 }` and `geo.Point { 1, 2 }` as struct literal construction with a package qualifier. When the parser is in the dot-access code path and sees `{` after the member name, it parses this as a qualified struct literal. Unlike unqualified struct literals (which require no space before `{` to avoid ambiguity with control flow like `if x {`), qualified struct literals allow whitespace before `{` because `geo.Point {` is unambiguous — a dot expression cannot appear as a control flow condition.
+
+The `StructLiteral` AST node gains optional `PackageAlias` and `PackageAliasPos` fields:
+
+```go
+type StructLiteral struct {
+    PackageAlias    string          // import alias (e.g., "geo"), empty if unqualified
+    PackageAliasPos Position        // position of package alias, zero if unqualified
+    Name            string          // struct name (e.g., "Point")
+    NamePos         Position        // position of struct name
+    LeftBrace       Position        // position of '{'
+    Arguments       []Expression    // list of positional argument expressions
+    NamedArguments  []NamedArgument // list of named arguments (e.g., x: 10, y: 20)
+    RightBrace      Position        // position of '}'
+}
+```
+
+In the parser's dot-access path (after consuming `memberName`), a new check is added before the field access fallthrough:
+
+```go
+// After consuming memberName in dot-access path:
+
+// Check if this is a method call (identifier followed by '(')
+if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeLParen {
+    // ... existing method call parsing ...
+}
+
+// Check if this is a qualified struct literal (pkg.Type{ ... } or pkg.Type { ... })
+// Whitespace before '{' is allowed for qualified literals (unambiguous)
+if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeLBrace {
+    // left must be a simple IdentifierExpr (the package alias)
+    if ident, ok := left.(*ast.IdentifierExpr); ok {
+        return p.parseStructLiteral(memberName, memberPos, ident.Name, ident.StartPos)
+    }
+}
+
+// Otherwise it's a field access
+```
+
+The semantic analyzer validates that `PackageAlias` (when non-empty) refers to a `SlPackageNamespace` and that `Name` is a struct/class type in that package.
 
 ## Step 3: Package Resolution
 
@@ -253,12 +322,14 @@ sl build main.sl / sl run main.sl
 
 The pipeline steps in detail:
 
-1. **Discovery & Parsing**: Starting from the entry file's directory, read, lex, and parse all `.sl` files in the root package. Group per-file ASTs into a `PackageAST` per package (file boundaries are preserved, not merged). Extract imports from the parsed ASTs, resolve paths within `packages/`, and recursively discover and parse transitive dependencies. Each file is read and parsed exactly once -- parsing order is irrelevant since parsing is purely syntactic. After all packages are discovered, run cycle detection (DFS) and compute the topological sort. Phase 1 returns a `map[string]*PackageAST` for Phase 2 to consume. For a single-file program with no imports, this produces one `PackageAST` containing one `FileAST`.
+1. **Discovery & Parsing**: The compiler receives an explicit list of `.sl` files for the root package (provided by the caller). It reads, lexes, and parses these files, grouping per-file ASTs into a `PackageAST` (file boundaries are preserved, not merged). It then extracts imports from the parsed ASTs, resolves paths within `packages/`, and recursively discovers and parses transitive dependencies. For imported packages (within `packages/`), all `.sl` files in the directory are always discovered automatically. Each file is read and parsed exactly once -- parsing order is irrelevant since parsing is purely syntactic. After all packages are discovered, run cycle detection (DFS) and compute the topological sort. Phase 1 returns a `map[string]*PackageAST` for Phase 2 to consume. For a single-file program with no imports, this produces one `PackageAST` containing one `FileAST`.
 2. **Semantic Analysis**: Consume the `PackageAST` values from Phase 1. Analyze each package in topological (dependency) order using a two-pass approach: first register all top-level names from all files, then type-check all bodies. For each package, bind imports to `SlPackageNamespace` values from already-analyzed dependencies, and populate `SlPackage.TypedAST` and `SlPackage.Exports`. The `PackageAST` values are discarded after this phase.
 3. **IR Generation**: Generate IR for each package from its `TypedAST` with mangled names. Combine into a single `*ir.Program`.
 4. **Code Generation**: Emit combined assembly from the single `*ir.Program`, assemble, and link.
 
 All programs — including single-file programs with no imports — go through this pipeline. A single-file program simply produces one root package with one `FileAST` and an empty dependency graph. Since parsing is purely syntactic (no cross-file or cross-package dependencies), parse order does not matter. The topological sort computed in Phase 1 only governs Phase 2 onward, where dependency order is required.
+
+**Root package file discovery**: `SlPackageCompiler` does not discover root package files itself — it receives an explicit list from its caller. The `sl` CLI discovers all `.sl` files in the entry file's directory and passes them in. Tests pass just the single entry file. This separation keeps the compiler testable without filesystem side effects and avoids sibling file conflicts in test directories. Imported packages (within `packages/`) always have all their `.sl` files discovered automatically by the compiler, since they are self-contained directories.
 
 This introduces a new error stage `"module"` for errors during Phase 1 (import resolution, circular dependencies, missing/empty packages). Lexer and parser errors are also reported during Phase 1, since parsing now happens in this phase.
 
@@ -271,8 +342,11 @@ func compileSourceWithIR(filename string, verbose bool, timer *timing.Timer) (st
     // Determine project root (directory containing the entry file)
     rootDir := filepath.Dir(filename)
 
+    // Discover all .sl files in the root package directory
+    rootFiles := discoverSlFiles(rootDir)
+
     // Phase 1: Discovery & Parsing
-    compiler := slpackage.NewCompiler(rootDir, filename)
+    compiler := slpackage.NewCompiler(rootDir, filename, rootFiles)
     pkgASTs, err := compiler.DiscoverAndParse()
     if err != nil {
         return "", err  // lexer, parser, or module errors
@@ -367,10 +441,15 @@ type SlPackageResolver struct {
 
 // SlPackageCompiler orchestrates compilation across all packages.
 // It owns all discovered packages and their compilation order.
+// The root package files are provided explicitly by the caller;
+// imported packages are discovered automatically from packages/.
 type SlPackageCompiler struct {
+    RootDir      string                // project root directory
+    EntryFile    string                // the specific file passed to sl build/run (must contain main)
+    RootFiles    []string              // all .sl files for root package (includes EntryFile)
     Resolver     *SlPackageResolver
     Packages     map[string]*SlPackage
-    CompileOrder []string  // topological order of package paths
+    CompileOrder []string              // topological order of package paths
 }
 
 // SlPackage represents a single compilation unit (one directory of .sl files).
@@ -382,28 +461,31 @@ type SlPackage struct {
     Dir  string // absolute directory path on disk
 
     // Phase 2 results
-    TypedAST *semantic.TypedProgram // type-checked program (one per package)
-    Exports  map[string]Export      // public symbols, keyed by name
+    TypedAST *semantic.TypedProgram    // type-checked program (one per package)
+    Exports  map[string]semantic.Export // public symbols, keyed by name
 }
 
-// Export represents a single public symbol from a package.
-// The symbol's kind (function, struct, class, variable) is encoded in the
-// Type field -- no separate kind enum is needed.
-type Export struct {
-    Type    semantic.Type // the symbol's type (FunctionType, StructType, etc.)
-    Mutable bool          // true for `var` declarations; false otherwise
-}
 ```
 
 ```go
 // --- Semantic layer (compiler/semantic/) ---
 
+// Export represents a single public symbol from a package.
+// The symbol's kind (function, struct, class, variable) is encoded in the
+// Type field -- no separate kind enum is needed.
+// Defined in semantic to avoid circular imports -- slpackage references
+// semantic.Export, while semantic has no dependency on slpackage.
+type Export struct {
+    Type    Type // the symbol's type (FunctionType, StructType, etc.)
+    Mutable bool // true for `var` declarations; false otherwise
+}
+
 // SlPackageNamespace is bound to an import alias in the analyzer's scope.
 // When the analyzer processes `math = import("math")`, it creates a
 // SlPackageNamespace and binds it to "math" in the current scope.
 type SlPackageNamespace struct {
-    Path    string             // canonical import path (e.g., "math")
-    Exports map[string]Export  // references SlPackage.Exports directly
+    Path    string            // canonical import path (e.g., "math")
+    Exports map[string]Export // references SlPackage.Exports directly
 }
 ```
 
@@ -411,12 +493,13 @@ type SlPackageNamespace struct {
 
 ```go
 func (c *SlPackageCompiler) DiscoverAndParse() (map[string]*PackageAST, error) {
+    // Root package: parse the explicit files in c.RootFiles
+    // Imported packages: discover all .sl files in the resolved directory
     // For each package:
-    //   1. Find .sl files in directory (alphabetical order)
-    //   2. Parse each file into *ast.Program
-    //   3. Group into PackageAST (file boundaries preserved)
-    //   4. Extract imports from parsed ASTs, resolve paths, discover transitive deps
-    //   5. Cycle detection and topological sort
+    //   1. Parse each file into *ast.Program
+    //   2. Group into PackageAST (file boundaries preserved)
+    //   3. Extract imports from parsed ASTs, resolve paths, discover transitive deps
+    //   4. Cycle detection and topological sort
     // Populates c.Packages (identity fields) and c.CompileOrder
     // Returns PackageASTs keyed by package path
 }
@@ -455,13 +538,18 @@ func (a *Analyzer) AnalyzePackage(
 ) ([]*errors.CompilerError, *TypedProgram)
 ```
 
-Analysis uses two passes to support cross-file forward references:
+Analysis uses two conceptual phases to support cross-file forward references:
 
-**Pass 1 — Registration**: Walk all files and register every top-level name (functions, structs, classes, imports, variables) into the package-level symbol table. After this pass, all names are known but no bodies have been type-checked. This is what enables file A to call a function defined in file B.
+**Phase A — Registration**: Walk all files and register every top-level name (functions, structs, classes, imports, variables) into the package-level symbol table. After this phase, all names are known but no bodies have been type-checked. This is what enables file A to call a function defined in file B. The existing analyzer already uses a multi-pass registration strategy (register type names, resolve fields/methods, collect function signatures). This internal structure can be preserved or simplified as needed — the important invariant is that all names are fully registered before type-checking begins.
 
-**Pass 2 — Type checking**: Walk all files again and type-check every declaration body. Because all names were registered in Pass 1, forward references resolve normally. Each file's declarations are checked in source order; files are processed in alphabetical order.
+**Phase B — Type checking**: Walk all files again and type-check every declaration body. Because all names were registered in Phase A, forward references resolve normally. Each file's declarations are checked in source order; files are processed in alphabetical order.
 
-`AnalyzePackage` is the sole entry point for semantic analysis. The old `Analyze(*ast.Program)` method is removed. Existing unit tests are updated to construct a one-file `PackageAST` and call `AnalyzePackage` directly. This ensures all code paths — tests included — exercise the same two-pass logic.
+`AnalyzePackage` is the sole entry point for semantic analysis. The old `Analyze(*ast.Program)` method is removed. Existing unit tests are updated to construct a one-file `PackageAST` and call `AnalyzePackage` directly. This ensures all code paths — tests included — exercise the same logic.
+
+**`main` function validation**: The `SlPackageCompiler` tracks the entry file (the file passed to `sl build`/`sl run`). During Phase 2, the root package is validated:
+- The entry file must define a `main` function (compile error if missing)
+- Other root package files must not define `main` (compile error: "'main' must be defined in the entry file '<entry>.sl', not in '<other>.sl'")
+- Imported packages must not define `main` (compile error: "package '<name>' must not declare a 'main' function")
 
 The output is one flat `*TypedProgram` per package. File boundaries are not needed after semantic analysis — each typed node carries its source position (including the `File` field), and all names are resolved.
 
@@ -515,15 +603,74 @@ val b = g.Point{ 3, 4 }
 
 This means two imports of the same package under different aliases produce compatible types, and functions accepting `geometry.Point` will accept values created through any alias.
 
+#### Implementation: `PackagePath` field on nominal types
+
+The three nominal types in the semantic layer (`StructType`, `ClassType`, `ObjectType`) each gain a `PackagePath` field. Type equality checks both `Name` and `PackagePath`:
+
+```go
+type StructType struct {
+    Name        string            // "Point"
+    PackagePath string            // "geometry" (or "main" for root package)
+    Fields      []StructFieldInfo
+}
+
+func (t StructType) Equals(other Type) bool {
+    o, ok := other.(StructType)
+    if !ok {
+        return false
+    }
+    return t.Name == o.Name && t.PackagePath == o.PackagePath
+}
+
+func (t StructType) String() string {
+    if t.PackagePath == "" || t.PackagePath == "main" {
+        return t.Name
+    }
+    return t.PackagePath + "." + t.Name
+}
+```
+
+The same pattern applies to `ClassType` and `ObjectType`. `FunctionType` is structural (no name), so it needs no change.
+
+**How `PackagePath` is set:**
+- During semantic analysis Pass 1, the analyzer registers types with the `PackagePath` of the package being analyzed (e.g., `"geometry"` for types in `packages/geometry/`). The root package uses `"main"`.
+- When resolving `geo.Point`, the analyzer looks up `Point` in the `SlPackageNamespace` for `"geometry"`, which already has `PackagePath: "geometry"` set.
+
+**Wrapper types work automatically:** `OwnedPointerType`, `RefPointerType`, `MutRefPointerType`, `NullableType`, and `ArrayType` all delegate equality to their inner/element type's `Equals()` method. No changes needed for these.
+
+**IR layer:** The `ir.StructType` uses mangled names (e.g., `geometry_.Point`), which are globally unique. No extra `PackagePath` field is needed in the IR.
+
 ## Step 6: IR Generator Changes
 
 **File:** `compiler/ir/generator.go`
 
-The IR generator iterates through packages in `CompileOrder`, generating IR from each package's `TypedAST` into a single combined `*ir.Program`:
-- Mangled function names to avoid collisions (e.g., `math_.add` for `add` in the `math` package)
-- Package-qualified struct/class type names
-- Cross-package function calls resolved by mangled name
-- The root package (entry file's directory) uses `main` as its mangling prefix (e.g., `main_.my_func`)
+The IR generator iterates through packages in `CompileOrder`, generating IR from each package's `TypedAST` into a single combined `*ir.Program`. A single `Generator` instance and single `*Program` are shared across all packages:
+
+```go
+func (c *SlPackageCompiler) GenerateIR() (*ir.Program, error) {
+    g := ir.NewGenerator()
+
+    for _, path := range c.CompileOrder {
+        pkg := c.Packages[path]
+        g.SetPackagePath(path)  // controls name mangling for this package
+        if err := g.GeneratePackage(pkg.TypedAST); err != nil {
+            return nil, err
+        }
+    }
+
+    // Generate init functions for packages with top-level variables
+    for _, path := range c.CompileOrder {
+        pkg := c.Packages[path]
+        g.GenerateInitFunction(path, pkg.TypedAST)
+    }
+
+    return g.Program(), nil
+}
+```
+
+### Name Mangling
+
+All names are mangled with the package path as prefix:
 
 ```go
 func mangleName(packagePath string, name string) string {
@@ -535,6 +682,22 @@ func mangleName(packagePath string, name string) string {
 }
 ```
 
+### How Multiple Packages Combine
+
+**Functions flatten into one `Functions` slice.** Mangled names prevent collisions. `math_.add` and `main_.add` coexist in the same slice.
+
+**Struct types use mangled names.** `geometry_.Point` and `physics_.Vector` are distinct IR structs. Each package registers its own structs during its generation pass. The `Generator.typeCache` (`semantic.Type` → `ir.Type`) ensures that if multiple packages reference `geometry.Point`, the same `ir.StructType` is reused — the `PackagePath` field on `semantic.StructType` makes each semantic type a unique cache key.
+
+**String constants deduplicate automatically.** `Program.AddString()` already uses a `stringIndex` map. If package A and package B both use the string `"hello"`, they get the same index.
+
+**Global variables flatten into one `Globals` slice.** Mangled names prevent collisions (e.g., `math_.pi`, `config_.db_port`).
+
+**Cross-package calls resolve by mangled name.** When package B calls `math.add(1, 2)`, the semantic layer has already resolved this to the `add` function in the `math` package. The IR generator emits a call to the mangled name `math_.add`.
+
+### Generator State
+
+The `Generator` gains a `packagePath` field set via `SetPackagePath(path)`. This field is used by `registerStruct`, `generateFunction`, `generateClass`, and `generateObject` to produce mangled names. All other generator state (SSA builder, type cache, program) persists across packages.
+
 ## Step 7: ARM64 Backend Changes
 
 **File:** `compiler/ir/backend/arm64/backend.go`
@@ -543,6 +706,48 @@ Minimal changes needed:
 - Function labels use mangled names
 - Cross-package calls use `bl` to mangled labels
 - All package code is emitted into a single assembly file (no separate object files per package)
+- `_start` reads `ir.Program.InitOrder` to emit `bl` calls to init functions before `main_.main`
+
+The `ir.Program` gains an `InitOrder` field populated by `SlPackageCompiler` during IR generation:
+
+**`ir.Program.Main()` and `Validate()` updates**: With the unified pipeline, `main` is always mangled to `main_.main`. `Program.Main()` looks for `"main_.main"` and `Validate()` checks for the same. No conditional logic — all programs go through mangling.
+
+```go
+type Program struct {
+    Functions []*Function
+    Structs   []*StructType
+    Globals   []*Global
+    Strings   []string
+    InitOrder []string  // ordered init function names (e.g., ["logger_.init", "main_.init"])
+    // ...
+}
+```
+
+The backend emits `_start` as:
+```asm
+_start:
+    // call init functions in dependency order
+    bl _logger_.init       // from InitOrder[0]
+    bl _main_.init         // from InitOrder[1]
+    // then call main
+    bl _main_.main
+    mov x16, #1
+    svc #0
+```
+
+Packages with no top-level variable initializers are omitted from `InitOrder` (no init function generated).
+
+### Reserved `_sl_` Prefix for Internal Labels
+
+All compiler-generated assembly labels use the `_sl_` prefix to avoid collisions with user-defined symbols. This applies to:
+
+- Heap management: `_sl_heap_ptr`, `_sl_heap_end`, `_sl_arena_head`, `_sl_current_arena`, `_sl_free_lists`, `_sl_heap_alloc`
+- Print helpers: `_sl_print_s64`, `_sl_print_string`, `_sl_print_bool`, `_sl_newline`, `_sl_true_str`, `_sl_false_str`
+- Panic helpers: `_sl_panic`, `_sl_panic_div_zero`, `_sl_panic_mod_zero`, `_sl_panic_bounds`, etc.
+- Assertion support: `_sl_assert_prefix`
+- Entry point: `_start` (reserved by the system, not user-accessible)
+
+Since import path segments must match `[a-z][a-z0-9_]*` and user mangled names use the `<pkg>_.` pattern (e.g., `math_.add`), the `_sl_` prefix is unambiguous — no valid package path starts with `_`.
 
 ## Step 8: Directory Packages
 
@@ -625,6 +830,53 @@ val y = x + 1   // depends on x from a.sl
 // Error: circular initialization dependency: x (a.sl) -> y (b.sl) -> x (a.sl)
 ```
 
+### Global Variable Assembly Representation
+
+All top-level variables are uniformly represented as **pointers to heap memory**. Each global gets a `.quad 0` slot in the `.data` section (holding a pointer), and the package init function allocates heap memory, initializes the value, and stores the pointer into the `.data` slot. This applies to all types — primitives (`s64`, `bool`), structs, arrays, and owned pointers alike.
+
+**Access pattern:**
+- **Reading a global**: load pointer from `.data` label, then load value through the pointer
+- **Writing a `var` global**: load pointer from `.data` label, then store value through the pointer
+- **Cross-package access** uses the same pattern with the mangled label (e.g., `math_.count`)
+
+**Constant initializer example** (`val max_size: s64 = 42`):
+```asm
+// .data section
+main_.max_size:
+    .quad 0                                    // pointer slot, zero until init
+
+// In _main_.init:
+    mov x0, #8                                 // size of s64
+    bl _sl_heap_alloc                           // returns heap pointer in x0
+    mov x1, #42                                // initial value
+    str x1, [x0]                               // store 42 into heap
+    adrp x2, main_.max_size@PAGE
+    str x0, [x2, main_.max_size@PAGEOFF]       // store pointer into .data slot
+```
+
+**Runtime initializer example** (`val config = load_config()`):
+```asm
+// In _main_.init:
+    bl _main_.load_config                       // call function, result in x0
+    mov x10, x0                                // save result
+    mov x0, #8                                 // size of return type
+    bl _sl_heap_alloc                           // allocate heap slot
+    str x10, [x0]                              // store result into heap
+    adrp x2, main_.config@PAGE
+    str x0, [x2, main_.config@PAGEOFF]         // store pointer into .data slot
+```
+
+**Struct initializer example** (`val origin = Point{ 0, 0 }`):
+```asm
+// In _main_.init:
+    mov x0, #16                                // size of Point (2 x s64)
+    bl _sl_heap_alloc                           // allocate heap memory
+    str xzr, [x0]                              // x field = 0
+    str xzr, [x0, #8]                          // y field = 0
+    adrp x2, main_.origin@PAGE
+    str x0, [x2, main_.origin@PAGEOFF]         // store pointer into .data slot
+```
+
 ### Generated Code
 
 The compiler generates a package init function for each package that has top-level variable initializers. The entry point calls all init functions in dependency order before calling `main()`.
@@ -701,15 +953,22 @@ _start:
   - Single-file program with no imports compiles correctly through the package pipeline
   - Single-file program produces mangled names (`main_.main`) in assembly output
   - Two `.sl` files in root directory are treated as one root package
-- **E2E tests** in `_examples/slang/modules/`:
-  - Basic package import
-  - Multi-file directory package
-  - Transitive dependencies
-  - Cross-package struct usage
-  - Cross-package class method dispatch
-  - Transitive type exposure (use returned types without importing origin)
-  - Import aliasing
-  - Two-file root package without `packages/` directory
+- **E2E tests**:
+  - All E2E tests use `SlPackageCompiler` (unified pipeline) -- there is no separate single-file mode
+  - Existing single-file tests in `_examples/slang/` pass one file to `SlPackageCompiler` as the root package
+  - Multi-file project tests live in `_examples/slang/projects/`, each as a directory containing `main.sl` and optionally `packages/`
+  - `@test:` directives are read from `main.sl` only (the entry file)
+  - `error_contains` is sufficient for asserting error messages from any file in the project
+  - Test discovery: a new `LoadProjectTestCases(dir)` function finds directories containing `main.sl`
+  - Project test cases:
+    - Basic package import
+    - Multi-file directory package
+    - Transitive dependencies
+    - Cross-package struct usage
+    - Cross-package class method dispatch
+    - Transitive type exposure (use returned types without importing origin)
+    - Import aliasing
+    - Two-file root package without `packages/` directory
   - Package initialization order
   - Circular dependency errors
   - Missing/empty package errors
@@ -1107,29 +1366,33 @@ main = () {
 # Implementation Order
 
 1. [ ] **Lexer** - Add `import` token
-2. [ ] **AST** - Add `ImportDecl` node, add `Imports` field to `Program`, add `File` to `Position`
-3. [ ] **Parser** - Parse import declarations and qualified type names
+2. [ ] **AST** - Add `ImportDecl`, `TopLevelVarDecl`, add `Imports` field to `Program`, add `File` to `Position`
+3. [ ] **Parser** - Parse import declarations, qualified type names (dotted strings in `parseTypeName`), qualified struct literals (`PackageAlias` on `StructLiteral`), top-level `val`/`var` as `TopLevelVarDecl`
 4. [ ] **SlPackageResolver** - Path resolution within `packages/` directory
-5. [ ] **SlPackageCompiler (Phase 1)** - `PackageAST`/`FileAST`, recursive parse-and-discover, cycle detection, topological sort; returns `map[string]*PackageAST`
-6. [ ] **SlPackageCompiler (Phase 2)** - Consume `PackageAST` values, two-pass `AnalyzePackage`, create `SlPackageNamespace` bindings, populate `SlPackage.TypedAST` and `SlPackage.Exports`
-7. [ ] **IR Generator** - Name mangling, cross-package calls, combined `*ir.Program`
-8. [ ] **ARM64 Backend** - Emit combined assembly from single `*ir.Program`
-9. [ ] **Package Initialization** - Init function generation and ordering
-10. [ ] **E2E Tests** - Integration tests for all package features
+5. [ ] **SlPackageCompiler (Phase 1)** - `PackageAST`/`FileAST`, recursive parse-and-discover, cycle detection, topological sort; accepts entry file + explicit root file list; returns `map[string]*PackageAST`
+6. [ ] **SlPackageCompiler (Phase 2)** - Consume `PackageAST` values, `AnalyzePackage` with registration + type-checking phases, create `SlPackageNamespace` bindings, populate `SlPackage.TypedAST` and `SlPackage.Exports`; validate `main` is in entry file only
+7. [ ] **IR Generator** - Name mangling (`SetPackagePath`), cross-package calls, combined `*ir.Program`, `PackagePath` on semantic types
+8. [ ] **ARM64 Backend** - `_sl_` prefix for internal labels, `InitOrder`-driven `_start`, global variable `.data` slots, `main_.main` lookup
+9. [ ] **Package Initialization** - Init function generation, global heap allocation in init, ordering via `InitOrder`
+10. [ ] **E2E Tests** - All tests through `SlPackageCompiler`; project tests in `_examples/slang/projects/`
 
 # Files Modified
 
 | File | Changes | Status |
 |------|---------|--------|
 | `compiler/lexer/lexer.go` | Add `TokenTypeImport` | Planned |
-| `compiler/ast/ast.go` | Add `ImportDecl`, add `Imports` to `Program`, add `File` to `Position`, qualified type names | Planned |
-| `compiler/parser/parser.go` | Parse `import`, qualified type annotations | Planned |
+| `compiler/ast/ast.go` | Add `ImportDecl`, `TopLevelVarDecl`, add `Imports` to `Program`, add `File` to `Position`, `PackageAlias` on `StructLiteral` | Planned |
+| `compiler/parser/parser.go` | Parse `import`, qualified type annotations (dotted strings), qualified struct literals, top-level `val`/`var` | Planned |
 | `compiler/slpackage/resolver.go` | New: `SlPackageResolver` -- path resolution within `packages/` | Planned |
 | `compiler/slpackage/compiler.go` | New: `SlPackageCompiler`, `SlPackage`, `Export`, `PackageAST`, `FileAST` -- compilation orchestration | Planned |
-| `compiler/semantic/analyzer.go` | `SlPackageNamespace`, two-pass `AnalyzePackage`, cross-package type checking, method dispatch | Planned |
-| `compiler/ir/generator.go` | Name mangling, cross-package references, combined `*ir.Program` | Planned |
-| `compiler/ir/backend/arm64/backend.go` | Combined assembly output | Planned |
-| `cmd/sl/main.go` | Pipeline delegates to `SlPackageCompiler` | Planned |
+| `compiler/semantic/analyzer.go` | `SlPackageNamespace`, `AnalyzePackage`, cross-package type checking, method dispatch, `main` validation | Planned |
+| `compiler/semantic/types.go` | Add `PackagePath` to `StructType`, `ClassType`, `ObjectType`; update `Equals()` and `String()` | Planned |
+| `compiler/ir/generator.go` | `SetPackagePath`, name mangling, cross-package references, combined `*ir.Program` | Planned |
+| `compiler/ir/program.go` | Add `InitOrder` field, update `Main()` and `Validate()` for `main_.main` | Planned |
+| `compiler/ir/backend/arm64/backend.go` | `_sl_` prefix for internal labels, `InitOrder`-driven `_start`, global `.data` slots | Planned |
+| `cmd/sl/main.go` | Pipeline delegates to `SlPackageCompiler`, root file discovery | Planned |
+| `test/sl/e2e_test.go` | All tests through `SlPackageCompiler`, project test discovery | Planned |
+| `test/testutil/expectations.go` | `LoadProjectTestCases` for directory-based tests | Planned |
 
 # Risks and Limitations
 

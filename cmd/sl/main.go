@@ -1,6 +1,7 @@
 package main
 
 import (
+	stderrors "errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,6 +25,12 @@ import (
 
 // Global error handler for sl
 var errorHandler = errors.NewHandler(errors.ToolSL)
+
+// errAlreadyReported is a sentinel error indicating that errors have already been printed.
+// The main function should exit with code 1 without printing additional error messages.
+type errAlreadyReported struct{}
+
+func (errAlreadyReported) Error() string { return "compilation failed" }
 
 const sectionWidth = 66
 
@@ -371,7 +378,7 @@ func compileSourceWithIR(filename string, verbose bool, timer *timing.Timer) (st
 	allErrors = append(allErrors, lex.Errors...)
 	if len(allErrors) > 0 {
 		fmt.Println(errors.FormatErrors(allErrors, sourceLines))
-		return "", fmt.Errorf("compilation failed")
+		return "", errAlreadyReported{}
 	}
 
 	// Verbose: print lexer output
@@ -393,7 +400,7 @@ func compileSourceWithIR(filename string, verbose bool, timer *timing.Timer) (st
 	allErrors = append(allErrors, pars.Errors...)
 	if len(allErrors) > 0 {
 		fmt.Println(errors.FormatErrors(allErrors, sourceLines))
-		return "", fmt.Errorf("compilation failed")
+		return "", errAlreadyReported{}
 	}
 
 	// Verbose: print parser output
@@ -415,7 +422,7 @@ func compileSourceWithIR(filename string, verbose bool, timer *timing.Timer) (st
 
 	if len(allErrors) > 0 {
 		fmt.Println(errors.FormatErrors(allErrors, sourceLines))
-		return "", fmt.Errorf("compilation failed")
+		return "", errAlreadyReported{}
 	}
 
 	// Verbose: print semantic analysis output
@@ -656,6 +663,11 @@ func main() {
 	}
 
 	if err := app.Run(os.Args); err != nil {
+		// If errors were already printed during compilation, just exit
+		var alreadyReported errAlreadyReported
+		if stderrors.As(err, &alreadyReported) {
+			os.Exit(1)
+		}
 		// Wrap the error with sl tool identification and display
 		compilerErr := errorHandler.Wrap(err, "")
 		errorHandler.Handle([]*errors.CompilerError{compilerErr})

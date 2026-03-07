@@ -15,6 +15,7 @@ you need to worry about the bits.
 active development and may change without notice. Not recommended for production use.
 
 ## Hello World
+[`_programs/hello/main.sl`](_programs/hello/main.sl)
 
 ```slang
 main = () {
@@ -23,6 +24,7 @@ main = () {
 ```
 
 ## Advanced
+[`_programs/advanced/main.sl`](_programs/advanced/main.sl)
 
 ```slang
 Counter = class {
@@ -84,9 +86,9 @@ go build -o sl cmd/sl/main.go
 
 ```bash
 # Compile and run in one step
-./sl run examples/hello.sl
+./sl run _programs/hello/main.sl
 
 # Or compile to a standalone binary
-./sl build myprogram.sl
+./sl build _programs/hello/main.sl
 ./build/output
 ```

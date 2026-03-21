@@ -25,7 +25,7 @@ type Linker struct {
 type LinkedSymbol struct {
 	Name       string
 	Value      uint64 // Final address in output
-	Section    uint8  // 1 = text, 2 = data
+	Section    uint8  // MachOSectText or MachOSectData
 	Defined    bool   // Is this symbol defined?
 	SourceFile string // Which object file defined it
 	ObjectIdx  int    // Index of object that defined it
@@ -158,9 +158,9 @@ func (l *Linker) MergeSections() error {
 	// Update symbol values with merged offsets
 	for _, sym := range l.GlobalSymbols {
 		objIdx := sym.ObjectIdx
-		if sym.Section == 1 { // text
+		if sym.Section == MachOSectText {
 			sym.Value += textOffsets[objIdx]
-		} else if sym.Section == 2 { // data
+		} else if sym.Section == MachOSectData {
 			sym.Value += dataOffsets[objIdx]
 		}
 		l.Logger.Printf("  Symbol %s -> 0x%x\n", sym.Name, sym.Value)
@@ -211,7 +211,7 @@ func (l *Linker) ApplyRelocations(textVMAddr, dataVMAddr uint64) error {
 
 			// Calculate target address
 			var targetAddr uint64
-			if targetSym.Section == 1 {
+			if targetSym.Section == MachOSectText {
 				targetAddr = textVMAddr + targetSym.Value
 			} else {
 				targetAddr = dataVMAddr + targetSym.Value
@@ -231,8 +231,8 @@ func (l *Linker) ApplyRelocations(textVMAddr, dataVMAddr uint64) error {
 				instr := binary.LittleEndian.Uint32(l.TextData[patchOffset:])
 
 				// Patch the imm26 field
-				imm26 := uint32(offset>>2) & 0x03FFFFFF
-				instr = (instr & 0xFC000000) | imm26
+				imm26 := uint32(offset>>2) & ARM64_IMM26_MASK
+				instr = (instr & ARM64_BRANCH_OP_MASK) | imm26
 
 				// Write back
 				binary.LittleEndian.PutUint32(l.TextData[patchOffset:], instr)
@@ -302,7 +302,7 @@ func (l *Linker) Link(objectPaths []string, outputPath string, entryPoint string
 	symTable := NewSymbolTable()
 	for name, sym := range l.GlobalSymbols {
 		sectionType := SectionText
-		if sym.Section == 2 {
+		if sym.Section == MachOSectData {
 			sectionType = SectionData
 		}
 		symTable.Define(name, sym.Value, sectionType, 0, 0) // line/col 0 for linked symbols

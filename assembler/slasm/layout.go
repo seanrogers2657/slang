@@ -77,7 +77,11 @@ func (l *Layout) Calculate() error {
 
 			case *DataDeclaration:
 				// Add size of data
-				*currentAddr += uint64(dataSize(v))
+				size, err := dataSize(v)
+				if err != nil {
+					return fmt.Errorf("data directive '.%s': %w", v.Type, err)
+				}
+				*currentAddr += uint64(size)
 
 			case *ConstantDef:
 				// Validate constant name
@@ -115,33 +119,34 @@ func instructionSize(inst *Instruction) int {
 	return 4
 }
 
-// dataSize returns the size in bytes of a data declaration
-func dataSize(data *DataDeclaration) int {
+// dataSize returns the size in bytes of a data declaration.
+// Returns an error for unknown directive types or invalid values.
+func dataSize(data *DataDeclaration) (int, error) {
 	switch data.Type {
 	case "byte":
 		// Count comma-separated values
-		return countValues(data.Value)
+		return countValues(data.Value), nil
 	case "2byte", "hword":
-		return countValues(data.Value) * 2
+		return countValues(data.Value) * 2, nil
 	case "4byte", "word":
-		return countValues(data.Value) * 4
+		return countValues(data.Value) * 4, nil
 	case "8byte", "quad":
-		return countValues(data.Value) * 8
+		return countValues(data.Value) * 8, nil
 	case "space", "zero":
 		// Parse the size with validation (negative, overflow, max size checks)
 		size, err := ParseSpaceSize(data.Value)
 		if err != nil {
-			return 0 // Layout phase - errors will be caught in encoding
+			return 0, err
 		}
-		return size
+		return size, nil
 	case "asciz", "string":
 		// String length + 1 for null terminator
-		return len(UnescapeString(data.Value)) + 1
+		return len(UnescapeString(data.Value)) + 1, nil
 	case "ascii":
 		// String length without null terminator
-		return len(UnescapeString(data.Value))
+		return len(UnescapeString(data.Value)), nil
 	default:
-		return 0
+		return 0, fmt.Errorf("unknown data type '%s'", data.Type)
 	}
 }
 

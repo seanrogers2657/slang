@@ -289,9 +289,9 @@ func (e *Encoder) EncodeWithRelocations(inst *Instruction, address uint64) (*Enc
 			// Generate placeholder instruction with 0 offset
 			var encoding uint32
 			if inst.Mnemonic == "bl" {
-				encoding = 0x94000000 // BL with imm26=0
+				encoding = ARM64_BL // BL with imm26=0
 			} else {
-				encoding = 0x14000000 // B with imm26=0
+				encoding = ARM64_B // B with imm26=0
 			}
 			return &EncodeResult{
 				Bytes: EncodeLittleEndian(encoding),
@@ -582,7 +582,7 @@ func (e *Encoder) encodeAdds(inst *Instruction) ([]byte, error) {
 		// ADDS (immediate): sf 0 1 10001 shift imm12 Rn Rd
 		// sf=1 for 64-bit, op=0 (ADD), S=1 (set flags)
 		// 0xB1000000 = 10110001 00000000 00000000 00000000
-		encoding := uint32(0xB1000000) | (uint32(immVal) << 10) | (uint32(rn) << 5) | uint32(rd)
+		encoding := ARM64_ADDS_IMM | (uint32(immVal) << 10) | (uint32(rn) << 5) | uint32(rd)
 		return EncodeLittleEndian(encoding), nil
 	}
 
@@ -595,7 +595,7 @@ func (e *Encoder) encodeAdds(inst *Instruction) ([]byte, error) {
 	// ADDS (shifted register): sf 0 1 01011 shift 0 Rm imm6 Rn Rd
 	// sf=1, op=0, S=1 => 10101011...
 	// 0xAB000000 = 10101011 00000000 00000000 00000000
-	encoding := uint32(0xAB000000) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	encoding := ARM64_ADDS_REG | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 
@@ -630,7 +630,7 @@ func (e *Encoder) encodeSub(inst *Instruction) ([]byte, error) {
 		// SUB (immediate): sf 1 0 1 0 0 0 1 sh imm12 Rn Rd
 		// sf=1 for 64-bit, op=1 (SUB), S=0 (no flags), 10001, shift=00
 		// Fixed bits for SUB without flags: 0xD1000000
-		encoding := uint32(0xD1000000) | (uint32(immVal) << 10) | (uint32(rn) << 5) | uint32(rd)
+		encoding := ARM64_SUB_IMM | (uint32(immVal) << 10) | (uint32(rn) << 5) | uint32(rd)
 		return EncodeLittleEndian(encoding), nil
 	}
 
@@ -676,7 +676,7 @@ func (e *Encoder) encodeSubs(inst *Instruction) ([]byte, error) {
 		// SUBS (immediate): sf 1 1 10001 shift imm12 Rn Rd
 		// sf=1 for 64-bit, op=1 (SUB), S=1 (set flags)
 		// 0xF1000000 = 11110001 00000000 00000000 00000000
-		encoding := uint32(0xF1000000) | (uint32(immVal) << 10) | (uint32(rn) << 5) | uint32(rd)
+		encoding := ARM64_SUBS_IMM | (uint32(immVal) << 10) | (uint32(rn) << 5) | uint32(rd)
 		return EncodeLittleEndian(encoding), nil
 	}
 
@@ -689,7 +689,7 @@ func (e *Encoder) encodeSubs(inst *Instruction) ([]byte, error) {
 	// SUBS (shifted register): sf 1 1 01011 shift 0 Rm imm6 Rn Rd
 	// sf=1, op=1, S=1 => 11101011...
 	// 0xEB000000 = 11101011 00000000 00000000 00000000
-	encoding := uint32(0xEB000000) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	encoding := ARM64_SUBS_REG | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 
@@ -750,7 +750,7 @@ func (e *Encoder) encodeSmulh(inst *Instruction) ([]byte, error) {
 
 	// SMULH: 1 00 11011 010 Rm 0 11111 Rn Rd
 	// 0x9B407C00 = base with Ra=11111
-	encoding := uint32(0x9B407C00) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	encoding := ARM64_SMULH | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 
@@ -780,7 +780,7 @@ func (e *Encoder) encodeUmulh(inst *Instruction) ([]byte, error) {
 
 	// UMULH: 1 00 11011 110 Rm 0 11111 Rn Rd
 	// 0x9BC07C00 = base with Ra=11111
-	encoding := uint32(0x9BC07C00) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	encoding := ARM64_UMULH | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 
@@ -1055,7 +1055,7 @@ func (e *Encoder) encodeBranch(inst *Instruction, address uint64) ([]byte, error
 	}
 
 	// Encode: 000101 followed by 26-bit signed offset
-	imm26 := uint32(offset) & 0x03FFFFFF
+	imm26 := uint32(offset) & ARM64_IMM26_MASK
 	encoding := (0b000101 << 26) | imm26
 
 	return EncodeLittleEndian(encoding), nil
@@ -1094,7 +1094,7 @@ func (e *Encoder) encodeBranchLink(inst *Instruction, address uint64) ([]byte, e
 	}
 
 	// Encode: 100101 followed by 26-bit signed offset
-	imm26 := uint32(offset) & 0x03FFFFFF
+	imm26 := uint32(offset) & ARM64_IMM26_MASK
 	encoding := (0b100101 << 26) | imm26
 
 	return EncodeLittleEndian(encoding), nil
@@ -1121,7 +1121,7 @@ func (e *Encoder) encodeBranchRegister(inst *Instruction) ([]byte, error) {
 	}
 
 	// BR Xn encoding: 1101011 0000 11111 000000 Rn 00000
-	encoding := uint32(0xD61F0000) | (uint32(rn) << 5)
+	encoding := ARM64_BR | (uint32(rn) << 5)
 
 	return EncodeLittleEndian(encoding), nil
 }
@@ -1203,7 +1203,7 @@ func (e *Encoder) encodeBranchConditional(inst *Instruction, address uint64) ([]
 func (e *Encoder) encodeRet(inst *Instruction) ([]byte, error) {
 	// RET is an alias for BR X30
 	// Encoding: 1101011 00101 11111 00000 011110 00000
-	return EncodeLittleEndian(0xd65f03c0), nil
+	return EncodeLittleEndian(ARM64_RET), nil
 }
 
 func (e *Encoder) encodeCbz(inst *Instruction, address uint64) ([]byte, error) {
@@ -1249,7 +1249,7 @@ func (e *Encoder) encodeCbz(inst *Instruction, address uint64) ([]byte, error) {
 
 	// CBZ (64-bit): 1 011010 0 imm19 Rt = 0xB4000000
 	imm19 := uint32(offset) & 0x7FFFF
-	encoding := uint32(0xB4000000) | (imm19 << 5) | uint32(rt)
+	encoding := ARM64_CBZ_X | (imm19 << 5) | uint32(rt)
 
 	return EncodeLittleEndian(encoding), nil
 }
@@ -1297,7 +1297,7 @@ func (e *Encoder) encodeCbnz(inst *Instruction, address uint64) ([]byte, error) 
 
 	// CBNZ (64-bit): 1 011010 1 imm19 Rt = 0xB5000000
 	imm19 := uint32(offset) & 0x7FFFF
-	encoding := uint32(0xB5000000) | (imm19 << 5) | uint32(rt)
+	encoding := ARM64_CBNZ_X | (imm19 << 5) | uint32(rt)
 
 	return EncodeLittleEndian(encoding), nil
 }
@@ -1348,7 +1348,7 @@ func (e *Encoder) encodeLdr(inst *Instruction) ([]byte, error) {
 		}
 		// LDR (post-index): 11 111 000 01 0 imm9 01 Rn Rt = 0xF8400400
 		imm9 := uint32(offset) & 0x1FF
-		encoding := uint32(0xF8400400) | (imm9 << 12) | (uint32(rn) << 5) | uint32(rt)
+		encoding := ARM64_LDR_POST | (imm9 << 12) | (uint32(rn) << 5) | uint32(rt)
 		return EncodeLittleEndian(encoding), nil
 	}
 
@@ -1369,7 +1369,7 @@ func (e *Encoder) encodeLdr(inst *Instruction) ([]byte, error) {
 		}
 		// LDR (pre-index): 11 111 000 01 0 imm9 11 Rn Rt = 0xF8400C00
 		imm9 := uint32(offset) & 0x1FF
-		encoding := uint32(0xF8400C00) | (imm9 << 12) | (uint32(rn) << 5) | uint32(rt)
+		encoding := ARM64_LDR_PRE | (imm9 << 12) | (uint32(rn) << 5) | uint32(rt)
 		return EncodeLittleEndian(encoding), nil
 	}
 
@@ -1386,7 +1386,7 @@ func (e *Encoder) encodeLdr(inst *Instruction) ([]byte, error) {
 		// LDUR: 11 111 000 01 0 imm9 00 Rn Rt
 		// = 0xF8400000 | (imm9 << 12) | (Rn << 5) | Rt
 		imm9 := uint32(offset) & 0x1FF
-		encoding := uint32(0xF8400000) | (imm9 << 12) | (uint32(rn) << 5) | uint32(rt)
+		encoding := ARM64_LDUR | (imm9 << 12) | (uint32(rn) << 5) | uint32(rt)
 		return EncodeLittleEndian(encoding), nil
 	}
 
@@ -1401,7 +1401,7 @@ func (e *Encoder) encodeLdr(inst *Instruction) ([]byte, error) {
 
 	// LDR (unsigned offset): 11 111 00100 01 imm12 Rn Rt
 	// = 0xF9400000 | (imm12 << 10) | (Rn << 5) | Rt
-	encoding := uint32(0xF9400000) | (imm12 << 10) | (uint32(rn) << 5) | uint32(rt)
+	encoding := ARM64_LDR_UOFF | (imm12 << 10) | (uint32(rn) << 5) | uint32(rt)
 
 	return EncodeLittleEndian(encoding), nil
 }
@@ -1452,7 +1452,7 @@ func (e *Encoder) encodeStr(inst *Instruction) ([]byte, error) {
 		}
 		// STR (post-index): 11 111 000 00 0 imm9 01 Rn Rt = 0xF8000400
 		imm9 := uint32(offset) & 0x1FF
-		encoding := uint32(0xF8000400) | (imm9 << 12) | (uint32(rn) << 5) | uint32(rt)
+		encoding := ARM64_STR_POST | (imm9 << 12) | (uint32(rn) << 5) | uint32(rt)
 		return EncodeLittleEndian(encoding), nil
 	}
 
@@ -1473,7 +1473,7 @@ func (e *Encoder) encodeStr(inst *Instruction) ([]byte, error) {
 		}
 		// STR (pre-index): 11 111 000 00 0 imm9 11 Rn Rt = 0xF8000C00
 		imm9 := uint32(offset) & 0x1FF
-		encoding := uint32(0xF8000C00) | (imm9 << 12) | (uint32(rn) << 5) | uint32(rt)
+		encoding := ARM64_STR_PRE | (imm9 << 12) | (uint32(rn) << 5) | uint32(rt)
 		return EncodeLittleEndian(encoding), nil
 	}
 
@@ -1490,7 +1490,7 @@ func (e *Encoder) encodeStr(inst *Instruction) ([]byte, error) {
 		// STUR: 11 111 000 00 0 imm9 00 Rn Rt
 		// = 0xF8000000 | (imm9 << 12) | (Rn << 5) | Rt
 		imm9 := uint32(offset) & 0x1FF
-		encoding := uint32(0xF8000000) | (imm9 << 12) | (uint32(rn) << 5) | uint32(rt)
+		encoding := ARM64_STUR | (imm9 << 12) | (uint32(rn) << 5) | uint32(rt)
 		return EncodeLittleEndian(encoding), nil
 	}
 
@@ -1505,7 +1505,7 @@ func (e *Encoder) encodeStr(inst *Instruction) ([]byte, error) {
 
 	// STR (unsigned offset): 11 111 00100 00 imm12 Rn Rt
 	// = 0xF9000000 | (imm12 << 10) | (Rn << 5) | Rt
-	encoding := uint32(0xF9000000) | (imm12 << 10) | (uint32(rn) << 5) | uint32(rt)
+	encoding := ARM64_STR_UOFF | (imm12 << 10) | (uint32(rn) << 5) | uint32(rt)
 
 	return EncodeLittleEndian(encoding), nil
 }
@@ -1564,7 +1564,7 @@ func (e *Encoder) encodeLdp(inst *Instruction) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("line %d:%d: ldp post-index offset: %w", inst.Line, inst.Column, err)
 		}
-		baseEncoding = 0xA8C00000
+		baseEncoding = ARM64_LDP_POST
 	} else if inst.Operands[2].Writeback {
 		// Pre-indexed: [Xn, #imm]!
 		if inst.Operands[2].Offset != "" {
@@ -1573,7 +1573,7 @@ func (e *Encoder) encodeLdp(inst *Instruction) ([]byte, error) {
 				return nil, fmt.Errorf("line %d:%d: ldp offset: %w", inst.Line, inst.Column, err)
 			}
 		}
-		baseEncoding = 0xA9C00000
+		baseEncoding = ARM64_LDP_PRE
 	} else {
 		// Signed offset: [Xn, #imm]
 		if inst.Operands[2].Offset != "" {
@@ -1582,7 +1582,7 @@ func (e *Encoder) encodeLdp(inst *Instruction) ([]byte, error) {
 				return nil, fmt.Errorf("line %d:%d: ldp offset: %w", inst.Line, inst.Column, err)
 			}
 		}
-		baseEncoding = 0xA9400000
+		baseEncoding = ARM64_LDP_SOFF
 	}
 
 	// For 64-bit LDP, offset must be multiple of 8 and within signed 7-bit range * 8
@@ -1653,7 +1653,7 @@ func (e *Encoder) encodeStp(inst *Instruction) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("line %d:%d: stp post-index offset: %w", inst.Line, inst.Column, err)
 		}
-		baseEncoding = 0xA8800000
+		baseEncoding = ARM64_STP_POST
 	} else if inst.Operands[2].Writeback {
 		// Pre-indexed: [Xn, #imm]!
 		if inst.Operands[2].Offset != "" {
@@ -1662,7 +1662,7 @@ func (e *Encoder) encodeStp(inst *Instruction) ([]byte, error) {
 				return nil, fmt.Errorf("line %d:%d: stp offset: %w", inst.Line, inst.Column, err)
 			}
 		}
-		baseEncoding = 0xA9800000
+		baseEncoding = ARM64_STP_PRE
 	} else {
 		// Signed offset: [Xn, #imm]
 		if inst.Operands[2].Offset != "" {
@@ -1671,7 +1671,7 @@ func (e *Encoder) encodeStp(inst *Instruction) ([]byte, error) {
 				return nil, fmt.Errorf("line %d:%d: stp offset: %w", inst.Line, inst.Column, err)
 			}
 		}
-		baseEncoding = 0xA9000000
+		baseEncoding = ARM64_STP_SOFF
 	}
 
 	// For 64-bit STP, offset must be multiple of 8 and within signed 7-bit range * 8
@@ -1738,7 +1738,7 @@ func (e *Encoder) encodeLdrb(inst *Instruction) ([]byte, error) {
 
 	// LDRB (unsigned offset): 00 111 00101 01 imm12 Rn Rt
 	// = 0x39400000 | (imm12 << 10) | (Rn << 5) | Rt
-	encoding := uint32(0x39400000) | (imm12 << 10) | (uint32(rn) << 5) | uint32(rt)
+	encoding := ARM64_LDRB_UOFF | (imm12 << 10) | (uint32(rn) << 5) | uint32(rt)
 
 	return EncodeLittleEndian(encoding), nil
 }
@@ -1793,7 +1793,7 @@ func (e *Encoder) encodeStrb(inst *Instruction) ([]byte, error) {
 
 	// STRB (unsigned offset): 00 111 00100 00 imm12 Rn Rt
 	// = 0x39000000 | (imm12 << 10) | (Rn << 5) | Rt
-	encoding := uint32(0x39000000) | (imm12 << 10) | (uint32(rn) << 5) | uint32(rt)
+	encoding := ARM64_STRB_UOFF | (imm12 << 10) | (uint32(rn) << 5) | uint32(rt)
 
 	return EncodeLittleEndian(encoding), nil
 }
@@ -1855,7 +1855,7 @@ func (e *Encoder) encodeLdrh(inst *Instruction) ([]byte, error) {
 
 	// LDRH (unsigned offset): 01 111 00101 01 imm12 Rn Rt
 	// = 0x79400000 | (imm12 << 10) | (Rn << 5) | Rt
-	encoding := uint32(0x79400000) | (imm12 << 10) | (uint32(rn) << 5) | uint32(rt)
+	encoding := ARM64_LDRH_UOFF | (imm12 << 10) | (uint32(rn) << 5) | uint32(rt)
 
 	return EncodeLittleEndian(encoding), nil
 }
@@ -1917,7 +1917,7 @@ func (e *Encoder) encodeStrh(inst *Instruction) ([]byte, error) {
 
 	// STRH (unsigned offset): 01 111 00100 00 imm12 Rn Rt
 	// = 0x79000000 | (imm12 << 10) | (Rn << 5) | Rt
-	encoding := uint32(0x79000000) | (imm12 << 10) | (uint32(rn) << 5) | uint32(rt)
+	encoding := ARM64_STRH_UOFF | (imm12 << 10) | (uint32(rn) << 5) | uint32(rt)
 
 	return EncodeLittleEndian(encoding), nil
 }
@@ -2059,7 +2059,7 @@ func (e *Encoder) encodeSvc(inst *Instruction) ([]byte, error) {
 	}
 
 	// Build SVC instruction
-	encoding := uint32(0xD4000001)  // Base SVC #0 encoding
+	encoding := ARM64_SVC            // Base SVC #0 encoding
 	encoding |= (imm & 0xFFFF) << 5 // Insert imm16
 
 	return EncodeLittleEndian(encoding), nil
@@ -2106,7 +2106,7 @@ func (e *Encoder) encodeLsl(inst *Instruction) ([]byte, error) {
 		imms := 63 - shift
 
 		// UBFM: 1 1 0 100110 1 immr imms Rn Rd = 0xD3400000
-		encoding := uint32(0xD3400000) | (immr << 16) | (imms << 10) | (uint32(rn) << 5) | uint32(rd)
+		encoding := ARM64_UBFM_X | (immr << 16) | (imms << 10) | (uint32(rn) << 5) | uint32(rd)
 		return EncodeLittleEndian(encoding), nil
 	}
 
@@ -2117,7 +2117,7 @@ func (e *Encoder) encodeLsl(inst *Instruction) ([]byte, error) {
 	}
 
 	// LSLV: sf=1, 0 0 11010110 Rm 0010 00 Rn Rd = 0x9AC02000
-	encoding := uint32(0x9AC02000) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	encoding := ARM64_LSLV_X | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 
@@ -2161,7 +2161,7 @@ func (e *Encoder) encodeLsr(inst *Instruction) ([]byte, error) {
 		imms := uint32(63)
 
 		// UBFM: 1 1 0 100110 1 immr imms Rn Rd = 0xD3400000
-		encoding := uint32(0xD3400000) | (immr << 16) | (imms << 10) | (uint32(rn) << 5) | uint32(rd)
+		encoding := ARM64_UBFM_X | (immr << 16) | (imms << 10) | (uint32(rn) << 5) | uint32(rd)
 		return EncodeLittleEndian(encoding), nil
 	}
 
@@ -2172,7 +2172,7 @@ func (e *Encoder) encodeLsr(inst *Instruction) ([]byte, error) {
 	}
 
 	// LSRV: sf=1, 0 0 11010110 Rm 0010 01 Rn Rd = 0x9AC02400
-	encoding := uint32(0x9AC02400) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	encoding := ARM64_LSRV_X | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 
@@ -2216,7 +2216,7 @@ func (e *Encoder) encodeAsr(inst *Instruction) ([]byte, error) {
 		imms := uint32(63)
 
 		// SBFM: 1 0 0 100110 1 immr imms Rn Rd = 0x9340FC00
-		encoding := uint32(0x93400000) | (immr << 16) | (imms << 10) | (uint32(rn) << 5) | uint32(rd)
+		encoding := ARM64_SBFM_X | (immr << 16) | (imms << 10) | (uint32(rn) << 5) | uint32(rd)
 		return EncodeLittleEndian(encoding), nil
 	}
 
@@ -2227,7 +2227,7 @@ func (e *Encoder) encodeAsr(inst *Instruction) ([]byte, error) {
 	}
 
 	// ASRV: sf=1, 0 0 11010110 Rm 0010 10 Rn Rd = 0x9AC02800
-	encoding := uint32(0x9AC02800) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	encoding := ARM64_ASRV_X | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 
@@ -2258,7 +2258,7 @@ func (e *Encoder) encodeAnd(inst *Instruction) ([]byte, error) {
 
 	// AND (shifted register): sf 00 01010 shift N Rm imm6 Rn Rd
 	// 0x8A000000 = 10001010 00000000 00000000 00000000
-	encoding := uint32(0x8A000000) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	encoding := ARM64_AND_REG | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 
@@ -2289,7 +2289,7 @@ func (e *Encoder) encodeOrr(inst *Instruction) ([]byte, error) {
 
 	// ORR (shifted register): sf 01 01010 shift N Rm imm6 Rn Rd
 	// 0xAA000000 = 10101010 00000000 00000000 00000000
-	encoding := uint32(0xAA000000) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	encoding := ARM64_ORR_REG | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 
@@ -2320,7 +2320,7 @@ func (e *Encoder) encodeEor(inst *Instruction) ([]byte, error) {
 
 	// EOR (shifted register): sf 10 01010 shift N Rm imm6 Rn Rd
 	// 0xCA000000 = 11001010 00000000 00000000 00000000
-	encoding := uint32(0xCA000000) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	encoding := ARM64_EOR_REG | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 
@@ -2346,7 +2346,7 @@ func (e *Encoder) encodeMvn(inst *Instruction) ([]byte, error) {
 	// ORN (shifted register) with Rn=XZR: sf 01 01010 shift 1 Rm imm6 11111 Rd
 	// 0xAA2003E0 = base with N=1 and Rn=31 (XZR)
 	rn := uint32(31) // XZR
-	encoding := uint32(0xAA200000) | (uint32(rm) << 16) | (rn << 5) | uint32(rd)
+	encoding := ARM64_ORN_REG | (uint32(rm) << 16) | (rn << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 
@@ -2377,7 +2377,7 @@ func (e *Encoder) encodeAnds(inst *Instruction) ([]byte, error) {
 
 	// ANDS (shifted register): sf 11 01010 shift N Rm imm6 Rn Rd
 	// 0xEA000000 = 11101010 00000000 00000000 00000000
-	encoding := uint32(0xEA000000) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	encoding := ARM64_ANDS_REG | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 
@@ -2402,7 +2402,7 @@ func (e *Encoder) encodeTst(inst *Instruction) ([]byte, error) {
 
 	// ANDS with Rd=XZR (31): sf 11 01010 shift N Rm imm6 Rn 11111
 	rd := uint32(31) // XZR
-	encoding := uint32(0xEA000000) | (uint32(rm) << 16) | (uint32(rn) << 5) | rd
+	encoding := ARM64_ANDS_REG | (uint32(rm) << 16) | (uint32(rn) << 5) | rd
 	return EncodeLittleEndian(encoding), nil
 }
 
@@ -2432,7 +2432,7 @@ func (e *Encoder) encodeBic(inst *Instruction) ([]byte, error) {
 
 	// BIC (shifted register): sf 00 01010 shift 1 Rm imm6 Rn Rd
 	// 0x8A200000 = AND with N=1 (inverted Rm)
-	encoding := uint32(0x8A200000) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	encoding := ARM64_BIC_REG | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 
@@ -2462,7 +2462,7 @@ func (e *Encoder) encodeOrn(inst *Instruction) ([]byte, error) {
 
 	// ORN (shifted register): sf 01 01010 shift 1 Rm imm6 Rn Rd
 	// 0xAA200000 = ORR with N=1 (inverted Rm)
-	encoding := uint32(0xAA200000) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	encoding := ARM64_ORN_REG | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 
@@ -2492,7 +2492,7 @@ func (e *Encoder) encodeEon(inst *Instruction) ([]byte, error) {
 
 	// EON (shifted register): sf 10 01010 shift 1 Rm imm6 Rn Rd
 	// 0xCA200000 = EOR with N=1 (inverted Rm)
-	encoding := uint32(0xCA200000) | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
+	encoding := ARM64_EON_REG | (uint32(rm) << 16) | (uint32(rn) << 5) | uint32(rd)
 	return EncodeLittleEndian(encoding), nil
 }
 

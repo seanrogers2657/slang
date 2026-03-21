@@ -89,7 +89,10 @@ func TestDataSize(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			size := dataSize(tt.data)
+			size, err := dataSize(tt.data)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			if size != tt.expectedSize {
 				t.Errorf("expected size %d, got %d", tt.expectedSize, size)
 			}

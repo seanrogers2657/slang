@@ -2894,3 +2894,1164 @@ func TestEncodeWithRelocations_ExternSymbol(t *testing.T) {
 		}
 	})
 }
+
+func TestEncodeMov(t *testing.T) {
+	tests := []struct {
+		name        string
+		operands    []*Operand
+		expectedHex string
+	}{
+		{
+			name: "mov x0, x1 (register to register)",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandRegister, Value: "x1"},
+			},
+			// ORR X0, XZR, X1: (1<<31)|(0b0101010<<24)|(1<<16)|(31<<5)|0 = 0xAA0103E0
+			expectedHex: "e00301aa",
+		},
+		{
+			name: "mov x5, x10 (higher registers)",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x5"},
+				{Type: OperandRegister, Value: "x10"},
+			},
+			// ORR X5, XZR, X10 = 0xAA0A03E5
+			expectedHex: "e5030aaa",
+		},
+		{
+			name: "mov x0, #42 (immediate)",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandImmediate, Value: "42"},
+			},
+			// MOVZ X0, #42: (1<<31)|(0b10100101<<23)|(42<<5) = 0xD2800540
+			expectedHex: "400580d2",
+		},
+		{
+			name: "mov sp, x0 (move to SP uses ADD)",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "sp"},
+				{Type: OperandRegister, Value: "x0"},
+			},
+			// ADD SP, X0, #0: (1<<31)|(0b0010001<<24)|(0<<5)|31 = 0x9100001F
+			expectedHex: "1f000091",
+		},
+		{
+			name: "mov x0, sp (move from SP uses ADD)",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandRegister, Value: "sp"},
+			},
+			// ADD X0, SP, #0: (1<<31)|(0b0010001<<24)|(31<<5)|0 = 0x910003E0
+			expectedHex: "e0030091",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable(), nil)
+			inst := &Instruction{
+				Mnemonic: "mov",
+				Operands: tt.operands,
+				Line:     1,
+				Column:   1,
+			}
+
+			result, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(result)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeMov_Errors(t *testing.T) {
+	encoder := NewEncoder(NewSymbolTable(), nil)
+
+	tests := []struct {
+		name     string
+		operands []*Operand
+	}{
+		{
+			name: "too few operands",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+			},
+		},
+		{
+			name: "too many operands",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandRegister, Value: "x1"},
+				{Type: OperandRegister, Value: "x2"},
+			},
+		},
+		{
+			name: "immediate too large",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandImmediate, Value: "70000"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := &Instruction{
+				Mnemonic: "mov",
+				Operands: tt.operands,
+				Line:     1,
+				Column:   1,
+			}
+			_, err := encoder.Encode(inst, 0)
+			if err == nil {
+				t.Error("Expected error, got nil")
+			}
+		})
+	}
+}
+
+func TestEncodeMovz(t *testing.T) {
+	tests := []struct {
+		name        string
+		operands    []*Operand
+		expectedHex string
+	}{
+		{
+			name: "movz x1, #0x1234",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x1"},
+				{Type: OperandImmediate, Value: "0x1234"},
+			},
+			// MOVZ: (1<<31)|(0b10100101<<23)|(0<<21)|(0x1234<<5)|1 = 0xD2824681
+			expectedHex: "814682d2",
+		},
+		{
+			name: "movz x2, #0x5678, lsl #16",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x2"},
+				{Type: OperandImmediate, Value: "0x5678"},
+				{Type: OperandShift, Value: "16", ShiftType: "lsl"},
+			},
+			// MOVZ: (1<<31)|(0b10100101<<23)|(1<<21)|(0x5678<<5)|2 = 0xD2AACF02
+			expectedHex: "02cfaad2",
+		},
+		{
+			name: "movz x0, #0, lsl #48",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandImmediate, Value: "0"},
+				{Type: OperandShift, Value: "48", ShiftType: "lsl"},
+			},
+			// hw=3: (1<<31)|(0b10100101<<23)|(3<<21)|(0<<5)|0 = 0xD2E00000
+			expectedHex: "0000e0d2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable(), nil)
+			inst := &Instruction{
+				Mnemonic: "movz",
+				Operands: tt.operands,
+				Line:     1,
+				Column:   1,
+			}
+
+			result, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(result)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeMovk(t *testing.T) {
+	tests := []struct {
+		name        string
+		operands    []*Operand
+		expectedHex string
+	}{
+		{
+			name: "movk x1, #0x5678",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x1"},
+				{Type: OperandImmediate, Value: "0x5678"},
+			},
+			// MOVK: (1<<31)|(0b11100101<<23)|(0<<21)|(0x5678<<5)|1 = 0xF28ACF01
+			expectedHex: "01cf8af2",
+		},
+		{
+			name: "movk x2, #0xABCD, lsl #32",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x2"},
+				{Type: OperandImmediate, Value: "0xABCD"},
+				{Type: OperandShift, Value: "32", ShiftType: "lsl"},
+			},
+			// MOVK: (1<<31)|(0b11100101<<23)|(2<<21)|(0xABCD<<5)|2 = 0xF2D579A2
+			expectedHex: "a279d5f2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable(), nil)
+			inst := &Instruction{
+				Mnemonic: "movk",
+				Operands: tt.operands,
+				Line:     1,
+				Column:   1,
+			}
+
+			result, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(result)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeAdds(t *testing.T) {
+	tests := []struct {
+		name        string
+		operands    []*Operand
+		expectedHex string
+	}{
+		{
+			name: "adds x2, x0, #5 (immediate)",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x2"},
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandImmediate, Value: "5"},
+			},
+			// ARM64_ADDS_IMM|(5<<10)|(0<<5)|2 = 0xB1001402
+			expectedHex: "021400b1",
+		},
+		{
+			name: "adds x2, x0, x1 (register)",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x2"},
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandRegister, Value: "x1"},
+			},
+			// ARM64_ADDS_REG|(1<<16)|(0<<5)|2 = 0xAB010002
+			expectedHex: "020001ab",
+		},
+		{
+			name: "adds x0, x0, #4095 (max imm12)",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandImmediate, Value: "4095"},
+			},
+			// ARM64_ADDS_IMM|(4095<<10)|(0<<5)|0 = 0xB13FFC00
+			expectedHex: "00fc3fb1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable(), nil)
+			inst := &Instruction{
+				Mnemonic: "adds",
+				Operands: tt.operands,
+				Line:     1,
+				Column:   1,
+			}
+
+			result, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(result)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeSubs(t *testing.T) {
+	tests := []struct {
+		name        string
+		operands    []*Operand
+		expectedHex string
+	}{
+		{
+			name: "subs x2, x0, #5 (immediate)",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x2"},
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandImmediate, Value: "5"},
+			},
+			// ARM64_SUBS_IMM|(5<<10)|(0<<5)|2 = 0xF1001402
+			expectedHex: "021400f1",
+		},
+		{
+			name: "subs x2, x0, x1 (register)",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x2"},
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandRegister, Value: "x1"},
+			},
+			// ARM64_SUBS_REG|(1<<16)|(0<<5)|2 = 0xEB010002
+			expectedHex: "020001eb",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable(), nil)
+			inst := &Instruction{
+				Mnemonic: "subs",
+				Operands: tt.operands,
+				Line:     1,
+				Column:   1,
+			}
+
+			result, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(result)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeSmulh(t *testing.T) {
+	encoder := NewEncoder(NewSymbolTable(), nil)
+
+	inst := &Instruction{
+		Mnemonic: "smulh",
+		Operands: []*Operand{
+			{Type: OperandRegister, Value: "x2"},
+			{Type: OperandRegister, Value: "x0"},
+			{Type: OperandRegister, Value: "x1"},
+		},
+	}
+
+	result, err := encoder.Encode(inst, 0)
+	if err != nil {
+		t.Fatalf("Failed to encode: %v", err)
+	}
+
+	// ARM64_SMULH|(1<<16)|(0<<5)|2 = 0x9B417C02
+	expected := "027c419b"
+	got := hex.EncodeToString(result)
+	if got != expected {
+		t.Errorf("Expected %s, got %s", expected, got)
+	}
+}
+
+func TestEncodeUmulh(t *testing.T) {
+	encoder := NewEncoder(NewSymbolTable(), nil)
+
+	inst := &Instruction{
+		Mnemonic: "umulh",
+		Operands: []*Operand{
+			{Type: OperandRegister, Value: "x2"},
+			{Type: OperandRegister, Value: "x0"},
+			{Type: OperandRegister, Value: "x1"},
+		},
+	}
+
+	result, err := encoder.Encode(inst, 0)
+	if err != nil {
+		t.Fatalf("Failed to encode: %v", err)
+	}
+
+	// ARM64_UMULH|(1<<16)|(0<<5)|2 = 0x9BC17C02
+	expected := "027cc19b"
+	got := hex.EncodeToString(result)
+	if got != expected {
+		t.Errorf("Expected %s, got %s", expected, got)
+	}
+}
+
+func TestEncodeLdrb(t *testing.T) {
+	tests := []struct {
+		name        string
+		rt          string
+		base        string
+		offset      string
+		expectedHex string
+	}{
+		{
+			name:        "ldrb w0, [x1]",
+			rt:          "w0",
+			base:        "x1",
+			offset:      "",
+			expectedHex: "20004039", // ARM64_LDRB_UOFF|(0)|(1<<5)|0 = 0x39400020
+		},
+		{
+			name:        "ldrb w0, [x1, #10]",
+			rt:          "w0",
+			base:        "x1",
+			offset:      "10",
+			expectedHex: "20284039", // ARM64_LDRB_UOFF|(10<<10)|(1<<5)|0 = 0x39402820
+		},
+		{
+			name:        "ldrb w2, [sp, #0]",
+			rt:          "w2",
+			base:        "sp",
+			offset:      "0",
+			expectedHex: "e2034039", // ARM64_LDRB_UOFF|(0)|(31<<5)|2 = 0x394003E2
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable(), nil)
+			inst := &Instruction{
+				Mnemonic: "ldrb",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: tt.rt},
+					{Type: OperandMemory, Base: tt.base, Offset: tt.offset},
+				},
+				Line:   1,
+				Column: 1,
+			}
+
+			result, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(result)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeLdrb_Errors(t *testing.T) {
+	encoder := NewEncoder(NewSymbolTable(), nil)
+
+	tests := []struct {
+		name     string
+		operands []*Operand
+	}{
+		{
+			name: "offset out of range (negative)",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "w0"},
+				{Type: OperandMemory, Base: "x1", Offset: "-1"},
+			},
+		},
+		{
+			name: "offset out of range (too large)",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "w0"},
+				{Type: OperandMemory, Base: "x1", Offset: "4096"},
+			},
+		},
+		{
+			name: "wrong operand count",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "w0"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := &Instruction{
+				Mnemonic: "ldrb",
+				Operands: tt.operands,
+				Line:     1,
+				Column:   1,
+			}
+			_, err := encoder.Encode(inst, 0)
+			if err == nil {
+				t.Error("Expected error, got nil")
+			}
+		})
+	}
+}
+
+func TestEncodeStrb(t *testing.T) {
+	tests := []struct {
+		name        string
+		rt          string
+		base        string
+		offset      string
+		expectedHex string
+	}{
+		{
+			name:        "strb w0, [x1]",
+			rt:          "w0",
+			base:        "x1",
+			offset:      "",
+			expectedHex: "20000039", // ARM64_STRB_UOFF|(0)|(1<<5)|0 = 0x39000020
+		},
+		{
+			name:        "strb w0, [x1, #5]",
+			rt:          "w0",
+			base:        "x1",
+			offset:      "5",
+			expectedHex: "20140039", // ARM64_STRB_UOFF|(5<<10)|(1<<5)|0 = 0x39001420
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable(), nil)
+			inst := &Instruction{
+				Mnemonic: "strb",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: tt.rt},
+					{Type: OperandMemory, Base: tt.base, Offset: tt.offset},
+				},
+				Line:   1,
+				Column: 1,
+			}
+
+			result, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(result)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeAdrp(t *testing.T) {
+	tests := []struct {
+		name        string
+		rd          string
+		label       string
+		labelAddr   uint64
+		instAddr    uint64
+		expectedHex string
+	}{
+		{
+			name:      "adrp x0, label (same page)",
+			rd:        "x0",
+			label:     "test",
+			labelAddr: 0x100,
+			instAddr:  0x0,
+			// targetPage=0, currentPage=0, pageOffset=0
+			// encoding: (1<<31)|(0<<29)|(0b10000<<24)|(0<<5)|0 = 0x90000000
+			expectedHex: "00000090",
+		},
+		{
+			name:      "adrp x0, label (next page)",
+			rd:        "x0",
+			label:     "test",
+			labelAddr: 0x2000,
+			instAddr:  0x0,
+			// targetPage=0x2000, currentPage=0, pageOffset=2
+			// immlo=0, immhi=0 (pageOffset 2: immlo=2&0x3=2, immhi=(2>>2)=0)
+			// encoding: (1<<31)|(2<<29)|(0b10000<<24)|(0<<5)|0 = 0xD0000000
+			expectedHex: "000000d0",
+		},
+		{
+			name:      "adrp x1, label (8 pages forward)",
+			rd:        "x1",
+			label:     "test",
+			labelAddr: 0x8000,
+			instAddr:  0x0,
+			// targetPage=0x8000, currentPage=0, pageOffset=8
+			// immlo=8&0x3=0, immhi=(8>>2)&0x7FFFF=2
+			// encoding: (1<<31)|(0<<29)|(0b10000<<24)|(2<<5)|1 = 0x90000041
+			expectedHex: "41000090",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			symbolTable := NewSymbolTable()
+			symbolTable.Define(tt.label, tt.labelAddr, SectionText, 1, 1)
+
+			encoder := NewEncoder(symbolTable, nil)
+			inst := &Instruction{
+				Mnemonic: "adrp",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: tt.rd},
+					{Type: OperandLabel, Value: tt.label + "@PAGE"},
+				},
+				Line:   1,
+				Column: 1,
+			}
+
+			result, err := encoder.Encode(inst, tt.instAddr)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(result)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeSvc(t *testing.T) {
+	tests := []struct {
+		name        string
+		operands    []*Operand
+		expectedHex string
+	}{
+		{
+			name:        "svc #0",
+			operands:    []*Operand{{Type: OperandImmediate, Value: "0"}},
+			expectedHex: "010000d4", // ARM64_SVC = 0xD4000001
+		},
+		{
+			name:        "svc #0x80",
+			operands:    []*Operand{{Type: OperandImmediate, Value: "0x80"}},
+			expectedHex: "011000d4", // ARM64_SVC|(0x80<<5) = 0xD4001001
+		},
+		{
+			name:        "svc with no operand (defaults to 0)",
+			operands:    []*Operand{},
+			expectedHex: "010000d4",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable(), nil)
+			inst := &Instruction{
+				Mnemonic: "svc",
+				Operands: tt.operands,
+				Line:     1,
+				Column:   1,
+			}
+
+			result, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(result)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeSvc_Errors(t *testing.T) {
+	encoder := NewEncoder(NewSymbolTable(), nil)
+
+	tests := []struct {
+		name     string
+		operands []*Operand
+	}{
+		{
+			name:     "immediate too large",
+			operands: []*Operand{{Type: OperandImmediate, Value: "70000"}},
+		},
+		{
+			name:     "non-immediate operand",
+			operands: []*Operand{{Type: OperandRegister, Value: "x0"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := &Instruction{
+				Mnemonic: "svc",
+				Operands: tt.operands,
+				Line:     1,
+				Column:   1,
+			}
+			_, err := encoder.Encode(inst, 0)
+			if err == nil {
+				t.Error("Expected error, got nil")
+			}
+		})
+	}
+}
+
+func TestEncodeErrors_General(t *testing.T) {
+	encoder := NewEncoder(NewSymbolTable(), nil)
+
+	tests := []struct {
+		name     string
+		mnemonic string
+		operands []*Operand
+	}{
+		{
+			name:     "unsupported instruction",
+			mnemonic: "xyzzy",
+			operands: []*Operand{},
+		},
+		{
+			name:     "add with too few operands",
+			mnemonic: "add",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+			},
+		},
+		{
+			name:     "mul with too few operands",
+			mnemonic: "mul",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandRegister, Value: "x1"},
+			},
+		},
+		{
+			name:     "sdiv with too few operands",
+			mnemonic: "sdiv",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+			},
+		},
+		{
+			name:     "adds immediate out of range",
+			mnemonic: "adds",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandRegister, Value: "x1"},
+				{Type: OperandImmediate, Value: "5000"},
+			},
+		},
+		{
+			name:     "sub immediate out of range",
+			mnemonic: "sub",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandRegister, Value: "x1"},
+				{Type: OperandImmediate, Value: "5000"},
+			},
+		},
+		{
+			name:     "subs immediate out of range",
+			mnemonic: "subs",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandRegister, Value: "x1"},
+				{Type: OperandImmediate, Value: "-1"},
+			},
+		},
+		{
+			name:     "smulh with wrong operand count",
+			mnemonic: "smulh",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandRegister, Value: "x1"},
+			},
+		},
+		{
+			name:     "umulh with wrong operand count",
+			mnemonic: "umulh",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+			},
+		},
+		{
+			name:     "movz immediate out of range",
+			mnemonic: "movz",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandImmediate, Value: "70000"},
+			},
+		},
+		{
+			name:     "movz invalid shift amount",
+			mnemonic: "movz",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandImmediate, Value: "1"},
+				{Type: OperandShift, Value: "8", ShiftType: "lsl"},
+			},
+		},
+		{
+			name:     "movk immediate out of range",
+			mnemonic: "movk",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandImmediate, Value: "70000"},
+			},
+		},
+		{
+			name:     "neg with wrong operand count",
+			mnemonic: "neg",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+			},
+		},
+		{
+			name:     "msub with wrong operand count",
+			mnemonic: "msub",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandRegister, Value: "x1"},
+				{Type: OperandRegister, Value: "x2"},
+			},
+		},
+		{
+			name:     "invalid register name",
+			mnemonic: "add",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandRegister, Value: "x1"},
+				{Type: OperandRegister, Value: "x99"},
+			},
+		},
+		{
+			name:     "strb offset out of range",
+			mnemonic: "strb",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "w0"},
+				{Type: OperandMemory, Base: "x1", Offset: "5000"},
+			},
+		},
+		{
+			name:     "ldrh non-memory operand",
+			mnemonic: "ldrh",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "w0"},
+				{Type: OperandRegister, Value: "x1"},
+			},
+		},
+		{
+			name:     "adr with undefined label",
+			mnemonic: "adr",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandLabel, Value: "nonexistent"},
+			},
+		},
+		{
+			name:     "adrp with undefined label",
+			mnemonic: "adrp",
+			operands: []*Operand{
+				{Type: OperandRegister, Value: "x0"},
+				{Type: OperandLabel, Value: "nonexistent@PAGE"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := &Instruction{
+				Mnemonic: tt.mnemonic,
+				Operands: tt.operands,
+				Line:     1,
+				Column:   1,
+			}
+			_, err := encoder.Encode(inst, 0)
+			if err == nil {
+				t.Errorf("Expected error for %s, got nil", tt.name)
+			}
+		})
+	}
+}
+
+func TestEncodeDataErrors(t *testing.T) {
+	encoder := NewEncoder(NewSymbolTable(), nil)
+
+	tests := []struct {
+		name     string
+		dataType string
+		value    string
+	}{
+		{
+			name:     "space with negative size",
+			dataType: "space",
+			value:    "-1",
+		},
+		{
+			name:     "space exceeds max size",
+			dataType: "space",
+			value:    "2000000",
+		},
+		{
+			name:     "zero with negative size",
+			dataType: "zero",
+			value:    "-5",
+		},
+		{
+			name:     "byte with invalid value",
+			dataType: "byte",
+			value:    "abc",
+		},
+		{
+			name:     "quad with invalid value",
+			dataType: "quad",
+			value:    "not_a_number",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := &DataDeclaration{
+				Type:  tt.dataType,
+				Value: tt.value,
+			}
+			_, _, err := encoder.EncodeDataWithRelocations(data, 0)
+			if err == nil {
+				t.Errorf("Expected error for %s, got nil", tt.name)
+			}
+		})
+	}
+}
+
+func TestEncodeAddImmediate(t *testing.T) {
+	tests := []struct {
+		name        string
+		rd          string
+		rn          string
+		imm         string
+		expectedHex string
+	}{
+		{
+			name:        "add x0, x0, #1",
+			rd:          "x0",
+			rn:          "x0",
+			imm:         "1",
+			expectedHex: "00040091", // (1<<31)|(0b0010001<<24)|(1<<10)|(0<<5)|0 = 0x91000400
+		},
+		{
+			name:        "add x1, x2, #4095",
+			rd:          "x1",
+			rn:          "x2",
+			imm:         "4095",
+			expectedHex: "41fc3f91", // (1<<31)|(0b0010001<<24)|(4095<<10)|(2<<5)|1 = 0x913FFC41
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoder := NewEncoder(NewSymbolTable(), nil)
+			inst := &Instruction{
+				Mnemonic: "add",
+				Operands: []*Operand{
+					{Type: OperandRegister, Value: tt.rd},
+					{Type: OperandRegister, Value: tt.rn},
+					{Type: OperandImmediate, Value: tt.imm},
+				},
+				Line:   1,
+				Column: 1,
+			}
+
+			result, err := encoder.Encode(inst, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+
+			got := hex.EncodeToString(result)
+			if got != tt.expectedHex {
+				t.Errorf("Expected %s, got %s", tt.expectedHex, got)
+			}
+		})
+	}
+}
+
+func TestEncodeResolveImmediateWithConstants(t *testing.T) {
+	constants := map[string]int64{
+		"STACK_SIZE": 256,
+		"MAX_COUNT":  100,
+	}
+	encoder := NewEncoder(NewSymbolTable(), constants)
+
+	// Test that constant names are resolved via ResolveImmediate (used by movz/movk)
+	inst := &Instruction{
+		Mnemonic: "movz",
+		Operands: []*Operand{
+			{Type: OperandRegister, Value: "x0"},
+			{Type: OperandImmediate, Value: "MAX_COUNT"},
+		},
+		Line:   1,
+		Column: 1,
+	}
+
+	result, err := encoder.Encode(inst, 0)
+	if err != nil {
+		t.Fatalf("Failed to encode: %v", err)
+	}
+
+	// movz x0, #100: (1<<31)|(0b10100101<<23)|(0<<21)|(100<<5)|0 = 0xD2800C80
+	expected := "800c80d2"
+	got := hex.EncodeToString(result)
+	if got != expected {
+		t.Errorf("Expected %s, got %s", expected, got)
+	}
+}
+
+func TestEncodeLdrRegisterOffset(t *testing.T) {
+	// Test LDR with register offset: ldr x0, [x1, x2]
+	encoder := NewEncoder(NewSymbolTable(), nil)
+
+	inst := &Instruction{
+		Mnemonic: "ldr",
+		Operands: []*Operand{
+			{Type: OperandRegister, Value: "x0"},
+			{Type: OperandMemory, Base: "x1", IndexReg: "x2"},
+		},
+		Line:   1,
+		Column: 1,
+	}
+
+	result, err := encoder.Encode(inst, 0)
+	if err != nil {
+		t.Fatalf("Failed to encode: %v", err)
+	}
+
+	// Should produce valid bytes (4 bytes for ARM64)
+	if len(result) != 4 {
+		t.Errorf("Expected 4 bytes, got %d", len(result))
+	}
+}
+
+func TestEncodeWithRelocations_NoRelocation(t *testing.T) {
+	// Test that non-branch instructions produce no relocation
+	st := NewSymbolTable()
+	encoder := NewEncoder(st, nil)
+
+	inst := &Instruction{
+		Mnemonic: "ret",
+		Operands: []*Operand{},
+		Line:     1,
+		Column:   1,
+	}
+
+	result, err := encoder.EncodeWithRelocations(inst, 0)
+	if err != nil {
+		t.Fatalf("EncodeWithRelocations failed: %v", err)
+	}
+
+	if result.Relocation != nil {
+		t.Errorf("Expected no relocation for ret, got %+v", result.Relocation)
+	}
+
+	expectedHex := "c0035fd6" // RET
+	if hex.EncodeToString(result.Bytes) != expectedHex {
+		t.Errorf("Expected %s, got %s", expectedHex, hex.EncodeToString(result.Bytes))
+	}
+}
+
+func TestEncodeMultipleDataValues(t *testing.T) {
+	encoder := NewEncoder(NewSymbolTable(), nil)
+
+	tests := []struct {
+		name     string
+		dataType string
+		value    string
+		expected int // expected byte count
+	}{
+		{
+			name:     "multiple bytes",
+			dataType: "byte",
+			value:    "1,2,3,4",
+			expected: 4,
+		},
+		{
+			name:     "multiple words",
+			dataType: "word",
+			value:    "100,200",
+			expected: 8, // 2 * 4 bytes
+		},
+		{
+			name:     "multiple quads",
+			dataType: "quad",
+			value:    "1000,2000,3000",
+			expected: 24, // 3 * 8 bytes
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := &DataDeclaration{
+				Type:  tt.dataType,
+				Value: tt.value,
+			}
+			result, _, err := encoder.EncodeDataWithRelocations(data, 0)
+			if err != nil {
+				t.Fatalf("Failed to encode: %v", err)
+			}
+			if len(result) != tt.expected {
+				t.Errorf("Expected %d bytes, got %d", tt.expected, len(result))
+			}
+		})
+	}
+}
+
+// Verify the ARM64 instruction constants match the expected base values
+func TestARM64Constants(t *testing.T) {
+	tests := []struct {
+		name     string
+		constant uint32
+		expected uint32
+	}{
+		{"ARM64_NOP", ARM64_NOP, 0xD503201F},
+		{"ARM64_RET", ARM64_RET, 0xD65F03C0},
+		{"ARM64_SVC", ARM64_SVC, 0xD4000001},
+		{"ARM64_B", ARM64_B, 0x14000000},
+		{"ARM64_BL", ARM64_BL, 0x94000000},
+		{"ARM64_BR", ARM64_BR, 0xD61F0000},
+		{"ARM64_CBZ_X", ARM64_CBZ_X, 0xB4000000},
+		{"ARM64_CBNZ_X", ARM64_CBNZ_X, 0xB5000000},
+		{"ARM64_ADDS_IMM", ARM64_ADDS_IMM, 0xB1000000},
+		{"ARM64_SUB_IMM", ARM64_SUB_IMM, 0xD1000000},
+		{"ARM64_SUBS_IMM", ARM64_SUBS_IMM, 0xF1000000},
+		{"ARM64_ADDS_REG", ARM64_ADDS_REG, 0xAB000000},
+		{"ARM64_SUBS_REG", ARM64_SUBS_REG, 0xEB000000},
+		{"ARM64_LDR_UOFF", ARM64_LDR_UOFF, 0xF9400000},
+		{"ARM64_STR_UOFF", ARM64_STR_UOFF, 0xF9000000},
+		{"ARM64_LDRB_UOFF", ARM64_LDRB_UOFF, 0x39400000},
+		{"ARM64_STRB_UOFF", ARM64_STRB_UOFF, 0x39000000},
+		{"ARM64_LDRH_UOFF", ARM64_LDRH_UOFF, 0x79400000},
+		{"ARM64_STRH_UOFF", ARM64_STRH_UOFF, 0x79000000},
+		{"ARM64_IMM26_MASK", ARM64_IMM26_MASK, 0x03FFFFFF},
+		{"ARM64_BRANCH_OP_MASK", ARM64_BRANCH_OP_MASK, 0xFC000000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.constant != tt.expected {
+				t.Errorf("%s: expected 0x%08X, got 0x%08X", tt.name, tt.expected, tt.constant)
+			}
+		})
+	}
+
+	// Verify masks are complements
+	if ARM64_IMM26_MASK|ARM64_BRANCH_OP_MASK != 0xFFFFFFFF {
+		t.Error("IMM26_MASK and BRANCH_OP_MASK should be complements")
+	}
+
+	// Verify NOP encodes to expected bytes
+	nopBytes := EncodeLittleEndian(ARM64_NOP)
+	expectedNop := []byte{0x1f, 0x20, 0x03, 0xd5}
+	if !bytes.Equal(nopBytes, expectedNop) {
+		t.Errorf("NOP bytes: expected %x, got %x", expectedNop, nopBytes)
+	}
+
+	// Verify RET encodes to expected bytes
+	retBytes := EncodeLittleEndian(ARM64_RET)
+	expectedRet := []byte{0xc0, 0x03, 0x5f, 0xd6}
+	if !bytes.Equal(retBytes, expectedRet) {
+		t.Errorf("RET bytes: expected %x, got %x", expectedRet, retBytes)
+	}
+}

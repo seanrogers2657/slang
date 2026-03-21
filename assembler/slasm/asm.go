@@ -125,7 +125,7 @@ func (a *NativeAssembler) Assemble(inputPath, outputPath string) error {
 							padding := alignmentPadding(relativeAddr, alignment)
 							if padding > 0 {
 								for i := uint64(0); i < padding/4; i++ {
-									codeBytes = append(codeBytes, 0x1f, 0x20, 0x03, 0xd5) // NOP
+									codeBytes = append(codeBytes, EncodeLittleEndian(ARM64_NOP)...) // NOP
 								}
 							}
 						}
@@ -437,7 +437,7 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 								a.Logger.Printf("  [0x%04x] .align %d -> %d NOP(s)\n",
 									textBase+relativeAddr, alignValue, nopCount)
 								for i := uint64(0); i < nopCount; i++ {
-									codeBytes = append(codeBytes, 0x1f, 0x20, 0x03, 0xd5) // NOP in little endian
+									codeBytes = append(codeBytes, EncodeLittleEndian(ARM64_NOP)...) // NOP
 								}
 							}
 						}

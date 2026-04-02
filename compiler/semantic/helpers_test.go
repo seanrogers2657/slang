@@ -473,6 +473,23 @@ func (at *analyzerTest) withStruct(name string, fields ...StructFieldInfo) *anal
 	return at
 }
 
+func arrayLiteral(elements ...ast.Expression) *ast.ArrayLiteralExpr {
+	return &ast.ArrayLiteralExpr{
+		LeftBracket:  pos(1, 1),
+		Elements:     elements,
+		RightBracket: pos(1, 10),
+	}
+}
+
+func indexExpr(array ast.Expression, index ast.Expression) *ast.IndexExpr {
+	return &ast.IndexExpr{
+		Array:        array,
+		LeftBracket:  pos(1, 5),
+		Index:        index,
+		RightBracket: pos(1, 7),
+	}
+}
+
 // programWithDecls creates a program with mixed declarations
 func programWithDecls(decls ...ast.Declaration) *ast.Program {
 	return &ast.Program{

@@ -531,7 +531,7 @@ main = () {
 Demonstrates stopping on first error.
 
 ```slang
-processAll = (items: Array<i64>) -> (i64, error) {
+processAll = (items: i64[]) -> (i64, error) {
     var sum = 0
     for item in items {
         val processed = processItem(item)!  // return on first error

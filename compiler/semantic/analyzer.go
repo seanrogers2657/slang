@@ -75,7 +75,8 @@ type Analyzer struct {
 	ownershipScope    *OwnershipScope         // tracks ownership state for move semantics
 	functions         map[string]FunctionInfo // function registry
 	TypeRegistry      *TypeRegistry           // centralized struct/class/object registry
-	currentReturnType Type                    // return type of current function being analyzed
+	currentReturnType  Type                    // return type of current function being analyzed
+	currentFunctionName string                 // name of current function being analyzed
 	loopDepth         int                     // tracks nested loop depth for break/continue validation
 	currentClass      *ClassType              // class being analyzed (for 'self' validation)
 }
@@ -644,6 +645,16 @@ func (a *Analyzer) resolveTypeNameCore(name string, pos ast.Position, reportErro
 		return NullableType{InnerType: innerType}
 	}
 
+	// Check for T[] array syntax (before pointer prefixes so *Point[] = array of *Point)
+	if strings.HasSuffix(name, "[]") {
+		elementTypeName := name[:len(name)-2] // extract T from T[]
+		elementType := a.resolveTypeNameCore(elementTypeName, pos, reportErrors)
+		if _, isErr := elementType.(ErrorType); isErr {
+			return TypeError
+		}
+		return ArrayType{ElementType: elementType, Size: ArraySizeUnknown}
+	}
+
 	// Check for symbol-based pointer syntax: *T, &&T, &T
 	// IMPORTANT: Check "&&" before "&" to avoid wrong prefix match
 
@@ -690,17 +701,6 @@ func (a *Analyzer) resolveTypeNameCore(name string, pos ast.Position, reportErro
 			return TypeError
 		}
 		return OwnedPointerType{ElementType: elementType}
-	}
-
-	// Check for Array<T> syntax
-	if strings.HasPrefix(name, "Array<") && strings.HasSuffix(name, ">") {
-		elementTypeName := name[6 : len(name)-1] // extract T from Array<T>
-		elementType := a.resolveTypeNameCore(elementTypeName, pos, reportErrors)
-		if _, isErr := elementType.(ErrorType); isErr {
-			return TypeError
-		}
-		// Return ArrayType with unknown size (will be inferred from literal)
-		return ArrayType{ElementType: elementType, Size: ArraySizeUnknown}
 	}
 
 	// Try primitive types first
@@ -997,9 +997,11 @@ func (a *Analyzer) analyzeFunctionDecl(fn *ast.FunctionDecl) TypedDeclaration {
 	// Get function info
 	fnInfo := a.functions[fn.Name]
 
-	// Set current return type for return statement checking
+	// Set current return type and function name for return statement checking
 	prevReturnType := a.currentReturnType
+	prevFunctionName := a.currentFunctionName
 	a.currentReturnType = fnInfo.ReturnType
+	a.currentFunctionName = fn.Name
 
 	// Enter a new scope for the function body
 	a.enterScope()
@@ -1041,8 +1043,9 @@ func (a *Analyzer) analyzeFunctionDecl(fn *ast.FunctionDecl) TypedDeclaration {
 	// Exit the function scope
 	a.exitScope()
 
-	// Restore previous return type
+	// Restore previous return type and function name
 	a.currentReturnType = prevReturnType
+	a.currentFunctionName = prevFunctionName
 
 	return &TypedFunctionDecl{
 		Name:       fn.Name,
@@ -1213,6 +1216,16 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 					// Check if initializer type is compatible with declared type
 					if !a.checkTypeCompatibility(declaredType, initType, typedInit, stmt.Initializer.Pos()) {
 						// Error already reported by checkTypeCompatibility
+					}
+				}
+				// Refine array type: if annotation has unknown size but
+				// initializer has concrete size, use the concrete size
+				if declArr, ok := declaredType.(ArrayType); ok && declArr.Size == ArraySizeUnknown {
+					if initArr, ok := initType.(ArrayType); ok && initArr.Size != ArraySizeUnknown {
+						declaredType = ArrayType{
+							ElementType: declArr.ElementType,
+							Size:        initArr.Size,
+						}
 					}
 				}
 			}
@@ -1409,6 +1422,11 @@ func (a *Analyzer) checkTypeCompatibilityCore(targetType, sourceType Type, typed
 // checkLiteralIndexBounds checks if a literal index is within array bounds at compile time.
 // If the index is not a literal, no check is performed (runtime check will handle it).
 func (a *Analyzer) checkLiteralIndexBounds(index TypedExpression, arraySize int, startPos, endPos ast.Position) {
+	// Skip bounds check when array size is unknown (from type annotation)
+	if arraySize == ArraySizeUnknown {
+		return
+	}
+
 	// Only check literal integer indices
 	lit, ok := index.(*TypedLiteralExpr)
 	if !ok || lit.LitType != ast.LiteralTypeInteger {
@@ -1875,6 +1893,25 @@ func (a *Analyzer) analyzeReturnStatement(stmt *ast.ReturnStmt) TypedStatement {
 			a.addError("void function should not return a value", stmt.Value.Pos(), stmt.Value.End())
 		} else {
 			a.checkReturnTypeCompatibility(a.currentReturnType, valueType, typedValue, stmt.Value.Pos())
+
+			// Refine array return type: if declared type has unknown size but
+			// the actual value has a known size, use the concrete size
+			if declArr, ok := a.currentReturnType.(ArrayType); ok && declArr.Size == ArraySizeUnknown {
+				if valArr, ok := valueType.(ArrayType); ok && valArr.Size != ArraySizeUnknown {
+					refined := ArrayType{
+						ElementType: declArr.ElementType,
+						Size:        valArr.Size,
+					}
+					a.currentReturnType = refined
+					// Update the function registry so callers get the concrete size
+					if a.currentFunctionName != "" {
+						if fnInfo, exists := a.functions[a.currentFunctionName]; exists {
+							fnInfo.ReturnType = refined
+							a.functions[a.currentFunctionName] = fnInfo
+						}
+					}
+				}
+			}
 		}
 
 		// Record move for return value if it's a move-only type

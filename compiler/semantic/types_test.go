@@ -134,7 +134,7 @@ func TestTypeString(t *testing.T) {
 func TestArrayType(t *testing.T) {
 	t.Run("string representation", func(t *testing.T) {
 		arrType := ArrayType{ElementType: TypeS64, Size: 5}
-		want := "Array<s64>"
+		want := "s64[]"
 		if got := arrType.String(); got != want {
 			t.Errorf("ArrayType.String() = %q, want %q", got, want)
 		}
@@ -142,7 +142,7 @@ func TestArrayType(t *testing.T) {
 
 	t.Run("unknown size representation", func(t *testing.T) {
 		arrType := ArrayType{ElementType: TypeS32, Size: ArraySizeUnknown}
-		want := "Array<s32>"
+		want := "s32[]"
 		if got := arrType.String(); got != want {
 			t.Errorf("ArrayType.String() = %q, want %q", got, want)
 		}

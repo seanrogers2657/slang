@@ -359,7 +359,7 @@ func (t ObjectType) GetMethod(name string) ([]*MethodInfo, bool) {
 }
 
 // ArraySizeUnknown indicates that an array's size is not yet known.
-// This is used when parsing type annotations like Array<i64> where the size
+// This is used when parsing type annotations like i64[] where the size
 // will be inferred from the literal. A value of -1 distinguishes "unknown"
 // from "zero elements" (which is an error for array literals).
 const ArraySizeUnknown = -1
@@ -371,7 +371,7 @@ type ArrayType struct {
 }
 
 func (t ArrayType) String() string {
-	return "Array<" + t.ElementType.String() + ">"
+	return t.ElementType.String() + "[]"
 }
 
 func (t ArrayType) Equals(other Type) bool {
@@ -379,7 +379,9 @@ func (t ArrayType) Equals(other Type) bool {
 	if !ok {
 		return false
 	}
-	return t.Size == o.Size && t.ElementType.Equals(o.ElementType)
+	// If either size is unknown (from type annotation), match on element type only
+	sizeMatch := t.Size == o.Size || t.Size == ArraySizeUnknown || o.Size == ArraySizeUnknown
+	return sizeMatch && t.ElementType.Equals(o.ElementType)
 }
 
 // ElementSize returns the byte size of each element based on the element type

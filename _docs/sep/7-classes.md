@@ -2599,7 +2599,7 @@ Classes work naturally with other Slang features:
 val points = [Point{ 0, 0 }, Point{ 1, 1 }]
 points[0].magnitude()                        // method on array element
 
-val heapPoints: Array<*Point> = [new Point{ 0, 0 }]
+val heapPoints: *Point[] = [new Point{ 0, 0 }]
 heapPoints[0].magnitude()                    // method on heap-allocated element
 ```
 

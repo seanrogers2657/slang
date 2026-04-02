@@ -512,7 +512,7 @@ func (p *parser) ParseVarDecl(mutable bool) ast.Statement {
 		colonPos = p.CurrentToken().Pos
 		p.advance() // consume ':'
 
-		// Parse type name (may include generic like Array<i64>)
+		// Parse type name (may include array suffix like i64[])
 		typeName, typePos = p.parseTypeName()
 		if typeName == "" {
 			return nil
@@ -1757,7 +1757,7 @@ func (p *parser) ParseFunctionDecl() *ast.FunctionDecl {
 		arrowPos = p.CurrentToken().Pos
 		p.advance() // consume '->'
 
-		// Parse return type (may include generics like Own<Point>, Array<i64>)
+		// Parse return type (may include generics like Own<Point> or arrays like i64[])
 		returnType, returnPos = p.parseTypeName()
 		if returnType == "" {
 			return nil
@@ -1851,7 +1851,7 @@ func (p *parser) parseParameter() *ast.Parameter {
 	colonPos := p.CurrentToken().Pos
 	p.advance() // consume ':'
 
-	// Parse type name (may include generic like Array<i64>, Own<T>, Ref<T>)
+	// Parse type name (may include arrays like i64[], generics like Own<T>, Ref<T>)
 	typeName, typePos := p.parseTypeName()
 	if typeName == "" {
 		return nil
@@ -1870,8 +1870,9 @@ func (p *parser) parseParameter() *ast.Parameter {
 
 // parseTypeName parses a type name, including:
 // - Symbol pointer types: *T, &T, &&T
-// - Generic types: Array<i64>, Own<Point>, Ref<Point>
-// - Nullable types: i64?, *Point?
+// - Generic types: Name<T> (for future use)
+// - Array types: i64[], *Point[]
+// - Nullable types: i64?, *Point?, i64[]?
 func (p *parser) parseTypeName() (string, ast.Position) {
 	typePos := p.CurrentToken().Pos
 
@@ -1911,11 +1912,11 @@ func (p *parser) parseTypeName() (string, ast.Position) {
 	typeName := p.CurrentToken().Value
 	p.advance() // consume type identifier
 
-	// Check for generic type: Name<T> (e.g., Array<i64>, Own<Point>, Ref<Point>)
+	// Check for generic type: Name<T> (e.g., Own<Point>, Ref<Point>)
 	if p.CurrentToken().Type == lexer.TokenTypeLessThan {
 		p.advance() // consume '<'
 
-		// Parse type argument (which may itself be nullable or generic, e.g., Own<Array<i64>>)
+		// Parse type argument (which may itself be nullable, generic, or array, e.g., Own<i64[]>)
 		typeArg, _ := p.parseTypeName()
 		if typeArg == "" {
 			return "", typePos
@@ -1929,6 +1930,17 @@ func (p *parser) parseTypeName() (string, ast.Position) {
 
 		// Encode as "Name<typeArg>" for the semantic analyzer
 		typeName = fmt.Sprintf("%s<%s>", typeName, typeArg)
+	}
+
+	// Check for array type suffix: T[]
+	if p.CurrentToken().Type == lexer.TokenTypeLBracket {
+		p.advance() // consume '['
+		if p.isAtEnd() || p.CurrentToken().Type != lexer.TokenTypeRBracket {
+			p.addError("expected ']' after '[' in array type", p.CurrentToken().Pos)
+			return "", typePos
+		}
+		p.advance() // consume ']'
+		typeName = typeName + "[]"
 	}
 
 	// Check for nullable type: T?
@@ -2100,7 +2112,7 @@ func (p *parser) parseStructField() *ast.StructField {
 	colonPos := p.CurrentToken().Pos
 	p.advance() // consume ':'
 
-	// Parse type name (may include nullable types like i64? or generics like Array<i64>)
+	// Parse type name (may include nullable types like i64? or arrays like i64[])
 	typeName, typePos := p.parseTypeName()
 	if typeName == "" {
 		return nil

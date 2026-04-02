@@ -45,7 +45,7 @@ The ownership model is simple:
 - **Assignment moves** - `val q = p` transfers ownership, making `p` invalid
 - **Function parameters borrow or take ownership** - `&T` borrows, `*T` takes ownership
 
-Slang already has nullable types (`T?`) and arrays (`Array<T>`). This SEP builds on those foundations - nullable pointers (`*T?`) provide a natural way to represent optional references (e.g., linked list terminators).
+Slang already has nullable types (`T?`) and arrays (`T[]`). This SEP builds on those foundations - nullable pointers (`*T?`) provide a natural way to represent optional references (e.g., linked list terminators).
 
 # Goals/Non-Goals
 
@@ -128,8 +128,8 @@ Borrowing happens automatically based on context - no explicit `.borrow()` metho
 
 Array indexing behavior depends on element type:
 
-- **Primitive elements** (`Array<i64>`, etc.): `arr[i]` returns a copy of the value
-- **Owned pointer elements** (`Array<*T>`): `arr[i]` returns `&T` or `&&T` (borrows the element)
+- **Primitive elements** (`i64[]`, etc.): `arr[i]` returns a copy of the value
+- **Owned pointer elements** (`*T[]`): `arr[i]` returns `&T` or `&&T` (borrows the element)
 - **Mutability**: Use explicit `&&T` parameter to get mutable access to elements
 
 ```slang
@@ -138,12 +138,12 @@ val nums = new [1, 2, 3]
 val x = nums[0]               // x: i64 (copy)
 
 // Owned pointer array - indexing borrows
-val points: *Array<*Point> = new [...]
+val points: **Point[] = new [...]
 val p = points[0]             // p: &Point (immutable borrow)
 // points[0] still owns the element
 
 // Mutable access to array elements
-mutateFirst = (arr: &&Array<*Point>) {
+mutateFirst = (arr: &&*Point[]) {
     val x = arr[0]            // x: &&Point (mutable borrow)
     x.x = 100                 // OK: can mutate through &&T
 }
@@ -222,7 +222,7 @@ deepAccess = (o: &&Outer) {
 // ✅ Valid pointer types
 val p: *Point = new Point{ 1, 2 }
 val q: *Point? = null
-val r: *Array<*Point> = new [...]
+val r: **Point[] = new [...]
 
 // ❌ Invalid: T? inside *
 val bad: *Point? = ...             // Error: *T requires non-nullable T
@@ -917,7 +917,7 @@ main = () {
 }
 
 // ✅ OK: pass &T as parameter instead of capturing
-forEach = (arr: &Array<i64>, f: (i64) -> void) {
+forEach = (arr: &i64[], f: (i64) -> void) {
     for (var i = 0; i < len(arr); i = i + 1) {
         f(arr[i])
     }
@@ -933,7 +933,7 @@ Type parameters can only be instantiated with `&T` if used exclusively in functi
 ```slang
 // ✅ OK: *T as type argument for fields
 List = struct<T> {
-    var items: Array<T>
+    var items: T[]
 }
 
 main = () {
@@ -1095,7 +1095,7 @@ main = () {
 
 // For pointer elements: x borrows each element
 main = () {
-    val points: *Array<*Point> = new [
+    val points: **Point[] = new [
         new Point{ 1, 2 },
         new Point{ 3, 4 }
     ]
@@ -1110,7 +1110,7 @@ main = () {
 }
 
 // Mutable iteration: use &&T to get mutable access
-mutateAll = (points: &&Array<*Point>) {
+mutateAll = (points: &&*Point[]) {
     // x is &&Point when iterating through &&T
     for x in points {
         x.x = x.x * 2                  // OK: can mutate through &&T
@@ -1225,11 +1225,11 @@ main = () {
 
 ## Rule: Array of Nullable Pointers
 
-For `Array<*T?>`, indexing returns `&T?` (nullable borrow).
+For `*T?[]`, indexing returns `&T?` (nullable borrow).
 
 ```slang
 main = () {
-    val arr: *Array<*Point?> = new [
+    val arr: **Point?[] = new [
         new Point{ 1, 2 },
         null,
         new Point{ 3, 4 }
@@ -1251,7 +1251,7 @@ Array literals containing both `*T` and `null` infer element type `*T?`.
 
 ```slang
 main = () {
-    // Inferred as Array<*Point?>
+    // Inferred as *Point?[]
     val arr = [
         new Point{ 1, 2 },
         null,
@@ -1259,7 +1259,7 @@ main = () {
     ]
 
     // Explicit type annotation works too
-    val arr2: Array<*Point?> = [new Point{ 5, 6 }, null]
+    val arr2: *Point?[] = [new Point{ 5, 6 }, null]
 }
 ```
 
@@ -1376,13 +1376,13 @@ Node = struct {
 
 // ❌ Tree with parent pointer
 TreeNode = struct {
-    var children: Array<*TreeNode>
+    var children: *TreeNode[]
     var parent: *TreeNode? // Error: parent owns child, child can't own parent
 }
 
 // ❌ Graph with cycles
 GraphNode = struct {
-    var neighbors: Array<*GraphNode>   // Error: cycles = multiple owners
+    var neighbors: *GraphNode[]   // Error: cycles = multiple owners
 }
 ```
 
@@ -1399,7 +1399,7 @@ DLLNode = struct {
 }
 
 DoublyLinkedList = struct {
-    var nodes: *Array<DLLNode>
+    var nodes: *DLLNode[]
     var head: i64
     var tail: i64
 }
@@ -1455,7 +1455,7 @@ Pass parent/context as a parameter during traversal rather than storing it.
 ```slang
 TreeNode = struct {
     val value: i64
-    var children: Array<*TreeNode>
+    var children: *TreeNode[]
     // No parent field - passed during traversal
 }
 
@@ -1515,8 +1515,8 @@ For graphs, separate nodes from edges. Store edges as (from, to) pairs.
 
 ```slang
 Graph = struct {
-    var nodes: Array<NodeData>
-    var edges: Array<Edge>
+    var nodes: NodeData[]
+    var edges: Edge[]
 }
 
 NodeData = struct {
@@ -1531,8 +1531,8 @@ Edge = struct {
 }
 
 // Get all neighbors of a node
-neighbors = (g: &Graph, nodeIdx: i64) -> Array<i64> {
-    var result: Array<i64> = []
+neighbors = (g: &Graph, nodeIdx: i64) -> i64[] {
+    var result: i64[] = []
     for (var i = 0; i < len(g.edges); i = i + 1) {
         if (g.edges[i].from == nodeIdx) {
             result = append(result, g.edges[i].to)
@@ -1543,8 +1543,8 @@ neighbors = (g: &Graph, nodeIdx: i64) -> Array<i64> {
 
 // BFS traversal
 bfs = (g: &Graph, start: i64) {
-    var visited: Array<bool> = [false; len(g.nodes)]
-    var queue: Array<i64> = [start]
+    var visited: bool[] = [false; len(g.nodes)]
+    var queue: i64[] = [start]
 
     while (len(queue) > 0) {
         val current = queue[0]
@@ -1595,9 +1595,9 @@ For graphs built incrementally, use mutable arrays with index-based references.
 
 ```slang
 Graph = struct {
-    var nodes: Array<NodeData>         // growable
-    var edges: Array<Edge>             // growable
-    var freeList: Array<i64>           // indices of deleted nodes for reuse
+    var nodes: NodeData[]         // growable
+    var edges: Edge[]             // growable
+    var freeList: i64[]           // indices of deleted nodes for reuse
 }
 
 NodeData = struct {
@@ -1689,8 +1689,8 @@ hasEdge = (g: &Graph, from: i64, to: i64) -> bool {
 }
 
 // Get all outgoing neighbors (skips deleted)
-outNeighbors = (g: &Graph, nodeIdx: i64) -> Array<i64> {
-    var result: Array<i64> = []
+outNeighbors = (g: &Graph, nodeIdx: i64) -> i64[] {
+    var result: i64[] = []
     for (var i = 0; i < len(g.edges); i = i + 1) {
         if (g.edges[i].from == nodeIdx && !g.edges[i].deleted) {
             val neighbor = g.edges[i].to
@@ -1783,7 +1783,7 @@ Use owned pointers for the primary structure, indices for secondary references.
 TreeNode = struct {
     val id: i64
     val value: i64
-    var children: Array<*TreeNode>
+    var children: *TreeNode[]
 }
 
 Tree = struct {
@@ -1831,7 +1831,7 @@ Point = class {
     }
 
     // Takes ownership - self is consumed
-    intoArray = (self: *Point) -> Array<i64> {
+    intoArray = (self: *Point) -> i64[] {
         [self.x, self.y]
     }   // self freed here
 }
@@ -1892,7 +1892,7 @@ Point = class {
     var y: i64
 
     // Consuming method - self is moved in
-    intoArray = (self: *Point) -> *Array<i64> {
+    intoArray = (self: *Point) -> *i64[] {
         new [self.x, self.y]
     }   // self freed here
 }
@@ -2150,7 +2150,7 @@ This SEP introduces several new built-in types (`*T`, `&T`, `Heap`) and built-in
 
 Slang currently has the following built-in types:
 - **Primitives:** `i64`, `bool`, `string`, `void`
-- **Compound:** `Array<T>`, `T?` (nullable)
+- **Compound:** `T[]`, `T?` (nullable)
 - **Functions:** Function types like `(i64, i64) -> i64`
 
 These are currently hardcoded in the type system with special-case handling throughout the compiler.
@@ -2574,11 +2574,11 @@ foo(p, p)                                 // Error: 'p' moved in first argument
 | Expression | Type of `p` | Result Type | Notes |
 |------------|-------------|-------------|-------|
 | `p.x` | `*Struct` or `&Struct` | field type | Auto-deref |
-| `p[i]` | `*Array<T>` where T is primitive | `T` | Copy of element |
-| `p[i]` | `*Array<*T>` | `&T` | Borrows element |
+| `p[i]` | `*T[]` where T is primitive | `T` | Copy of element |
+| `p[i]` | `**T[]` | `&T` | Borrows element |
 | `p.field` | where field is `*T` | `&T` | Auto-borrow through ref |
 | `p?.x` | `*Struct?` | field type? | Safe navigation |
-| `p?[i]` | `*Array<T>?` | `T?` | Safe navigation |
+| `p?[i]` | `*T[]?` | `T?` | Safe navigation |
 | `p == null` | `*T?` | `bool` | Null check |
 | `p == q` | `*T` | `bool` | Identity (address) comparison |
 
@@ -2607,7 +2607,7 @@ The final syntax uses symbols for pointer types:
 | Mutable borrow | `&&T` | Can mutate `var` fields |
 
 **Why symbols over generics?**
-- **Conciseness**: `*Array<*Point>` vs `Own<Array<Own<Point>>>`
+- **Conciseness**: `**Point[]` vs `Own<Array<Own<Point>>>`
 - **Familiarity**: `*` and `&` are well-known from C/Rust
 - **No keyword mixing**: `&&T` is cleaner than `&var T`
 - **Visual hierarchy**: `&` < `&&` suggests "more ampersands = more access"
@@ -2802,7 +2802,7 @@ main = () {
     print(h.x)                            // prints: 10 (via heap pointer)
 
     // Useful for storing in data structures
-    val points: Array<*Point> = [
+    val points: *Point[] = [
         new Point{ 1, 2 },
         new Point{ 3, 4 }
     ]
@@ -3212,7 +3212,7 @@ main = () {
     print(x + y)                           // prints: 20
 
     // Owned pointer array - indexing borrows
-    val points: *Array<*Point> = new [
+    val points: **Point[] = new [
         new Point{ 1, 2 },
         new Point{ 3, 4 },
         new Point{ 5, 6 }

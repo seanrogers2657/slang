@@ -3200,3 +3200,184 @@ func TestFunctionLevelOwnership(t *testing.T) {
 		}
 	})
 }
+
+// ============================================================================
+// Array Tests
+// ============================================================================
+
+func TestAnalyzeArrayLiteral(t *testing.T) {
+	t.Run("integer array literal infers type", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeExpression(arrayLiteral(intLit("1"), intLit("2"), intLit("3")))
+		arrType, ok := result.GetType().(ArrayType)
+		if !ok {
+			t.Fatalf("expected ArrayType, got %T", result.GetType())
+		}
+		if !arrType.ElementType.Equals(TypeS64) {
+			t.Errorf("expected element type s64, got %s", arrType.ElementType)
+		}
+		if arrType.Size != 3 {
+			t.Errorf("expected size 3, got %d", arrType.Size)
+		}
+		test.expectNoErrors()
+	})
+
+	t.Run("boolean array literal infers type", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeExpression(arrayLiteral(boolLit("true"), boolLit("false")))
+		arrType, ok := result.GetType().(ArrayType)
+		if !ok {
+			t.Fatalf("expected ArrayType, got %T", result.GetType())
+		}
+		if !arrType.ElementType.Equals(TypeBoolean) {
+			t.Errorf("expected element type bool, got %s", arrType.ElementType)
+		}
+		if arrType.Size != 2 {
+			t.Errorf("expected size 2, got %d", arrType.Size)
+		}
+		test.expectNoErrors()
+	})
+
+	t.Run("string array literal infers type", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeExpression(arrayLiteral(strLit("hello"), strLit("world")))
+		arrType, ok := result.GetType().(ArrayType)
+		if !ok {
+			t.Fatalf("expected ArrayType, got %T", result.GetType())
+		}
+		if !arrType.ElementType.Equals(TypeString) {
+			t.Errorf("expected element type string, got %s", arrType.ElementType)
+		}
+		test.expectNoErrors()
+	})
+
+	t.Run("single element array", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeExpression(arrayLiteral(intLit("42")))
+		arrType, ok := result.GetType().(ArrayType)
+		if !ok {
+			t.Fatalf("expected ArrayType, got %T", result.GetType())
+		}
+		if arrType.Size != 1 {
+			t.Errorf("expected size 1, got %d", arrType.Size)
+		}
+		test.expectNoErrors()
+	})
+
+	t.Run("mixed type array is error", func(t *testing.T) {
+		test := newTest(t)
+		test.analyzer.analyzeExpression(arrayLiteral(intLit("1"), boolLit("true")))
+		test.expectErrorContaining("array element type mismatch")
+	})
+
+	t.Run("empty array is error", func(t *testing.T) {
+		test := newTest(t)
+		test.analyzer.analyzeExpression(arrayLiteral())
+		test.expectErrorContaining("empty array")
+	})
+}
+
+func TestAnalyzeArrayIndex(t *testing.T) {
+	t.Run("index access returns element type", func(t *testing.T) {
+		test := newTest(t).withScope()
+		arrType := ArrayType{ElementType: TypeS64, Size: 3}
+		test.declare("arr", arrType, false)
+		result := test.analyzer.analyzeExpression(indexExpr(ident("arr"), intLit("0")))
+		if !result.GetType().Equals(TypeS64) {
+			t.Errorf("expected s64, got %s", result.GetType())
+		}
+		test.expectNoErrors()
+	})
+
+	t.Run("index with non-integer is error", func(t *testing.T) {
+		test := newTest(t).withScope()
+		arrType := ArrayType{ElementType: TypeS64, Size: 3}
+		test.declare("arr", arrType, false)
+		test.analyzer.analyzeExpression(indexExpr(ident("arr"), boolLit("true")))
+		test.expectErrorContaining("array index must be integer")
+	})
+
+	t.Run("index on non-array is error", func(t *testing.T) {
+		test := newTest(t).withScope()
+		test.declare("x", TypeS64, false)
+		test.analyzer.analyzeExpression(indexExpr(ident("x"), intLit("0")))
+		test.expectErrorContaining("cannot index non-array type")
+	})
+
+	t.Run("constant out of bounds is error", func(t *testing.T) {
+		test := newTest(t).withScope()
+		arrType := ArrayType{ElementType: TypeS64, Size: 3}
+		test.declare("arr", arrType, false)
+		test.analyzer.analyzeExpression(indexExpr(ident("arr"), intLit("5")))
+		test.expectErrorContaining("out of bounds")
+	})
+
+	// Negative index bounds checking is covered by E2E test: array_negative_index.sl
+}
+
+func TestAnalyzeArrayTypeAnnotation(t *testing.T) {
+	t.Run("s64[] resolves to array type", func(t *testing.T) {
+		test := newTest(t)
+		resolved := test.analyzer.resolveTypeName("s64[]", pos(1, 1))
+		arrType, ok := resolved.(ArrayType)
+		if !ok {
+			t.Fatalf("expected ArrayType, got %T", resolved)
+		}
+		if !arrType.ElementType.Equals(TypeS64) {
+			t.Errorf("expected element type s64, got %s", arrType.ElementType)
+		}
+	})
+
+	t.Run("bool[] resolves to array type", func(t *testing.T) {
+		test := newTest(t)
+		resolved := test.analyzer.resolveTypeName("bool[]", pos(1, 1))
+		arrType, ok := resolved.(ArrayType)
+		if !ok {
+			t.Fatalf("expected ArrayType, got %T", resolved)
+		}
+		if !arrType.ElementType.Equals(TypeBoolean) {
+			t.Errorf("expected element type bool, got %s", arrType.ElementType)
+		}
+	})
+
+	t.Run("*Point[] resolves to array of owned pointer", func(t *testing.T) {
+		test := newTest(t).withStruct("Point",
+			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
+		)
+		resolved := test.analyzer.resolveTypeName("*Point[]", pos(1, 1))
+		arrType, ok := resolved.(ArrayType)
+		if !ok {
+			t.Fatalf("expected ArrayType, got %T", resolved)
+		}
+		ownType, ok := arrType.ElementType.(OwnedPointerType)
+		if !ok {
+			t.Fatalf("expected OwnedPointerType element, got %T", arrType.ElementType)
+		}
+		if ownType.ElementType.String() != "Point" {
+			t.Errorf("expected Point, got %s", ownType.ElementType)
+		}
+	})
+
+	t.Run("s64[]? resolves to nullable array", func(t *testing.T) {
+		test := newTest(t)
+		resolved := test.analyzer.resolveTypeName("s64[]?", pos(1, 1))
+		nullType, ok := resolved.(NullableType)
+		if !ok {
+			t.Fatalf("expected NullableType, got %T", resolved)
+		}
+		arrType, ok := nullType.InnerType.(ArrayType)
+		if !ok {
+			t.Fatalf("expected ArrayType inner, got %T", nullType.InnerType)
+		}
+		if !arrType.ElementType.Equals(TypeS64) {
+			t.Errorf("expected element type s64, got %s", arrType.ElementType)
+		}
+	})
+
+	t.Run("string representation uses [] suffix", func(t *testing.T) {
+		arrType := ArrayType{ElementType: TypeS64, Size: 3}
+		if arrType.String() != "s64[]" {
+			t.Errorf("expected s64[], got %s", arrType.String())
+		}
+	})
+}

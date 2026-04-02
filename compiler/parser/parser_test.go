@@ -1254,10 +1254,10 @@ func TestParserOptionalReturnType(t *testing.T) {
 			expectedBody:       0,
 		},
 		{
-			name:               "function with explicit i64 return type",
-			source:             "add = () -> i64 {\n    return 42\n}",
+			name:               "function with explicit s64 return type",
+			source:             "add = () -> s64 {\n    return 42\n}",
 			expectedName:       "add",
-			expectedReturnType: "i64",
+			expectedReturnType: "s64",
 			expectedBody:       1,
 		},
 		{
@@ -1275,10 +1275,10 @@ func TestParserOptionalReturnType(t *testing.T) {
 			expectedBody:       1,
 		},
 		{
-			name:               "function with generic return type Array<i64>",
-			source:             "getArray = () -> Array<i64> {\n    return [1, 2, 3]\n}",
+			name:               "function with array return type s64[]",
+			source:             "getArray = () -> s64[] {\n    return [1, 2, 3]\n}",
 			expectedName:       "getArray",
-			expectedReturnType: "Array<i64>",
+			expectedReturnType: "s64[]",
 			expectedBody:       1,
 		},
 		{
@@ -2270,7 +2270,7 @@ func TestParserWhenExpression(t *testing.T) {
 		},
 		{
 			name: "when as expression in return",
-			source: `foo = () -> i64 {
+			source: `foo = () -> s64 {
     return when {
         true -> 42
         else -> 0
@@ -2563,9 +2563,9 @@ func TestParserNullableType(t *testing.T) {
 		expectedType string
 	}{
 		{
-			name:         "nullable i64",
-			source:       "main = () { val x: i64? = null }",
-			expectedType: "i64?",
+			name:         "nullable s64",
+			source:       "main = () { val x: s64? = null }",
+			expectedType: "s64?",
 		},
 		{
 			name:         "nullable bool",
@@ -2773,7 +2773,7 @@ func TestParserSafeCall(t *testing.T) {
 }
 
 func TestParserNestedNullableError(t *testing.T) {
-	source := `main = () { val x: i64?? = null }`
+	source := `main = () { val x: s64?? = null }`
 	l := lexer.NewLexer([]byte(source))
 	l.Parse()
 
@@ -2820,14 +2820,14 @@ func TestParserGenericTypes(t *testing.T) {
 			expectedType: "Own<Point>?",
 		},
 		{
-			name:         "nested generic Own<Array<i64>>",
-			source:       "main = () { val p: Own<Array<i64>> = null }",
-			expectedType: "Own<Array<i64>>",
+			name:         "nested generic Own<s64[]>",
+			source:       "main = () { val p: Own<s64[]> = null }",
+			expectedType: "Own<s64[]>",
 		},
 		{
 			name:         "Own with nullable inner type",
-			source:       "main = () { val p: Own<i64?> = null }",
-			expectedType: "Own<i64?>",
+			source:       "main = () { val p: Own<s64?> = null }",
+			expectedType: "Own<s64?>",
 		},
 		{
 			name:         "Ref<Point>? nullable ref",
@@ -2873,6 +2873,117 @@ func TestParserGenericTypes(t *testing.T) {
 	}
 }
 
+func TestParserArrayTypeSyntax(t *testing.T) {
+	tests := []struct {
+		name         string
+		source       string
+		expectedType string
+	}{
+		{
+			name:         "s64[] array type",
+			source:       "main = () { val arr: s64[] = [1, 2, 3] }",
+			expectedType: "s64[]",
+		},
+		{
+			name:         "bool[] array type",
+			source:       "main = () { val flags: bool[] = [true, false] }",
+			expectedType: "bool[]",
+		},
+		{
+			name:         "*Point[] array of pointers",
+			source:       "main = () { val pts: *Point[] = null }",
+			expectedType: "*Point[]",
+		},
+		{
+			name:         "s64[]? nullable array",
+			source:       "main = () { val arr: s64[]? = null }",
+			expectedType: "s64[]?",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("unexpected parser errors: %v", p.Errors)
+			}
+
+			funcDecl, ok := program.Declarations[0].(*ast.FunctionDecl)
+			if !ok {
+				t.Fatal("expected FunctionDecl")
+			}
+
+			varDecl, ok := funcDecl.Body.Statements[0].(*ast.VarDeclStmt)
+			if !ok {
+				t.Fatal("expected VarDeclStmt")
+			}
+
+			if varDecl.TypeName != tt.expectedType {
+				t.Errorf("expected type %q, got %q", tt.expectedType, varDecl.TypeName)
+			}
+		})
+	}
+}
+
+func TestParserArrayLiteral(t *testing.T) {
+	source := "main = () { [1, 2, 3] }"
+	l := lexer.NewLexer([]byte(source))
+	l.Parse()
+
+	p := NewParser(l.Tokens)
+	program := p.Parse()
+
+	if len(p.Errors) > 0 {
+		t.Fatalf("unexpected parser errors: %v", p.Errors)
+	}
+
+	funcDecl := program.Declarations[0].(*ast.FunctionDecl)
+	exprStmt := funcDecl.Body.Statements[0].(*ast.ExprStmt)
+
+	arrLit, ok := exprStmt.Expr.(*ast.ArrayLiteralExpr)
+	if !ok {
+		t.Fatalf("expected ArrayLiteralExpr, got %T", exprStmt.Expr)
+	}
+
+	if len(arrLit.Elements) != 3 {
+		t.Errorf("expected 3 elements, got %d", len(arrLit.Elements))
+	}
+}
+
+func TestParserIndexExpr(t *testing.T) {
+	source := "main = () { arr[0] }"
+	l := lexer.NewLexer([]byte(source))
+	l.Parse()
+
+	p := NewParser(l.Tokens)
+	program := p.Parse()
+
+	if len(p.Errors) > 0 {
+		t.Fatalf("unexpected parser errors: %v", p.Errors)
+	}
+
+	funcDecl := program.Declarations[0].(*ast.FunctionDecl)
+	exprStmt := funcDecl.Body.Statements[0].(*ast.ExprStmt)
+
+	indexExpr, ok := exprStmt.Expr.(*ast.IndexExpr)
+	if !ok {
+		t.Fatalf("expected IndexExpr, got %T", exprStmt.Expr)
+	}
+
+	ident, ok := indexExpr.Array.(*ast.IdentifierExpr)
+	if !ok {
+		t.Fatalf("expected IdentifierExpr for array, got %T", indexExpr.Array)
+	}
+	if ident.Name != "arr" {
+		t.Errorf("expected array name 'arr', got %q", ident.Name)
+	}
+}
+
 func TestParserVarParameter(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -2891,7 +3002,7 @@ func TestParserVarParameter(t *testing.T) {
 		},
 		{
 			name:            "mixed mutable and immutable",
-			source:          "foo = (a: i64, var b: Ref<Point>, c: bool) { }",
+			source:          "foo = (a: s64, var b: Ref<Point>, c: bool) { }",
 			expectedMutable: []bool{false, true, false},
 		},
 	}
@@ -3058,7 +3169,7 @@ func TestParserClassDecl(t *testing.T) {
 		{
 			name: "class with one field",
 			source: `Point = class {
-				val x: i64
+				val x: s64
 			}`,
 			expectedName:    "Point",
 			expectedFields:  1,
@@ -3067,8 +3178,8 @@ func TestParserClassDecl(t *testing.T) {
 		{
 			name: "class with multiple fields",
 			source: `Point = class {
-				val x: i64
-				var y: i64
+				val x: s64
+				var y: s64
 			}`,
 			expectedName:    "Point",
 			expectedFields:  2,
@@ -3077,7 +3188,7 @@ func TestParserClassDecl(t *testing.T) {
 		{
 			name: "class with one method",
 			source: `Counter = class {
-				getCount = (self: &Counter) -> i64 {
+				getCount = (self: &Counter) -> s64 {
 					self.count
 				}
 			}`,
@@ -3088,11 +3199,11 @@ func TestParserClassDecl(t *testing.T) {
 		{
 			name: "class with fields and methods",
 			source: `Counter = class {
-				var count: i64
+				var count: s64
 				increment = (self: &&Counter) {
 					self.count = self.count + 1
 				}
-				getCount = (self: &Counter) -> i64 {
+				getCount = (self: &Counter) -> s64 {
 					self.count
 				}
 			}`,
@@ -3103,8 +3214,8 @@ func TestParserClassDecl(t *testing.T) {
 		{
 			name: "class with static method",
 			source: `Point = class {
-				val x: i64
-				val y: i64
+				val x: s64
+				val y: s64
 				origin = () -> Point {
 					Point{ 0, 0 }
 				}
@@ -3167,7 +3278,7 @@ func TestParserObjectDecl(t *testing.T) {
 		{
 			name: "object with one method",
 			source: `Math = object {
-				max = (a: i64, b: i64) -> i64 {
+				max = (a: s64, b: s64) -> s64 {
 					if a > b { a } else { b }
 				}
 			}`,
@@ -3177,10 +3288,10 @@ func TestParserObjectDecl(t *testing.T) {
 		{
 			name: "object with multiple methods",
 			source: `Math = object {
-				max = (a: i64, b: i64) -> i64 {
+				max = (a: s64, b: s64) -> s64 {
 					if a > b { a } else { b }
 				}
-				min = (a: i64, b: i64) -> i64 {
+				min = (a: s64, b: s64) -> s64 {
 					if a < b { a } else { b }
 				}
 			}`,
@@ -3223,8 +3334,8 @@ func TestParserObjectDecl(t *testing.T) {
 
 func TestParserSelfExpr(t *testing.T) {
 	source := `Counter = class {
-		var count: i64
-		getCount = (self: &Counter) -> i64 {
+		var count: s64
+		getCount = (self: &Counter) -> s64 {
 			self.count
 		}
 	}`
@@ -3306,7 +3417,7 @@ func TestParserClassMethodIsInstance(t *testing.T) {
 		{
 			name: "instance method with self",
 			source: `Point = class {
-				getX = (self: &Point) -> i64 { 0 }
+				getX = (self: &Point) -> s64 { 0 }
 			}`,
 			expectedInstance: true,
 		},
@@ -3343,7 +3454,7 @@ func TestParserClassMethodIsInstance(t *testing.T) {
 
 func TestParserObjectFieldError(t *testing.T) {
 	source := `Math = object {
-		val x: i64
+		val x: s64
 	}`
 
 	l := lexer.NewLexer([]byte(source))

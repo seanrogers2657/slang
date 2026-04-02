@@ -744,13 +744,13 @@ Sprite = class implements Drawable, Movable {
     }
 }
 
-drawAll = (items: Array<Drawable>) {
+drawAll = (items: Drawable[]) {
     for item in items {
         item.draw()
     }
 }
 
-moveAll = (items: Array<Movable>, dx: i64, dy: i64) {
+moveAll = (items: Movable[], dx: i64, dy: i64) {
     for item in items {
         item.move(dx, dy)
     }
@@ -832,7 +832,7 @@ Collection = interface {
 }
 
 IntList = class implements Collection {
-    val items: Array<i64>
+    val items: i64[]
 
     size = () -> i64 {
         len(self.items)
@@ -853,7 +853,7 @@ IntList = class implements Collection {
         found
     }
 
-    static new = (items: Array<i64>) -> IntList {
+    static new = (items: i64[]) -> IntList {
         IntList{ items }
     }
 

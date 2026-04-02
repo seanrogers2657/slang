@@ -1042,7 +1042,7 @@ Shows nullable element types in arrays.
 
 ```slang
 main = () {
-    val maybeNumbers: Array<i64?> = [1, null, 3, null, 5]
+    val maybeNumbers: i64?[] = [1, null, 3, null, 5]
 
     var sum = 0
     for item in maybeNumbers {

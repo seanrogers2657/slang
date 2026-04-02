@@ -12,6 +12,6 @@ mixedBorrow = (a: &&Point, b: &Point) {
 }
 
 main = () {
-    var p = Heap.new(Point{ 10, 20 })
+    var p = new Point{ 10, 20 }
     mixedBorrow(p, p)  // Error: cannot mix mutable and immutable borrows
 }

@@ -7,7 +7,7 @@ Point = class {
     var y: s64
 
     create = (x: s64, y: s64) -> *Point {
-        return Heap.new(Point{ x, y })
+        return new Point{ x, y }
     }
 
     get_x = (self: &Point) -> s64 {
@@ -24,7 +24,7 @@ Line = class {
     var length: s64
 
     create = (len: s64) -> *Line {
-        return Heap.new(Line{ len })
+        return new Line{ len }
     }
 
     get_length = (self: &Line) -> s64 {

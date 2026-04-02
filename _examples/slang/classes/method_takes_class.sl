@@ -6,7 +6,7 @@ Point = class {
     var y: s64
 
     create = (x: s64, y: s64) -> *Point {
-        return Heap.new(Point{ x, y })
+        return new Point{ x, y }
     }
 
     get_x = (self: &Point) -> s64 {

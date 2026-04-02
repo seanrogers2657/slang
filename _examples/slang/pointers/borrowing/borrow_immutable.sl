@@ -12,7 +12,7 @@ printPoint = (p: &Point) {
 }
 
 main = () {
-    val p = Heap.new(Point{ 10, 20 })
+    val p = new Point{ 10, 20 }
     printPoint(p)  // auto-borrow: *Point -> &Point
 
     // p is still usable after borrowing

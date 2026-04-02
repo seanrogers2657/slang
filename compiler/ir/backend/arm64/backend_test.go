@@ -374,7 +374,7 @@ func TestBackendSafeMethodCall(t *testing.T) {
 			}
 
 			create = (v: s64) -> *Box {
-				return Heap.new(Box{ v })
+				return new Box{ v }
 			}
 		}
 		main = () {
@@ -462,7 +462,7 @@ func TestBackendCopy(t *testing.T) {
 			var y: s64
 		}
 		main = () {
-			val p = Heap.new(Point{ 10, 20 })
+			val p = new Point{ 10, 20 }
 			val q = p.copy()
 			exit(0)
 		}
@@ -534,7 +534,7 @@ func TestBackendMethodCall(t *testing.T) {
 			}
 		}
 		main = () {
-			val c = Heap.new(Counter{ 0 })
+			val c = new Counter{ 0 }
 			c.increment()
 			c.increment()
 			val result = c.getValue()

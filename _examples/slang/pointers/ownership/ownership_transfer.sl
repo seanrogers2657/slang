@@ -11,12 +11,12 @@ consumePoint = (p: *Point) -> s64 {
 }
 
 main = () {
-    val p = Heap.new(Point{ 10, 20 })
+    val p = new Point{ 10, 20 }
     val sum = consumePoint(p)
     print(sum)
 
     // Create another to verify we can still allocate
-    val q = Heap.new(Point{ 15, 15 })
+    val q = new Point{ 15, 15 }
     print(q.x)
     print(q.y)
 }

@@ -6,7 +6,7 @@ Node = class {
     var depth: s64
 
     create = (value: s64, depth: s64) -> *Node {
-        return Heap.new(Node{ value, depth })
+        return new Node{ value, depth }
     }
 
     // Recursive instance method using iteration instead

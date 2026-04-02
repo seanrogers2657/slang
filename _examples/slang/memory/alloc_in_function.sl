@@ -9,7 +9,7 @@ Point = struct {
 }
 
 allocateAndSum = (a: s64, b: s64, c: s64) -> s64 {
-    val p = Heap.new(Point{ a, b, c })
+    val p = new Point{ a, b, c }
     return p.x + p.y + p.z
 }
 

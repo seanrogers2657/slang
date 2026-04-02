@@ -26,7 +26,7 @@ MathBox = class {
 }
 
 main = () {
-    val box = Heap.new(MathBox{ 10 })
+    val box = new MathBox{ 10 }
     box.add_doubled(5)              // value = 10 + double(5) = 10 + 10 = 20
     box.add_doubled(2)              // value = 20 + double(2) = 20 + 4 = 24
     val result = box.get_doubled_value()  // double(24) = 48... wait that's 48

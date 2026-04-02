@@ -5,7 +5,7 @@ Transformer = class {
     var offset: s64
 
     create = (offset: s64) -> *Transformer {
-        return Heap.new(Transformer{ offset })
+        return new Transformer{ offset }
     }
 
     // Method to be nested

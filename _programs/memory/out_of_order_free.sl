@@ -15,11 +15,11 @@ main = () {
 
     // Phase 1: Allocate 5 objects (A, B, C, D, E)
     print("Phase 1: Allocating A, B, C, D, E...")
-    var a: *Point? = Heap.new(Point{ 1, 10 })
-    var b: *Point? = Heap.new(Point{ 2, 20 })
-    var c: *Point? = Heap.new(Point{ 3, 30 })
-    var d: *Point? = Heap.new(Point{ 4, 40 })
-    var e: *Point? = Heap.new(Point{ 5, 50 })
+    var a: *Point? = new Point{ 1, 10 }
+    var b: *Point? = new Point{ 2, 20 }
+    var c: *Point? = new Point{ 3, 30 }
+    var d: *Point? = new Point{ 4, 40 }
+    var e: *Point? = new Point{ 5, 50 }
     assert(a != null, "a should be allocated")
     assert(b != null, "b should be allocated")
     assert(c != null, "c should be allocated")
@@ -40,11 +40,11 @@ main = () {
 
     // Phase 3: Allocate 5 new objects - should reuse freed memory from free list
     print("Phase 3: Allocating F, G, H, I, J (reusing freed slots)...")
-    var f: *Point? = Heap.new(Point{ 6, 60 })
-    var g: *Point? = Heap.new(Point{ 7, 70 })
-    var h: *Point? = Heap.new(Point{ 8, 80 })
-    var i: *Point? = Heap.new(Point{ 9, 90 })
-    var j: *Point? = Heap.new(Point{ 10, 100 })
+    var f: *Point? = new Point{ 6, 60 }
+    var g: *Point? = new Point{ 7, 70 }
+    var h: *Point? = new Point{ 8, 80 }
+    var i: *Point? = new Point{ 9, 90 }
+    var j: *Point? = new Point{ 10, 100 }
     assert(f != null, "f should be allocated")
     assert(j != null, "j should be allocated")
     sleep(500 * 1000 * 1000)  // 500ms
@@ -53,8 +53,8 @@ main = () {
     print("Phase 4: Interleaved alloc/free...")
     g = null  // Free G
     i = null  // Free I
-    var k: *Point? = Heap.new(Point{ 11, 110 })  // Reuse G's slot
-    var l: *Point? = Heap.new(Point{ 12, 120 })  // Reuse I's slot
+    var k: *Point? = new Point{ 11, 110 }  // Reuse G's slot
+    var l: *Point? = new Point{ 12, 120 }  // Reuse I's slot
     assert(k != null, "k should be allocated")
     assert(l != null, "l should be allocated")
     sleep(500 * 1000 * 1000)  // 500ms
@@ -63,7 +63,7 @@ main = () {
     print("Phase 5: 10000 alloc/free cycles...")
     var count = 0
     for ; count < 10000; count = count + 1 {
-        var temp: *Point? = Heap.new(Point{ count, count * 2 })
+        var temp: *Point? = new Point{ count, count * 2 }
         assert(temp != null, "temp should be allocated")
         // temp freed each iteration, reused next iteration
         sleep(100 * 1000)  // 0.1ms per cycle = 1 second total
@@ -75,8 +75,8 @@ main = () {
 
     // Phase 6: Verify we can still allocate after all the cycling
     print("Phase 6: Final allocations...")
-    var m: *Point? = Heap.new(Point{ 100, 200 })
-    var n: *Point? = Heap.new(Point{ 300, 400 })
+    var m: *Point? = new Point{ 100, 200 }
+    var n: *Point? = new Point{ 300, 400 }
     assert(m != null, "m should be allocated")
     assert(n != null, "n should be allocated")
     sleep(500 * 1000 * 1000)  // 500ms

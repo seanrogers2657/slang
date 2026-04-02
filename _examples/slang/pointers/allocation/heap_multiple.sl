@@ -6,9 +6,9 @@ Num = struct {
 
 main = () {
     // Multiple allocations - all should be freed at exit
-    val a = Heap.new(Num{ 1 })
-    val b = Heap.new(Num{ 2 })
-    val c = Heap.new(Num{ 3 })
+    val a = new Num{ 1 }
+    val b = new Num{ 2 }
+    val c = new Num{ 3 }
 
     print(a.v)
     print(b.v)

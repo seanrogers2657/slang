@@ -5,7 +5,7 @@ Classifier = class {
     var threshold: s64
 
     create = (threshold: s64) -> *Classifier {
-        return Heap.new(Classifier{ threshold })
+        return new Classifier{ threshold }
     }
 
     // Method with if-else chain

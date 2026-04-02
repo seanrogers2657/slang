@@ -115,7 +115,7 @@ The compiler currently supports:
   - `len(array)` - get array length
   - `sleep(nanoseconds)` - sleep for specified duration
   - `assert(condition, message)` - if condition is false, prints message to stderr and exits with code 1
-  - `Heap.new(value)` - allocate a struct on the heap (returns `*T`)
+  - `new value` - allocate a value on the heap (returns `*T`)
 - **Comments**: Line comments with `//` (e.g., `// this is a comment`)
 
 ## Development Commands
@@ -581,9 +581,9 @@ Point = struct {
     var y: s64
 }
 
-// Allocate on the heap with Heap.new()
+// Allocate on the heap with new 
 main = () {
-    val p = Heap.new(Point{ 10, 20 })  // p: *Point
+    val p = new Point{ 10, 20 }  // p: *Point
     print(p.x)  // Auto-dereference: prints 10
     print(p.y)  // prints 20
 
@@ -602,7 +602,7 @@ consume_point = (p: *Point) -> s64 {
 
 // Returning *T transfers ownership to caller
 create_point = (x: s64, y: s64) -> *Point {
-    return Heap.new(Point{ x, y })
+    return new Point{ x, y }
 }
 
 main = () {
@@ -626,7 +626,7 @@ double_x = (p: &&Point) {
 }
 
 main = () {
-    val p = Heap.new(Point{ 10, 20 })
+    val p = new Point{ 10, 20 }
     print_point(p)  // Auto-borrow: *Point -> &Point
     print(p.x)     // p still usable: prints 10
 
@@ -638,7 +638,7 @@ main = () {
 **Deep copy with .copy():**
 ```slang
 main = () {
-    val p = Heap.new(Point{ 10, 20 })
+    val p = new Point{ 10, 20 }
     val q = p.copy()  // Creates independent deep copy
 
     p.x = 100

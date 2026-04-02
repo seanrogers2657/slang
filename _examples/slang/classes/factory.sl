@@ -7,7 +7,7 @@ Point = class {
 
     // Static factory method
     create = (x: s64, y: s64) -> *Point {
-        return Heap.new(Point{ x, y })
+        return new Point{ x, y }
     }
 
     // Instance method

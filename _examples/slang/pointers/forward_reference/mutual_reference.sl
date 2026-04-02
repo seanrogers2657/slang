@@ -12,8 +12,8 @@ TypeB = struct {
 }
 
 main = () {
-    var a = Heap.new(TypeA{ 1, null })
-    var b = Heap.new(TypeB{ 2, null })
+    var a = new TypeA{ 1, null }
+    var b = new TypeB{ 2, null }
 
     print(a.id)  // 1
     print(b.id)  // 2

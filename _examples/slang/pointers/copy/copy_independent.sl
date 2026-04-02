@@ -6,7 +6,7 @@ Point = struct {
 }
 
 main = () {
-    var p = Heap.new(Point{ 10, 20 })
+    var p = new Point{ 10, 20 }
     val q = p.copy()
 
     // Modify the original

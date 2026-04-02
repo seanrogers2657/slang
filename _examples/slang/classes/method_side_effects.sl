@@ -7,7 +7,7 @@ State = class {
     var z: s64
 
     create = () -> *State {
-        return Heap.new(State{ 0, 0, 0 })
+        return new State{ 0, 0, 0 }
     }
 
     // Method modifying multiple fields

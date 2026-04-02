@@ -6,7 +6,7 @@ Point = class {
     val y: s64   // immutable
 
     create = (x: s64, y: s64) -> *Point {
-        return Heap.new(Point{ x, y })
+        return new Point{ x, y }
     }
 
     // Can read val fields

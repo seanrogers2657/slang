@@ -5,7 +5,7 @@ Validator = class {
     var threshold: s64
 
     create = (threshold: s64) -> *Validator {
-        return Heap.new(Validator{ threshold })
+        return new Validator{ threshold }
     }
 
     // Method with early return

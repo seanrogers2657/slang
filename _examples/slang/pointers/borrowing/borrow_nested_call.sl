@@ -15,7 +15,7 @@ setX = (p: &&Point, v: s64) {
 }
 
 main = () {
-    val p = Heap.new(Point{ 10 })
+    val p = new Point{ 10 }
 
     // Nested: getX(p) returns i64 value, borrow ends
     // Then setX gets fresh && borrow

@@ -11,7 +11,7 @@ Node = struct {
 
 // Build a list by prepending nodes
 prepend = (head: *Node?, value: s64) -> *Node {
-    return Heap.new(Node{ head, value })
+    return new Node{ head, value }
 }
 
 main = () {

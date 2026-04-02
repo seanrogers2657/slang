@@ -892,6 +892,9 @@ func (g *Generator) generateExpr(expr semantic.TypedExpression) (*Value, error) 
 	case *semantic.TypedClassLiteralExpr:
 		return g.generateClassLiteral(e)
 
+	case *semantic.TypedNewExpr:
+		return g.generateNewExpr(e)
+
 	case *semantic.TypedMethodCallExpr:
 		return g.generateMethodCall(e)
 
@@ -1391,14 +1394,6 @@ func (g *Generator) generateClassLiteral(cl *semantic.TypedClassLiteralExpr) (*V
 
 // generateMethodCall generates IR for a method call.
 func (g *Generator) generateMethodCall(mc *semantic.TypedMethodCallExpr) (*Value, error) {
-	// Special handling for Heap.new
-	if mc.Method == "new" {
-		// Check if it's Heap.new (object is Heap identifier)
-		if ident, ok := mc.Object.(*semantic.TypedIdentifierExpr); ok && ident.Name == "Heap" {
-			return g.generateHeapNew(mc)
-		}
-	}
-
 	// Special handling for .copy()
 	if mc.Method == "copy" && len(mc.Arguments) == 0 {
 		return g.generateCopy(mc)
@@ -1593,24 +1588,17 @@ func (g *Generator) mergeNullCheckResults(
 	return phi, nil
 }
 
-// generateHeapNew generates IR for Heap.new(value).
-func (g *Generator) generateHeapNew(mc *semantic.TypedMethodCallExpr) (*Value, error) {
-	if len(mc.Arguments) != 1 {
-		return nil, fmt.Errorf("Heap.new requires exactly 1 argument")
-	}
-
-	arg := mc.Arguments[0]
-
-	// If the argument is a struct or class literal, it already allocates on heap.
+// generateNewExpr generates IR for a 'new' expression (e.g., new Point{ 10, 20 }).
+func (g *Generator) generateNewExpr(expr *semantic.TypedNewExpr) (*Value, error) {
+	// If the operand is a struct or class literal, it already allocates on heap.
 	// Just generate it directly and return the pointer.
-	switch arg.(type) {
+	switch expr.Operand.(type) {
 	case *semantic.TypedStructLiteralExpr, *semantic.TypedClassLiteralExpr:
-		return g.generateExpr(arg)
+		return g.generateExpr(expr.Operand)
 	}
 
 	// For other expressions, we need to allocate and copy.
-	// Generate the value to allocate
-	val, err := g.generateExpr(arg)
+	val, err := g.generateExpr(expr.Operand)
 	if err != nil {
 		return nil, err
 	}

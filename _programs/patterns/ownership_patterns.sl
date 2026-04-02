@@ -56,18 +56,18 @@ consume = (p: *Point) -> s64 {
 // =============================================================================
 
 create_point = (x: s64, y: s64) -> *Point {
-    return Heap.new(Point{ x, y })
+    return new Point{ x, y }
 }
 
 clone = (p: &Point) -> *Point {
-    return Heap.new(Point{ p.x, p.y })
+    return new Point{ p.x, p.y }
 }
 
 midpoint = (a: &Point, b: &Point) -> *Point {
-    return Heap.new(Point{
+    return new Point{
         (a.x + b.x) / 2,
         (a.y + b.y) / 2
-    })
+    }
 }
 
 // =============================================================================
@@ -76,7 +76,7 @@ midpoint = (a: &Point, b: &Point) -> *Point {
 // =============================================================================
 
 doubled = (p: *Point) -> *Point {
-    val result = Heap.new(Point{ p.x * 2, p.y * 2 })
+    val result = new Point{ p.x * 2, p.y * 2 }
     // p is freed here
     return result
 }

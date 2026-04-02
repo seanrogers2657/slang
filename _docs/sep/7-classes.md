@@ -288,14 +288,14 @@ Note: The `var` modifier on parameters controls reassignability of the parameter
 
 ## Stack vs Heap Allocation
 
-Class instances can be allocated on the stack (local variable) or heap (via `Heap.new()`):
+Class instances can be allocated on the stack (local variable) or heap (via `new `):
 
 ```slang
 // Stack-allocated: lives until end of current scope
 val stackPoint = Point{ 10, 20 }
 
 // Heap-allocated: lives until ownership is released
-val heapPoint = Heap.new(Point{ 10, 20 })  // heapPoint: *Point
+val heapPoint = new Point{ 10, 20 }  // heapPoint: *Point
 ```
 
 **When to use each:**
@@ -303,12 +303,12 @@ val heapPoint = Heap.new(Point{ 10, 20 })  // heapPoint: *Point
 | Allocation | Syntax | Type | Use When |
 |------------|--------|------|----------|
 | Stack | `Point{ ... }` | `Point` | Short-lived, local values; no ownership transfer needed |
-| Heap | `Heap.new(Point{ ... })` | `*Point` | Values that outlive current scope, or when ownership transfer is needed |
+| Heap | `new Point{ ... }` | `*Point` | Values that outlive current scope, or when ownership transfer is needed |
 
 **Method compatibility:**
 
 - Stack values auto-borrow for `&T` and `&&T` methods
-- Stack values **cannot** call `*T` (consuming) methods - use `Heap.new()` if consumption is needed
+- Stack values **cannot** call `*T` (consuming) methods - use `new ` if consumption is needed
 - Heap values (`*T`) work with all receiver types
 
 ```slang
@@ -324,7 +324,7 @@ main = () {
     stack.mutate()   // OK: auto-borrows as &&Point
     // stack.consume() // Error: cannot consume stack-allocated value
 
-    val heap = Heap.new(Point{ 1, 2 })
+    val heap = new Point{ 1, 2 }
     heap.read()      // OK: auto-borrows as &Point
     heap.mutate()    // OK: auto-borrows as &&Point
     heap.consume()   // OK: transfers ownership, heap is moved
@@ -361,7 +361,7 @@ For owned pointers (`*T`), returning transfers ownership:
 
 ```slang
 createPoint = () -> *Point {
-    Heap.new(Point{ 10, 20 })  // ownership transferred to caller
+    new Point{ 10, 20 }  // ownership transferred to caller
 }
 ```
 
@@ -1637,7 +1637,7 @@ Point = class {
 }
 
 main = () {
-    var p = Heap.new(Point{ 3, 4 })
+    var p = new Point{ 3, 4 }
 
     print(p.magnitudeSquared())       // borrows p (immutable), prints: 25
     p.scale(2)                        // borrows p (mutable)
@@ -1659,7 +1659,7 @@ main = () {
 
 ### Heap-Allocated Class Instances
 
-Class instances can be allocated on the heap using `Heap.new()`:
+Class instances can be allocated on the heap using `new `:
 
 ```slang
 Point = class {
@@ -1668,7 +1668,7 @@ Point = class {
 
     // Static factory returning heap-allocated instance
     new = (x: i64, y: i64) -> *Point {
-        Heap.new(Point{ x, y })
+        new Point{ x, y }
     }
 
     // Static factory for origin
@@ -1703,7 +1703,7 @@ Node = class {
     var next: *Node?
 
     new = (value: i64) -> *Node {
-        Heap.new(Node{ value, null })
+        new Node{ value, null }
     }
 
     // Takes ownership of next node
@@ -1758,7 +1758,7 @@ consume = (p: *Point) {
 }                                          // p freed here
 
 main = () {
-    var p = Heap.new(Point{ 10, 20 })
+    var p = new Point{ 10, 20 }
 
     printPoint(p)                          // borrows
     scalePoint(p, 2)                       // mutably borrows
@@ -2311,7 +2311,7 @@ Point = class {
 
     // Static factory returning owned pointer
     new = (x: i64, y: i64) -> *Point {
-        Heap.new(Point{ x, y })
+        new Point{ x, y }
     }
 
     // Immutable borrow - read only
@@ -2354,7 +2354,7 @@ Node = class {
     var next: *Node?
 
     new = (value: i64) -> *Node {
-        Heap.new(Node{ value, null })
+        new Node{ value, null }
     }
 
     // Mutable borrow to modify next
@@ -2393,7 +2393,7 @@ Point = class {
     var y: i64
 
     new = (x: i64, y: i64) -> *Point {
-        Heap.new(Point{ x, y })
+        new Point{ x, y }
     }
 }
 
@@ -2485,7 +2485,7 @@ main = () {
     c.increment()          // OK: auto-borrows as &&Counter
     // c.consume()         // Error: cannot call consuming method on stack value
 
-    val h = Heap.new(Counter{ 0 })  // heap-allocated
+    val h = new Counter{ 0 }  // heap-allocated
     h.consume()            // OK: h is *Counter
 }
 ```
@@ -2557,7 +2557,7 @@ Builder = class {
 
 main = () {
     // Owned chaining - ownership flows through
-    val result = Heap.new(Builder{ 0 })
+    val result = new Builder{ 0 }
         .add(5)
         .multiply(2)
         .add(10)
@@ -2599,7 +2599,7 @@ Classes work naturally with other Slang features:
 val points = [Point{ 0, 0 }, Point{ 1, 1 }]
 points[0].magnitude()                        // method on array element
 
-val heapPoints: Array<*Point> = [Heap.new(Point{ 0, 0 })]
+val heapPoints: Array<*Point> = [new Point{ 0, 0 }]
 heapPoints[0].magnitude()                    // method on heap-allocated element
 ```
 
@@ -2937,7 +2937,7 @@ Point = class {
 
 main = () {
     // Error: cannot call consuming method 'consume' on temporary;
-    // use Heap.new(Point{ 3, 4 }).consume() instead
+    // use new Point{ 3, 4 }.consume() instead
     val result = Point{ 3, 4 }.consume()
 }
 ```
@@ -2952,7 +2952,7 @@ Clear error messages for invalid patterns:
 | `self` in method body but not in params | `cannot use 'self' in static method 'X'` |
 | `self` type not a pointer | `'self' must have pointer type (&X, &&X, or *X), got Y` |
 | `self` type references wrong class | `'self' type must reference enclosing class 'X', got 'Y'` |
-| Consuming method on stack value | `cannot call consuming method 'X' on stack-allocated value; use Heap.new() for heap allocation` |
+| Consuming method on stack value | `cannot call consuming method 'X' on stack-allocated value; use new  for heap allocation` |
 | Instance method called as static | `cannot call instance method 'X' without a receiver; use 'instance.X()'` |
 | Static method called on instance | `cannot call static method 'X' on instance; use 'ClassName.X()'` |
 | Variable shadows class name | `cannot shadow class name 'X' with variable` |
@@ -2967,7 +2967,7 @@ Clear error messages for invalid patterns:
 | Returning borrowed reference | `methods cannot return borrowed references (&T or &&T); return owned value instead` |
 | Method call on struct | `cannot call method on struct type 'X'; structs do not have methods` |
 | Method call on null | `cannot call method on 'null'; type is unknown` |
-| Consuming method on temporary | `cannot call consuming method 'X' on temporary; use Heap.new(...).X() instead` |
+| Consuming method on temporary | `cannot call consuming method 'X' on temporary; use new ....X() instead` |
 | Mutable borrow conflict | `cannot borrow 'X' as immutable because it is already borrowed as mutable` |
 | Multiple mutable borrows | `cannot borrow 'X' as mutable more than once` |
 | Implicit field access | `undefined variable 'X'` (must use `self.X` for field access in methods) |

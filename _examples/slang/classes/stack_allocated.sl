@@ -1,5 +1,5 @@
 // @test: exit_code=25
-// Test stack-allocated class instances (no Heap.new)
+// Test stack-allocated class instances (no new keyword)
 // This is a future feature
 
 Point = class {

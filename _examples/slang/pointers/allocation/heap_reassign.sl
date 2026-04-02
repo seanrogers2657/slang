@@ -7,12 +7,12 @@ Point = struct {
 
 main = () {
     // First allocation
-    var p = Heap.new(Point{ 10, 20 })
+    var p = new Point{ 10, 20 }
     print(p.x)
     print(p.y)
 
     // Reassign - old value should be freed
-    p = Heap.new(Point{ 30, 40 })
+    p = new Point{ 30, 40 }
     print(p.x)
     print(p.y)
 

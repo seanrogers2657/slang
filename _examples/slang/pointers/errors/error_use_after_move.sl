@@ -8,7 +8,7 @@ Point = struct {
 }
 
 main = () {
-    val p = Heap.new(Point{ 10, 20 })
+    val p = new Point{ 10, 20 }
     val q = p  // p is moved to q
     print(p.x)  // Error: p was moved
 }

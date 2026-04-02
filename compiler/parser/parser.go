@@ -1203,6 +1203,23 @@ func (p *parser) parsePrimary() ast.Expression {
 		return &ast.SelfExpr{SelfPos: selfPos}
 	}
 
+	// Check for 'new' keyword (heap allocation)
+	if p.CurrentToken().Type == lexer.TokenTypeNew {
+		newPos := p.CurrentToken().Pos
+		p.advance() // consume 'new'
+
+		operand := p.parsePrimary()
+		if operand == nil {
+			p.addError("expected expression after 'new'", newPos)
+			return nil
+		}
+
+		return &ast.NewExpr{
+			NewPos:  newPos,
+			Operand: operand,
+		}
+	}
+
 	// Check for unary NOT operator
 	if p.CurrentToken().Type == lexer.TokenTypeNot {
 		opPos := p.CurrentToken().Pos
@@ -1348,7 +1365,7 @@ func (p *parser) parseCallExpr(name string, namePos ast.Position) ast.Expression
 
 // parseMethodCall parses a method call after the object, dot, and method name have been consumed
 // Syntax: object.method(args...) or object?.method(args...)
-// Used for patterns like Heap.new(expr), p.copy(), obj?.method(), etc.
+// Used for patterns like p.copy(), obj?.method(), etc.
 func (p *parser) parseMethodCall(object ast.Expression, dotPos ast.Position, methodName string, methodPos ast.Position, safeNavigation bool) ast.Expression {
 	leftParen := p.CurrentToken().Pos
 	p.advance() // consume '('

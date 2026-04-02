@@ -5,13 +5,13 @@ Builder = class {
     var value: s64
 
     create = () -> *Builder {
-        return Heap.new(Builder{ 0 })
+        return new Builder{ 0 }
     }
 
     // Methods that return self for chaining
     add = (self: &&Builder, x: s64) -> *Builder {
         self.value = self.value + x
-        return Heap.new(Builder{ self.value })
+        return new Builder{ self.value }
     }
 
     get_value = (self: &Builder) -> s64 {

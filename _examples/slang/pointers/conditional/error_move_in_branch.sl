@@ -8,7 +8,7 @@ Point = struct {
 }
 
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
 
     if true {
         val q = p  // moves p in this branch

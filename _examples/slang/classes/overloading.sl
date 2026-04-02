@@ -6,7 +6,7 @@ Calculator = class {
 
     // Static factory
     create = () -> *Calculator {
-        return Heap.new(Calculator{ 0 })
+        return new Calculator{ 0 }
     }
 
     // Overload 1: no args - returns current value

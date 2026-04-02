@@ -6,7 +6,7 @@ Point = struct {
 }
 
 main = () {
-    val p = Heap.new(Point{ 10, 20 })
+    val p = new Point{ 10, 20 }
     print(p.x)
     print(p.y)
 }

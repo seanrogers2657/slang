@@ -22,7 +22,7 @@ Point = class {
 }
 
 main = () {
-    val p = Heap.new(Point{ 3, 4 })
+    val p = new Point{ 3, 4 }
     val mag = p.squared_magnitude()  // 3*3 + 4*4 = 9 + 16 = 25
     exit(mag)
 }

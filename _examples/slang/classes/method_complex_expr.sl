@@ -6,7 +6,7 @@ Calculator = class {
     var b: s64
 
     create = (a: s64, b: s64) -> *Calculator {
-        return Heap.new(Calculator{ a, b })
+        return new Calculator{ a, b }
     }
 
     // Method with complex arithmetic expression

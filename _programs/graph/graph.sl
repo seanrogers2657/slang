@@ -11,7 +11,7 @@ GraphNode = struct {
 
 // Create a new graph node on the heap
 create_node = (id: s64, data: s64) -> *GraphNode {
-    return Heap.new(GraphNode{ id, data, null, null })
+    return new GraphNode{ id, data, null, null }
 }
 
 // Print node info

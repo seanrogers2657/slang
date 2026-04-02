@@ -33,7 +33,7 @@ Calculator = class {
 }
 
 main = () {
-    val calc = Heap.new(Calculator{ 10 })
+    val calc = new Calculator{ 10 }
 
     // compute: base(10) + (3+5) + (3*5) = 10 + 8 + 15 = 33
     val r1 = calc.compute(3, 5)

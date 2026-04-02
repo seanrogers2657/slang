@@ -5,7 +5,7 @@ Counter = class {
     var value: s64
 
     create = (v: s64) -> *Counter {
-        return Heap.new(Counter{ v })
+        return new Counter{ v }
     }
 
     get_value = (self: &Counter) -> s64 {

@@ -28,6 +28,7 @@ var keywords = map[string]TokenType{
 	"class":    TokenTypeClass,
 	"self":     TokenTypeSelf,
 	"object":   TokenTypeObject,
+	"new":      TokenTypeNew,
 }
 
 type TokenType int
@@ -86,6 +87,7 @@ const (
 	TokenTypeClass    // 'class' keyword
 	TokenTypeSelf     // 'self' keyword
 	TokenTypeObject   // 'object' keyword
+	TokenTypeNew      // 'new' keyword
 )
 
 // String returns a human-readable name for the token type
@@ -197,6 +199,8 @@ func (t TokenType) String() string {
 		return "SELF"
 	case TokenTypeObject:
 		return "OBJECT"
+	case TokenTypeNew:
+		return "NEW"
 	default:
 		return "UNKNOWN"
 	}

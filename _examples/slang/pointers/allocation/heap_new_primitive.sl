@@ -5,6 +5,6 @@ Wrapper = struct {
 }
 
 main = () {
-    val p = Heap.new(Wrapper{ 42 })
+    val p = new Wrapper{ 42 }
     print(p.value)
 }

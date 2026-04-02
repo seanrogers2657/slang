@@ -19,7 +19,7 @@ classify = (n: s64) -> string {
 }
 
 main = () {
-    val c = Heap.new(Counter{ 0 })
+    val c = new Counter{ 0 }
     for (var i = 0; i < 12; i = i + 1) {
         c.increment()
     }

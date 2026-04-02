@@ -9,7 +9,7 @@ Point = struct {
 }
 
 allocateAndUse = (n: s64) -> s64 {
-    val p = Heap.new(Point{ n, n * 2, n * 3 })
+    val p = new Point{ n, n * 2, n * 3 }
     return p.x + p.y + p.z  // 6n
 }
 

@@ -528,7 +528,7 @@ func TestGenerateClasses(t *testing.T) {
 					}
 				}
 				main = () {
-					val c = Heap.new(Counter{ 0 })
+					val c = new Counter{ 0 }
 					c.increment()
 				}
 			`,
@@ -562,7 +562,7 @@ func TestGenerateClasses(t *testing.T) {
 					}
 				}
 				main = () {
-					val p = Heap.new(Point{ 10, 20 })
+					val p = new Point{ 10, 20 }
 					val s = p.sum()
 				}
 			`,
@@ -579,7 +579,7 @@ func TestGenerateClasses(t *testing.T) {
 					}
 				}
 				main = () {
-					val b = Heap.new(Box{ 42 })
+					val b = new Box{ 42 }
 					val v = b.getValue()
 				}
 			`,
@@ -621,7 +621,7 @@ func TestGenerateObjects(t *testing.T) {
 					var y: s64
 				}
 				main = () {
-					val p = Heap.new(Point{ 10, 20 })
+					val p = new Point{ 10, 20 }
 					print(p.x)
 				}
 			`,
@@ -638,7 +638,7 @@ func TestGenerateObjects(t *testing.T) {
 					}
 				}
 				main = () {
-					val c = Heap.new(Counter{ 5 })
+					val c = new Counter{ 5 }
 					val v = c.get()
 				}
 			`,
@@ -741,7 +741,7 @@ func TestGenerateSafeNavigation(t *testing.T) {
 					}
 
 					create = (v: s64) -> *Box {
-						return Heap.new(Box{ v })
+						return new Box{ v }
 					}
 				}
 				main = () {
@@ -877,7 +877,7 @@ func TestGenerateHeapNew(t *testing.T) {
 			var y: s64
 		}
 		main = () {
-			val p = Heap.new(Point{ 10, 20 })
+			val p = new Point{ 10, 20 }
 			print(p.x)
 		}
 	`
@@ -886,7 +886,7 @@ func TestGenerateHeapNew(t *testing.T) {
 	ir := String(prog)
 
 	if !strings.Contains(ir, "Alloc") {
-		t.Errorf("IR should contain Alloc for Heap.new\nGot:\n%s", ir)
+		t.Errorf("IR should contain Alloc for new expression\nGot:\n%s", ir)
 	}
 	if !strings.Contains(ir, "Store") {
 		t.Errorf("IR should contain Store for initializing heap object\nGot:\n%s", ir)
@@ -900,7 +900,7 @@ func TestGenerateCopy(t *testing.T) {
 			var y: s64
 		}
 		main = () {
-			val p = Heap.new(Point{ 10, 20 })
+			val p = new Point{ 10, 20 }
 			val q = p.copy()
 			q.x = 100
 		}

@@ -41,6 +41,13 @@ func ident(name string) *ast.IdentifierExpr {
 	}
 }
 
+func newExpr(operand ast.Expression) *ast.NewExpr {
+	return &ast.NewExpr{
+		NewPos:  pos(1, 1),
+		Operand: operand,
+	}
+}
+
 func binExpr(left ast.Expression, op string, right ast.Expression) *ast.BinaryExpr {
 	return &ast.BinaryExpr{
 		Left:     left,

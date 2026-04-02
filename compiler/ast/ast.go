@@ -167,10 +167,10 @@ func (f *FieldAccessExpr) End() Position {
 }
 func (f *FieldAccessExpr) exprNode() {}
 
-// MethodCallExpr represents a method call on an object (e.g., Heap.new(x), p.copy())
+// MethodCallExpr represents a method call on an object (e.g., p.copy(), obj.method())
 // This is distinct from CallExpr which represents standalone function calls.
 type MethodCallExpr struct {
-	Object         Expression   // the receiver expression (e.g., Heap, p)
+	Object         Expression   // the receiver expression (e.g., p, obj)
 	Dot            Position     // position of '.' or '?.'
 	Method         string       // method name (e.g., "new", "copy")
 	MethodPos      Position     // position of method name
@@ -183,6 +183,16 @@ type MethodCallExpr struct {
 func (m *MethodCallExpr) Pos() Position { return m.Object.Pos() }
 func (m *MethodCallExpr) End() Position { return m.RightParen }
 func (m *MethodCallExpr) exprNode()     {}
+
+// NewExpr represents a heap allocation expression (e.g., new Point{ 10, 20 })
+type NewExpr struct {
+	NewPos  Position   // position of 'new' keyword
+	Operand Expression // the expression to heap-allocate
+}
+
+func (n *NewExpr) Pos() Position { return n.NewPos }
+func (n *NewExpr) End() Position { return n.Operand.End() }
+func (n *NewExpr) exprNode()     {}
 
 // SafeCallExpr represents safe field access on nullable (e.g., person?.address, obj?.field)
 type SafeCallExpr struct {

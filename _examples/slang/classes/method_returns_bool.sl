@@ -6,7 +6,7 @@ Range = class {
     var max: s64
 
     create = (min: s64, max: s64) -> *Range {
-        return Heap.new(Range{ min, max })
+        return new Range{ min, max }
     }
 
     // Method returning bool

@@ -5,7 +5,7 @@ Ops = class {
     var value: s64
 
     create = (v: s64) -> *Ops {
-        return Heap.new(Ops{ v })
+        return new Ops{ v }
     }
 
     add = (self: &&Ops, n: s64) {

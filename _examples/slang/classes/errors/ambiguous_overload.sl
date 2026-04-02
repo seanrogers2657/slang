@@ -18,6 +18,6 @@ Printer = class {
 }
 
 main = () {
-    val p = Heap.new(Printer{ 0 })
+    val p = new Printer{ 0 }
     p.print(42)
 }

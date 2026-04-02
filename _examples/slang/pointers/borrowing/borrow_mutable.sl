@@ -11,7 +11,7 @@ doubleX = (p: &&Point) {
 }
 
 main = () {
-    val p = Heap.new(Point{ 10, 20 })
+    val p = new Point{ 10, 20 }
     print(p.x)  // 10 before mutation
 
     doubleX(p)  // mutate through reference

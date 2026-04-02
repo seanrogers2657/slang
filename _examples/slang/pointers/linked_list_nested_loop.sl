@@ -13,7 +13,7 @@ main = () {
     var batch = 0
     while batch < 2 {
         for (var i = 0; i < 3; i = i + 1) {
-            val n = Heap.new(Node{ head, i })
+            val n = new Node{ head, i }
             head = n
         }
         print("batch")

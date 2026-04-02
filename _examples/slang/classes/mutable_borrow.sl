@@ -16,7 +16,7 @@ Counter = class {
 }
 
 main = () {
-    val c = Heap.new(Counter{ 0 })
+    val c = new Counter{ 0 }
 
     c.add_many(10, 15, 25)  // 0 + 10 + 15 + 25 = 50
 

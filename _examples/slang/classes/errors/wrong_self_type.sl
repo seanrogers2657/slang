@@ -21,7 +21,7 @@ Box = class {
 }
 
 main = () {
-    val b = Heap.new(Box{ 5 })
+    val b = new Box{ 5 }
 
     // Error: Box has no get_x method
     val x = b.get_x()

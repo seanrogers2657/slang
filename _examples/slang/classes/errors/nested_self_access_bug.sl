@@ -17,7 +17,7 @@ Rectangle = class {
 }
 
 main = () {
-    // BUG: Heap.new with nested structs allocates wrong size and stores stack pointers
-    val rect = Heap.new(Rectangle{ Point{ 0, 0 }, Point{ 5, 7 } })
+    // BUG: new with nested structs allocates wrong size and stores stack pointers
+    val rect = new Rectangle{ Point{ 0, 0 }, Point{ 5, 7 } }
     exit(rect.get_width())
 }

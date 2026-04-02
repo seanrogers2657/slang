@@ -26,7 +26,7 @@ Counter = class {
 }
 
 main = () {
-    val c = Heap.new(Counter{ 0 })
+    val c = new Counter{ 0 }
     val sum = c.sum_to(10)  // 1+2+...+10 = 55
     exit(sum)
 }

@@ -7,6 +7,6 @@ Node = struct {
 }
 
 main = () {
-    var head = Heap.new(Node{ 10, null })
+    var head = new Node{ 10, null }
     print(head.value)  // 10
 }

@@ -2926,6 +2926,40 @@ func TestParserVarParameter(t *testing.T) {
 	}
 }
 
+func TestParserNewExpr(t *testing.T) {
+	source := "main = () { new Point{ 1, 2 } }"
+	l := lexer.NewLexer([]byte(source))
+	l.Parse()
+
+	p := NewParser(l.Tokens)
+	program := p.Parse()
+
+	if len(p.Errors) > 0 {
+		t.Fatalf("unexpected parser errors: %v", p.Errors)
+	}
+
+	funcDecl, ok := program.Declarations[0].(*ast.FunctionDecl)
+	if !ok {
+		t.Fatal("expected FunctionDecl")
+	}
+
+	exprStmt, ok := funcDecl.Body.Statements[0].(*ast.ExprStmt)
+	if !ok {
+		t.Fatal("expected ExprStmt")
+	}
+
+	newExpr, ok := exprStmt.Expr.(*ast.NewExpr)
+	if !ok {
+		t.Fatalf("expected NewExpr, got %T", exprStmt.Expr)
+	}
+
+	// The operand should be a struct literal
+	_, ok = newExpr.Operand.(*ast.StructLiteral)
+	if !ok {
+		t.Fatalf("expected StructLiteral operand, got %T", newExpr.Operand)
+	}
+}
+
 func TestParserMethodCall(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -2934,13 +2968,6 @@ func TestParserMethodCall(t *testing.T) {
 		expectedMethod string
 		expectedArgs   int
 	}{
-		{
-			name:           "Heap.new with struct literal",
-			source:         "main = () { Heap.new(Point{ 1, 2 }) }",
-			expectedObject: "Heap",
-			expectedMethod: "new",
-			expectedArgs:   1,
-		},
 		{
 			name:           "p.copy() no args",
 			source:         "main = () { p.copy() }",

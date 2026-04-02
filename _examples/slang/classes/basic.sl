@@ -14,7 +14,7 @@ Counter = class {
 }
 
 main = () {
-    val c = Heap.new(Counter{ 0 })
+    val c = new Counter{ 0 }
     c.increment()
     c.increment()
     c.increment()

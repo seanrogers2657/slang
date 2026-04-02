@@ -1463,51 +1463,33 @@ func TestOwnedPointerType(t *testing.T) {
 	})
 }
 
-func TestHeapNewTypeChecking(t *testing.T) {
-	t.Run("Heap.new(integer) returns Own<s64>", func(t *testing.T) {
+func TestNewExprTypeChecking(t *testing.T) {
+	t.Run("new integer returns Own<s64>", func(t *testing.T) {
 		test := newTest(t)
-		result := test.analyzer.analyzeExpression(methodCallExpr(ident("Heap"), "new", intLit("42")))
+		result := test.analyzer.analyzeExpression(newExpr(intLit("42")))
 		expectedType := OwnedPointerType{ElementType: TypeS64}
 		test.expectType(result, expectedType)
 		test.expectNoErrors()
 	})
 
-	t.Run("Heap.new(string) returns Own<string>", func(t *testing.T) {
+	t.Run("new string returns Own<string>", func(t *testing.T) {
 		test := newTest(t)
-		result := test.analyzer.analyzeExpression(methodCallExpr(ident("Heap"), "new", strLit("hello")))
+		result := test.analyzer.analyzeExpression(newExpr(strLit("hello")))
 		expectedType := OwnedPointerType{ElementType: TypeString}
 		test.expectType(result, expectedType)
 		test.expectNoErrors()
 	})
 
-	t.Run("Heap.new(struct literal) returns Own<StructType>", func(t *testing.T) {
+	t.Run("new struct literal returns Own<StructType>", func(t *testing.T) {
 		test := newTest(t).withStruct("Point",
 			StructFieldInfo{Name: "x", Type: TypeS64, Mutable: false, Index: 0},
 			StructFieldInfo{Name: "y", Type: TypeS64, Mutable: true, Index: 1},
 		)
 		pointType := test.analyzer.TypeRegistry.AllStructs()["Point"]
-		result := test.analyzer.analyzeExpression(methodCallExpr(ident("Heap"), "new", structLiteral("Point", intLit("10"), intLit("20"))))
+		result := test.analyzer.analyzeExpression(newExpr(structLiteral("Point", intLit("10"), intLit("20"))))
 		expectedType := OwnedPointerType{ElementType: pointType}
 		test.expectType(result, expectedType)
 		test.expectNoErrors()
-	})
-
-	t.Run("Heap.new() with no arguments is error", func(t *testing.T) {
-		test := newTest(t)
-		test.analyzer.analyzeExpression(methodCallExpr(ident("Heap"), "new"))
-		test.expectErrorContaining("takes exactly 1 argument")
-	})
-
-	t.Run("Heap.new() with too many arguments is error", func(t *testing.T) {
-		test := newTest(t)
-		test.analyzer.analyzeExpression(methodCallExpr(ident("Heap"), "new", intLit("1"), intLit("2")))
-		test.expectErrorContaining("takes exactly 1 argument")
-	})
-
-	t.Run("Heap.unknown() is error", func(t *testing.T) {
-		test := newTest(t)
-		test.analyzer.analyzeExpression(methodCallExpr(ident("Heap"), "unknown", intLit("42")))
-		test.expectErrorContaining("has no method 'unknown'")
 	})
 }
 

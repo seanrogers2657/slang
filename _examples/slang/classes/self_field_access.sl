@@ -17,7 +17,7 @@ Rectangle = class {
 
 main = () {
     // Create rectangle with direct dimensions
-    val rect = Heap.new(Rectangle{ 5, 7 })
+    val rect = new Rectangle{ 5, 7 }
 
     val area = rect.get_area()  // 5 * 7 = 35
 

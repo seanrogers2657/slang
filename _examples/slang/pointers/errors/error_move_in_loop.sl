@@ -12,7 +12,7 @@ consumePoint = (p: *Point) -> s64 {
 }
 
 main = () {
-    val p = Heap.new(Point{ 10, 20 })
+    val p = new Point{ 10, 20 }
     for var i = 0; i < 3; i = i + 1 {
         consumePoint(p)  // Error: cannot move inside loop
     }

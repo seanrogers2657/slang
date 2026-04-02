@@ -8,6 +8,6 @@ Point = struct {
 }
 
 main = () {
-    var p = Heap.new(Point{ 10, 20 })
+    var p = new Point{ 10, 20 }
     p.x = 100  // Error: cannot assign to immutable field 'x'
 }

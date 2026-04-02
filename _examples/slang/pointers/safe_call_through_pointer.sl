@@ -9,7 +9,7 @@ Node = struct {
 }
 
 main = () {
-    val root = Heap.new(Node{ Heap.new(Node{ null, 10 }), 42 })
+    val root = new Node{ new Node{ null, 10 }, 42 }
 
     print("Root:")
     print(root.value)

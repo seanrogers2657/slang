@@ -199,10 +199,22 @@ func (e *TypedLenExpr) End() ast.Position { return e.RightParen }
 func (e *TypedLenExpr) GetType() Type     { return e.Type }
 func (e *TypedLenExpr) typedExprNode()    {}
 
-// TypedMethodCallExpr represents a typed method call (e.g., Heap.new(x), p.copy())
+// TypedNewExpr represents a typed heap allocation expression (e.g., new Point{ 10, 20 })
+type TypedNewExpr struct {
+	Type    Type            // OwnedPointerType wrapping the operand type
+	NewPos  ast.Position    // position of 'new' keyword
+	Operand TypedExpression // the typed operand expression
+}
+
+func (e *TypedNewExpr) Pos() ast.Position { return e.NewPos }
+func (e *TypedNewExpr) End() ast.Position { return e.Operand.End() }
+func (e *TypedNewExpr) GetType() Type     { return e.Type }
+func (e *TypedNewExpr) typedExprNode()    {}
+
+// TypedMethodCallExpr represents a typed method call (e.g., p.copy())
 type TypedMethodCallExpr struct {
 	Type           Type              // the return type of the method
-	Object         TypedExpression   // the receiver expression (e.g., Heap, p)
+	Object         TypedExpression   // the receiver expression (e.g., p, obj)
 	Dot            ast.Position      // position of '.' or '?.'
 	Method         string            // method name (e.g., "new", "copy")
 	MethodPos      ast.Position      // position of method name

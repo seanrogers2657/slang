@@ -14,6 +14,6 @@ Point = class {
 }
 
 main = () {
-    val p = Heap.new(Point{ 10, 20 })
+    val p = new Point{ 10, 20 }
     p.try_modify_x()
 }

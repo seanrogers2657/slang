@@ -12,8 +12,8 @@ Outer = struct {
 
 main = () {
     // Create nested structure (one level of pointer)
-    val inner = Heap.new(Inner{ 10 })
-    val outer = Heap.new(Outer{ inner })
+    val inner = new Inner{ 10 }
+    val outer = new Outer{ inner }
 
     // Make a deep copy
     val copy = outer.copy()

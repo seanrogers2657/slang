@@ -5,7 +5,7 @@ Logger = class {
     var last_value: s64
 
     create = () -> *Logger {
-        return Heap.new(Logger{ 0 })
+        return new Logger{ 0 }
     }
 
     // Void method with explicit void return type

@@ -965,7 +965,7 @@ func (g *Generator) lowerFunction(fn *semantic.TypedFunctionDecl) *Function {
 ### Step 2.5: Memory Operations
 
 ```go
-// Heap.new(Point{1, 2})
+// new Point{1, 2}
 func (g *Generator) lowerHeapNew(call *semantic.TypedCallExpr) *Value {
     structType := call.Args[0].GetType().(*semantic.StructType)
     size := g.structSize(structType)
@@ -1497,7 +1497,7 @@ Point = struct {
 }
 
 main = () {
-    val p = Heap.new(Point{10, 20})
+    val p = new Point{10, 20}
     p.x = 100
     print(p.x)
 }

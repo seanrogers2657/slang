@@ -7,7 +7,7 @@ Counter = class {
     var count: s64
 
     create = () -> *Counter {
-        return Heap.new(Counter{ 0 })
+        return new Counter{ 0 }
     }
 
     add = (self: &&Counter, x: s64) {

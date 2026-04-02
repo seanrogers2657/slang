@@ -20,7 +20,7 @@ main = () {
     while x < 10 {
         var count = 0
         for ; count < 1000; count = count + 1 {
-            val new_node = Heap.new(Node{ head, count, count, count, count })
+            val new_node = new Node{ head, count, count, count, count }
             head = new_node
             sleep(10 * 1000)
         }

@@ -25,7 +25,7 @@ Counter = class {
 }
 
 main = () {
-    val c = Heap.new(Counter{ 10 })
+    val c = new Counter{ 10 }
     c.double()         // 20
     c.add_amount(5)     // 25
     exit(c.get())

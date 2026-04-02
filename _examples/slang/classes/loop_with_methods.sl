@@ -5,7 +5,7 @@ Accumulator = class {
     var total: s64
 
     create = () -> *Accumulator {
-        return Heap.new(Accumulator{ 0 })
+        return new Accumulator{ 0 }
     }
 
     add = (self: &&Accumulator, n: s64) {

@@ -2223,6 +2223,8 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 		return &TypedLiteralExpr{Type: ErrorType{}}
 	case *ast.FieldAccessExpr:
 		return a.analyzeFieldAccessExpr(e)
+	case *ast.NewExpr:
+		return a.analyzeNewExpr(e)
 	case *ast.MethodCallExpr:
 		return a.analyzeMethodCallExpr(e)
 	case *ast.SafeCallExpr:
@@ -2891,13 +2893,8 @@ func (a *Analyzer) analyzeFieldAccessExpr(expr *ast.FieldAccessExpr) TypedExpres
 	}
 }
 
-// analyzeMethodCallExpr analyzes a method call expression (e.g., Heap.new(x), p.copy(), instance.method())
+// analyzeMethodCallExpr analyzes a method call expression (e.g., p.copy(), instance.method())
 func (a *Analyzer) analyzeMethodCallExpr(expr *ast.MethodCallExpr) TypedExpression {
-	// Check if this is a Heap.new() call
-	if ident, ok := expr.Object.(*ast.IdentifierExpr); ok && ident.Name == "Heap" {
-		return a.analyzeHeapMethodCall(expr)
-	}
-
 	// Check if this is a static method call on a class or object name
 	// (Safe navigation doesn't apply to static method calls)
 	if ident, ok := expr.Object.(*ast.IdentifierExpr); ok && !expr.SafeNavigation {
@@ -3266,7 +3263,7 @@ func (a *Analyzer) checkReceiverCompatibility(objectType Type, selfType Type, po
 			a.addError(
 				fmt.Sprintf("method requires ownership (*%s), but receiver is '%s'", selfClassType.Name, objectType.String()),
 				pos, pos,
-			).WithHint("use Heap.new() to create an owned instance")
+			).WithHint("use 'new' to create an owned instance")
 			return false
 		}
 	}
@@ -3555,85 +3552,24 @@ func (a *Analyzer) compareTypeSpecificity(t1, t2 Type) int {
 	return 0
 }
 
-// analyzeHeapMethodCall analyzes Heap.new() and other Heap methods
-func (a *Analyzer) analyzeHeapMethodCall(expr *ast.MethodCallExpr) TypedExpression {
-	// Type arguments
-	typedArgs := make([]TypedExpression, len(expr.Arguments))
-	for i, arg := range expr.Arguments {
-		typedArgs[i] = a.analyzeExpression(arg)
+// analyzeNewExpr analyzes a 'new' expression (e.g., new Point{ 10, 20 })
+func (a *Analyzer) analyzeNewExpr(expr *ast.NewExpr) TypedExpression {
+	typedOperand := a.analyzeExpression(expr.Operand)
+
+	operandType := typedOperand.GetType()
+	if _, isErr := operandType.(ErrorType); isErr {
+		return &TypedNewExpr{
+			Type:    TypeError,
+			NewPos:  expr.NewPos,
+			Operand: typedOperand,
+		}
 	}
 
-	// Create a dummy typed object for Heap (it's a pseudo-singleton)
-	typedObject := &TypedIdentifierExpr{
-		Type:     TypeVoid, // Heap doesn't have a real type
-		Name:     "Heap",
-		StartPos: expr.Object.Pos(),
-		EndPos:   expr.Object.End(),
-	}
-
-	switch expr.Method {
-	case "new":
-		// Heap.new(expr) allocates expr on the heap and returns Own<T>
-		if len(expr.Arguments) != 1 {
-			a.addError(
-				fmt.Sprintf("Heap.new() takes exactly 1 argument, got %d", len(expr.Arguments)),
-				expr.LeftParen, expr.RightParen,
-			)
-			return &TypedMethodCallExpr{
-				Type:       TypeError,
-				Object:     typedObject,
-				Dot:        expr.Dot,
-				Method:     expr.Method,
-				MethodPos:  expr.MethodPos,
-				LeftParen:  expr.LeftParen,
-				Arguments:  typedArgs,
-				RightParen: expr.RightParen,
-			}
-		}
-
-		// Infer the type from the argument
-		argType := typedArgs[0].GetType()
-		if _, isErr := argType.(ErrorType); isErr {
-			return &TypedMethodCallExpr{
-				Type:       TypeError,
-				Object:     typedObject,
-				Dot:        expr.Dot,
-				Method:     expr.Method,
-				MethodPos:  expr.MethodPos,
-				LeftParen:  expr.LeftParen,
-				Arguments:  typedArgs,
-				RightParen: expr.RightParen,
-			}
-		}
-
-		// Return Own<T> where T is the argument type
-		resultType := OwnedPointerType{ElementType: argType}
-		return &TypedMethodCallExpr{
-			Type:       resultType,
-			Object:     typedObject,
-			Dot:        expr.Dot,
-			Method:     expr.Method,
-			MethodPos:  expr.MethodPos,
-			LeftParen:  expr.LeftParen,
-			Arguments:  typedArgs,
-			RightParen: expr.RightParen,
-		}
-
-	default:
-		a.addError(
-			fmt.Sprintf("Heap has no method '%s'", expr.Method),
-			expr.MethodPos, expr.MethodPos,
-		).WithHint("available methods: new()")
-		return &TypedMethodCallExpr{
-			Type:       TypeError,
-			Object:     typedObject,
-			Dot:        expr.Dot,
-			Method:     expr.Method,
-			MethodPos:  expr.MethodPos,
-			LeftParen:  expr.LeftParen,
-			Arguments:  typedArgs,
-			RightParen: expr.RightParen,
-		}
+	resultType := OwnedPointerType{ElementType: operandType}
+	return &TypedNewExpr{
+		Type:    resultType,
+		NewPos:  expr.NewPos,
+		Operand: typedOperand,
 	}
 }
 

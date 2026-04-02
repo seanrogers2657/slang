@@ -12,7 +12,7 @@ mutatePoint = (p: &&Point) {
 }
 
 main = () {
-    val p = Heap.new(Point{ 10, 20 })  // val binding
+    val p = new Point{ 10, 20 }  // val binding
     mutatePoint(p)  // OK: val only prevents reassigning p, not mutating through it
     print(p.x)  // 100
 }

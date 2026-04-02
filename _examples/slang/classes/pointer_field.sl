@@ -7,7 +7,7 @@ Node = class {
 
     // Static factory
     create = (v: s64) -> *Node {
-        return Heap.new(Node{ v, null })
+        return new Node{ v, null }
     }
 
     get_value = (self: &Node) -> s64 {

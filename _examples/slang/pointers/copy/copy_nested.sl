@@ -11,7 +11,7 @@ Container = struct {
 }
 
 main = () {
-    var c1 = Heap.new(Container{ 5, Heap.new(Point{ 42, 100 }) })
+    var c1 = new Container{ 5, new Point{ 42, 100 } }
     val c2 = c1.copy()
 
     // Modify c1's nested pointer

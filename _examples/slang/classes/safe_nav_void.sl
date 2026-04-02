@@ -5,7 +5,7 @@ Counter = class {
     var value: s64
 
     create = (initial: s64) -> *Counter {
-        return Heap.new(Counter{ initial })
+        return new Counter{ initial }
     }
 
     // Void method - modifies state

@@ -6,7 +6,7 @@ Counter = class {
 
     // Static factory
     create = (initial: s64) -> *Counter {
-        return Heap.new(Counter{ initial })
+        return new Counter{ initial }
     }
 
     // Instance method that returns a value

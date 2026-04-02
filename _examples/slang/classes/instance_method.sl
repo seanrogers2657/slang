@@ -14,7 +14,7 @@ Counter = class {
 }
 
 main = () {
-    val c = Heap.new(Counter{ 10 })
+    val c = new Counter{ 10 }
     val result = c.add(20)
     exit(result)
 }

@@ -11,7 +11,7 @@ transfer = (p: *Point) -> *Point {
 }
 
 main = () {
-    var a = Heap.new(Point{ 2, 3 })
+    var a = new Point{ 2, 3 }
     assert(a.x == 2, "initial x should be 2")
     assert(a.y == 3, "initial y should be 3")
 

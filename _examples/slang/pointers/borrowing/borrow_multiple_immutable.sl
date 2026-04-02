@@ -11,7 +11,7 @@ sum = (a: &Point, b: &Point) -> s64 {
 }
 
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
 
     // Multiple &T borrows of same variable - OK
     val result = sum(p, p)  // Both are immutable borrows

@@ -26,7 +26,7 @@ main = () {
         var head: *Node? = null
         var count = 0
         while count < 50000 {
-            val new_node = Heap.new(Node{ head, count, count, count, count })
+            val new_node = new Node{ head, count, count, count, count }
             head = new_node
             count = count + 1
         }

@@ -9,7 +9,7 @@ IMPLEMENTED, 2026-01-05
 | `*T` type | ✅ Done | Ownership tracking, auto-free on scope exit |
 | `&T` type | ✅ Done | Immutable borrow, parameter-only |
 | `&&T` type | ✅ Done | Mutable borrow, parameter-only |
-| `Heap.new(T)` | ✅ Done | Bump allocator with size-class free lists |
+| `new T` | ✅ Done | Bump allocator with size-class free lists |
 | Move semantics | ✅ Done | Use-after-move detection, conditional moves |
 | Auto-borrowing | ✅ Done | `*T` → `&T`/`&&T` at call sites |
 | Borrow exclusivity | ✅ Done | Multiple `&T` OR one `&&T` per call |
@@ -51,7 +51,7 @@ Slang already has nullable types (`T?`) and arrays (`Array<T>`). This SEP builds
 
 ## Allocation
 - [goal] `Heap` built-in allocator type with `new(value)` method
-- [goal] `Heap.new(value)` returns `*T` (owned pointer)
+- [goal] `new value` returns `*T` (owned pointer)
 - [goal] Type inference for pointer types
 
 ## Pointer Types
@@ -80,7 +80,7 @@ Slang already has nullable types (`T?`) and arrays (`Array<T>`). This SEP builds
 - [goal] Compile-time enforcement of all ownership rules (no runtime cost)
 
 ## Allocation Failure
-- [goal] `Heap.new()` panics on allocation failure (out of memory)
+- [goal] `new ` panics on allocation failure (out of memory)
 - [non-goal] Fallible allocation (`Heap.tryNew()`) - future work
 
 ## Non-Goals
@@ -88,7 +88,7 @@ Slang already has nullable types (`T?`) and arrays (`Array<T>`). This SEP builds
 - [non-goal] Uninitialized allocation (`Heap.alloc<T>()`) - future work
 - [non-goal] Fallible allocation (`Heap.tryNew() -> *T?`) - future work
 - [non-goal] Custom allocator interface - future work, but design anticipates it
-- [non-goal] Address-of operator (`&variable`) - can only get pointers via `Heap.new`
+- [non-goal] Address-of operator (`&variable`) - can only get pointers via `new`
 - [non-goal] Pointer arithmetic
 - [non-goal] Garbage collection or reference counting
 - [non-goal] Explicit lifetime annotations - ownership rules avoid need for these
@@ -99,11 +99,11 @@ Slang already has nullable types (`T?`) and arrays (`Array<T>`). This SEP builds
 ## Allocator
 
 - `Heap` - Built-in allocator type for heap memory allocation.
-- `Heap.new(value)` - Allocates memory on the heap, stores the value, and returns `*T`. Type T is inferred from the value. The value can be:
-  - A literal: `Heap.new(Point{ 1, 2 })`
-  - A stack-allocated variable: `Heap.new(p)` (moves `p` to heap)
-  - An owned pointer: `Heap.new(ownedPtr)` (creates `**T` - a pointer to a pointer)
-- **Allocation failure:** `Heap.new()` panics if allocation fails (out of memory). This matches Go, Swift, and Kotlin behavior. For fallible allocation, see Future Work (`Heap.tryNew`).
+- `new value` - Allocates memory on the heap, stores the value, and returns `*T`. Type T is inferred from the value. The value can be:
+  - A literal: `new Point{ 1, 2 }`
+  - A stack-allocated variable: `new p` (moves `p` to heap)
+  - An owned pointer: `new ownedPtr` (creates `**T` - a pointer to a pointer)
+- **Allocation failure:** `new ` panics if allocation fails (out of memory). This matches Go, Swift, and Kotlin behavior. For fallible allocation, see Future Work (`Heap.tryNew`).
 
 ## Pointer Types
 
@@ -134,11 +134,11 @@ Array indexing behavior depends on element type:
 
 ```slang
 // Primitive array - indexing returns copy
-val nums = Heap.new([1, 2, 3])
+val nums = new [1, 2, 3]
 val x = nums[0]               // x: i64 (copy)
 
 // Owned pointer array - indexing borrows
-val points: *Array<*Point> = Heap.new([...])
+val points: *Array<*Point> = new [...]
 val p = points[0]             // p: &Point (immutable borrow)
 // points[0] still owns the element
 
@@ -220,9 +220,9 @@ deepAccess = (o: &&Outer) {
 
 ```slang
 // ✅ Valid pointer types
-val p: *Point = Heap.new(Point{ 1, 2 })
+val p: *Point = new Point{ 1, 2 }
 val q: *Point? = null
-val r: *Array<*Point> = Heap.new([...])
+val r: *Array<*Point> = new [...]
 
 // ❌ Invalid: T? inside *
 val bad: *Point? = ...             // Error: *T requires non-nullable T
@@ -243,7 +243,7 @@ maybeUse = (p: &Point?) {
 }
 
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     maybeUse(p)      // OK: auto-borrow
     maybeUse(null)   // OK: pass null
 }
@@ -264,7 +264,7 @@ val p2 = p1            // Copy - both valid
 
 // Move-only - contains *T
 Container = struct { val data: *Point }
-val c1 = Container{ Heap.new(Point{ 1, 2 }) }
+val c1 = Container{ new Point{ 1, 2 } }
 val c2 = c1            // Move - c1 is invalid
 
 // To copy move-only types, use .copy()
@@ -281,7 +281,7 @@ This affects array indexing: `arr[i]` returns a copy for copyable element types,
 - **Error on non-nullable:** Using `?.` on a non-nullable pointer is a compile error.
 
 ```slang
-val p = Heap.new(Point{ 1, 2 })       // *Point, not nullable
+val p = new Point{ 1, 2 }       // *Point, not nullable
 print(p?.x)                            // Error: safe navigation on non-nullable type
 
 val q: *Point? = maybeGet()
@@ -296,8 +296,8 @@ print(q?.x)                            // OK: q is nullable
 - `*T` can be compared with `&T` - both are identity (address) comparison.
 
 ```slang
-val p = Heap.new(Point{ 1, 2 })
-val q = Heap.new(Point{ 1, 2 })
+val p = new Point{ 1, 2 }
+val q = new Point{ 1, 2 }
 val r = p.copy()
 
 print(p == q)                         // false: different allocations
@@ -350,7 +350,7 @@ Every `*T` has exactly one owner. When the owner goes out of scope, the memory i
 
 ```slang
 main = () {
-    val p = Heap.new(Point{ 1, 2 })    // p: *Point, main owns it
+    val p = new Point{ 1, 2 }    // p: *Point, main owns it
     print(p.x)
 }                                       // p automatically freed here
 ```
@@ -361,7 +361,7 @@ Assigning an owned pointer to a new variable **moves** ownership. The original v
 
 ```slang
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     val q = p                           // ownership moves to q
 
     print(q.x)                          // OK: q owns the memory
@@ -388,7 +388,7 @@ scalePoint = (p: &&Point, factor: i64) {
 }
 
 main = () {
-    var p = Heap.new(Point{ 1, 2 })
+    var p = new Point{ 1, 2 }
 
     printPoint(p)                       // borrows as &Point (immutable)
     printPoint(p)                       // can borrow again
@@ -411,7 +411,7 @@ consume = (p: *Point) {
 }                                       // p freed here - we own it
 
 main = () {
-    val a = Heap.new(Point{ 10, 20 })
+    val a = new Point{ 10, 20 }
     consume(a)                          // ownership transferred
     // print(a.x)                       // Error: a was moved
 }
@@ -419,12 +419,12 @@ main = () {
 
 ### Stack to Heap Promotion
 
-Stack-allocated values can be moved to the heap with `Heap.new()`.
+Stack-allocated values can be moved to the heap with `new `.
 
 ```slang
 main = () {
     val p = Point{ 1, 2 }               // stack-allocated
-    val h = Heap.new(p)                 // moves p to heap, h: *Point
+    val h = new p                 // moves p to heap, h: *Point
 
     // print(p.x)                       // Error: p was moved
     print(h.x)                          // OK: access through h
@@ -439,7 +439,7 @@ To create an independent copy (both remain valid), use `.copy()`. This is a buil
 
 ```slang
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     val q = p.copy()                    // deep copy, new allocation
 
     print(p.x)                          // OK: p still valid
@@ -462,7 +462,7 @@ main = () {
     val q = p                          // Copy via assignment - both valid
     // val r = p.copy()                // Error: .copy() is only for *T
 
-    val h = Heap.new(Point{ 1, 2 })    // Heap-allocated
+    val h = new Point{ 1, 2 }    // Heap-allocated
     val i = h.copy()                   // OK: deep copy of owned pointer
 }
 ```
@@ -475,7 +475,7 @@ Container = struct {
 }
 
 main = () {
-    val c = Heap.new(Container{ Heap.new(Point{ 1, 2 }) })
+    val c = new Container{ new Point{ 1, 2 } }
     val d = c.copy()                    // deep copy
 
     // c and d are completely independent
@@ -494,8 +494,8 @@ When reassigning a `var` pointer, the old value is automatically freed.
 
 ```slang
 main = () {
-    var p = Heap.new(Point{ 1, 2 })    // p owns Point{1,2}
-    p = Heap.new(Point{ 3, 4 })        // Point{1,2} auto-freed
+    var p = new Point{ 1, 2 }    // p owns Point{1,2}
+    p = new Point{ 3, 4 }        // Point{1,2} auto-freed
                                        // p now owns Point{3,4}
 }                                      // Point{3,4} freed here
 ```
@@ -506,7 +506,7 @@ Functions can return `*T` - ownership transfers to the caller.
 
 ```slang
 createPoint = (x: i64, y: i64) -> *Point {
-    Heap.new(Point{ x, y })             // ownership transferred to caller
+    new Point{ x, y }             // ownership transferred to caller
 }
 
 main = () {
@@ -525,7 +525,7 @@ Container = struct {
 }
 
 main = () {
-    val point = Heap.new(Point{ 1, 2 })
+    val point = new Point{ 1, 2 }
     val container = Container{ point }  // point moves into container
 
     // print(point.x)                   // Error: point was moved
@@ -544,8 +544,8 @@ Node = struct {
 }
 
 main = () {
-    val n2 = Heap.new(Node{ 20, null })
-    val n1 = Heap.new(Node{ 10, n2 })   // n2 moves into n1.next
+    val n2 = new Node{ 20, null }
+    val n1 = new Node{ 10, n2 }   // n2 moves into n1.next
 
     print(n1.value)                     // 10
     print(n1.next?.value)               // 20
@@ -556,8 +556,8 @@ main = () {
 
 | Operation | Syntax | Effect |
 |-----------|--------|--------|
-| Allocate literal | `Heap.new(Point{ 1, 2 })` | Returns `*T`, caller owns it |
-| Stack to heap | `Heap.new(p)` | Moves stack value to heap, returns `*T` |
+| Allocate literal | `new Point{ 1, 2 }` | Returns `*T`, caller owns it |
+| Stack to heap | `new p` | Moves stack value to heap, returns `*T` |
 | Assign | `val q = p` | Moves ownership, `p` invalid |
 | Copy | `p.copy()` | Deep copy, both valid |
 | Pass to `&T` param | `f(p)` | Borrow (immutable) |
@@ -571,7 +571,7 @@ main = () {
 
 ```slang
 // Error: use after move
-val p = Heap.new(Point{ 1, 2 })
+val p = new Point{ 1, 2 }
 val q = p
 print(p.x)                              // Error: 'p' was moved to 'q'
 
@@ -593,7 +593,7 @@ bad = (p: &Point) -> &Point {
 // val binding CAN mutate var fields (val only controls reassignment)
 Point = struct { var x: i64; var y: i64 }
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     p.x = 10                            // OK: x is a var field
     // p = other                        // Error: p is val, cannot reassign
 }
@@ -613,7 +613,7 @@ Node = struct {
 }
 
 main = () {
-    var n = Heap.new(Node{ null })
+    var n = new Node{ null }
     n.next = n                         // Error: cannot create self-reference
 }
 ```
@@ -633,7 +633,7 @@ bad1 = (p: &Point) -> &Point { p }
 
 // ❌ Error: &T as local variable type
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     val borrowed: &Point = p       // Error: cannot store &T
 }
 
@@ -651,7 +651,7 @@ If a variable is moved in any branch, it's invalid after the entire if/else. Thi
 
 ```slang
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
 
     if (condition) {
         val q = p                      // moves p
@@ -664,12 +664,12 @@ main = () {
 **Short-circuit operators:**
 ```slang
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
 
     val result = condition || consume(p)  // p conditionally moved
     print(p.x)                         // Error: p may have been moved
 
-    val q = Heap.new(Point{ 3, 4 })
+    val q = new Point{ 3, 4 }
     val result2 = condition && consume(q) // q conditionally moved
     print(q.x)                         // Error: q may have been moved
 }
@@ -678,8 +678,8 @@ main = () {
 **Conditional expressions:**
 ```slang
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
-    val q = Heap.new(Point{ 3, 4 })
+    val p = new Point{ 1, 2 }
+    val q = new Point{ 3, 4 }
 
     val r = condition ? p : q          // Both p and q conditionally moved
     print(p.x)                         // Error: p may have been moved
@@ -696,7 +696,7 @@ Moving a pointer inside a loop body is an error.
 
 ```slang
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
 
     for (var i = 0; i < 3; i = i + 1) {
         val q = p                      // Error: cannot move in loop
@@ -716,7 +716,7 @@ Outer = struct {
 }
 
 main = () {
-    val outer = Outer{ Heap.new(Inner{ 42 }) }
+    val outer = Outer{ new Inner{ 42 } }
     val extracted = outer.inner        // Error: cannot move field
 }
 ```
@@ -733,7 +733,7 @@ mutate = (p: &&Point) {
 }
 
 main = () {
-    val p = Heap.new(Point{ 1, 2 })   // val binding
+    val p = new Point{ 1, 2 }   // val binding
     mutate(p)                          // OK: val only prevents reassigning p
     print(p.x)                         // prints 10
 
@@ -753,7 +753,7 @@ readBoth = (a: &Point, b: &Point) {
     print(a.x + b.x)
 }
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     readBoth(p, p)                     // OK: both are immutable borrows
 }
 
@@ -763,7 +763,7 @@ bothMutate = (a: &&Point, b: &&Point) {
     b.x = 20
 }
 main = () {
-    var p = Heap.new(Point{ 1, 2 })
+    var p = new Point{ 1, 2 }
     bothMutate(p, p)                   // Error: cannot have two mutable borrows
 }
 
@@ -772,7 +772,7 @@ mixedBorrow = (a: &&Point, b: &Point) {
     a.x = b.x + 1
 }
 main = () {
-    var p = Heap.new(Point{ 1, 2 })
+    var p = new Point{ 1, 2 }
     mixedBorrow(p, p)                  // Error: cannot mix mutable and immutable borrows
 }
 ```
@@ -880,11 +880,11 @@ Point = struct {
 }
 
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     // p.x = 10                        // Error: x is val field
     // p.y = 20                        // Error: p is val binding
 
-    var q = Heap.new(Point{ 1, 2 })
+    var q = new Point{ 1, 2 }
     // q.x = 10                        // Error: x is val field
     q.y = 20                           // OK: q is var and y is var
 }
@@ -906,7 +906,7 @@ useRef = (p: &Point) {
 
 // ✅ OK: capture *T (moves ownership into closure)
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
 
     val f = () {
         print(p.x)                     // p moved into closure
@@ -938,7 +938,7 @@ List = struct<T> {
 
 main = () {
     var list: List<*Point> = List{ [] }
-    list.items = append(list.items, Heap.new(Point{ 1, 2 }))
+    list.items = append(list.items, new Point{ 1, 2 })
 }
 
 // ❌ Error: &T as type argument for fields
@@ -947,7 +947,7 @@ Cache = struct<T> {
 }
 
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     val c: Cache<&Point> = ...     // Error: &T cannot be stored
 }
 ```
@@ -960,7 +960,7 @@ Temporaries (values returned from function calls) live until the end of the stat
 
 ```slang
 createPoint = () -> *Point {
-    Heap.new(Point{ 10, 20 })
+    new Point{ 10, 20 }
 }
 
 main = () {
@@ -986,7 +986,7 @@ Assigning an `*T` variable to itself is a compile-time error.
 
 ```slang
 main = () {
-    var p = Heap.new(Point{ 1, 2 })
+    var p = new Point{ 1, 2 }
     p = p                              // Error: cannot assign variable to itself
 }
 ```
@@ -1003,7 +1003,7 @@ Container = struct {
 }
 
 main = () {
-    var c = Heap.new(Container{ Heap.new(Data{}) })
+    var c = new Container{ new Data{} }
 
     c = c.data                         // Error: 'c' appears in both sides of move
     c.data = c                         // Error: 'c' appears in both sides of move
@@ -1018,7 +1018,7 @@ Expressions are evaluated left-to-right. If a variable is moved, any subsequent 
 
 ```slang
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
 
     // Assuming consume takes *T (moves) and read takes &T (borrows)
     consume(p, p)                      // Error: 'p' moved in first argument, used in second
@@ -1030,7 +1030,7 @@ main = () {
 **Note:** Multiple immutable borrows in one expression are fine:
 ```slang
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     readBoth(p, p)                     // OK: both are immutable borrows
 }
 ```
@@ -1048,7 +1048,7 @@ mixed = (r: &Point, p: *Point) {
 }
 
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     mixed(p, p)                        // Error: cannot borrow and move same value
     // First argument borrows p, second moves it
     // The borrow would dangle when p is moved
@@ -1063,11 +1063,11 @@ When a function returns early, all live `*T` values are dropped in reverse decla
 
 ```slang
 main = () {
-    val a = Heap.new(Point{ 1, 2 })   // a is live
+    val a = new Point{ 1, 2 }   // a is live
     if (condition) {
         return                         // Drop: a
     }
-    val b = Heap.new(Point{ 3, 4 })   // a, b are live
+    val b = new Point{ 3, 4 }   // a, b are live
     if (condition2) {
         consume(a)                     // a is moved, no longer live
         return                         // Drop: b (not a, it was moved)
@@ -1083,7 +1083,7 @@ Iterating over a container borrows it; elements are borrowed or copied based on 
 
 ```slang
 main = () {
-    val arr = Heap.new([1, 2, 3, 4, 5])
+    val arr = new [1, 2, 3, 4, 5]
 
     // Borrows arr; x is a copy (i64 is copyable)
     for x in arr {
@@ -1095,10 +1095,10 @@ main = () {
 
 // For pointer elements: x borrows each element
 main = () {
-    val points: *Array<*Point> = Heap.new([
-        Heap.new(Point{ 1, 2 }),
-        Heap.new(Point{ 3, 4 })
-    ])
+    val points: *Array<*Point> = new [
+        new Point{ 1, 2 },
+        new Point{ 3, 4 }
+    ]
 
     // x borrows each element (cannot move out of array)
     for x in points {
@@ -1118,10 +1118,10 @@ mutateAll = (points: &&Array<*Point>) {
 }
 
 main = () {
-    val points = Heap.new([
-        Heap.new(Point{ 1, 2 }),
-        Heap.new(Point{ 3, 4 })
-    ])
+    val points = new [
+        new Point{ 1, 2 },
+        new Point{ 3, 4 }
+    ]
 
     mutateAll(points)
     print(points[0].x)                 // prints: 2
@@ -1136,15 +1136,15 @@ Cannot reassign an owned pointer while any borrows of it exist. This includes du
 
 ```slang
 main = () {
-    var arr = Heap.new([1, 2, 3])
+    var arr = new [1, 2, 3]
 
     for x in arr {
-        arr = Heap.new([4, 5, 6])      // Error: cannot reassign 'arr' while borrowed
+        arr = new [4, 5, 6]      // Error: cannot reassign 'arr' while borrowed
         // The for loop borrows arr for the duration of iteration
     }
 
     // After the loop, arr can be reassigned
-    arr = Heap.new([7, 8, 9])          // OK: no active borrows
+    arr = new [7, 8, 9]          // OK: no active borrows
 }
 ```
 
@@ -1156,7 +1156,7 @@ Arithmetic and comparison operators auto-dereference `*T` for primitive types. T
 
 ```slang
 main = () {
-    val p = Heap.new(42)
+    val p = new 42
     val sum = p + 1                    // OK: auto-derefs, sum is i64 (43)
     val product = p * 2                // OK: auto-derefs, product is i64 (84)
     val isLarge = p > 100              // OK: auto-derefs, isLarge is bool (false)
@@ -1165,7 +1165,7 @@ main = () {
     print(p + p)                       // OK: prints 84 (42 + 42)
 
     // Comparison between pointers is still identity comparison
-    val q = Heap.new(42)
+    val q = new 42
     print(p == q)                      // false: different allocations (identity)
     print(p == 42)                     // true: auto-derefs p, compares values
 }
@@ -1178,7 +1178,7 @@ Counter = struct {
 }
 
 main = () {
-    var c = Heap.new(Counter{ 42 })
+    var c = new Counter{ 42 }
     c.value = c.value + 1              // OK: modify through field access
     print(c.value)                     // prints: 43
 }
@@ -1209,11 +1209,11 @@ main = () {
 ```slang
 main = () {
     for i in range(10) {
-        val p = Heap.new(Point{ i, i })
+        val p = new Point{ i, i }
         if (condition) {
             break                      // Drops p before exiting loop
         }
-        val q = Heap.new(Point{ i, i + 1 })
+        val q = new Point{ i, i + 1 }
         if (otherCondition) {
             continue                   // Drops q and p before next iteration
         }
@@ -1229,11 +1229,11 @@ For `Array<*T?>`, indexing returns `&T?` (nullable borrow).
 
 ```slang
 main = () {
-    val arr: *Array<*Point?> = Heap.new([
-        Heap.new(Point{ 1, 2 }),
+    val arr: *Array<*Point?> = new [
+        new Point{ 1, 2 },
         null,
-        Heap.new(Point{ 3, 4 })
-    ])
+        new Point{ 3, 4 }
+    ]
 
     val p = arr[0]                     // p: &Point? (non-null borrow)
     val q = arr[1]                     // q: &Point? (null)
@@ -1253,13 +1253,13 @@ Array literals containing both `*T` and `null` infer element type `*T?`.
 main = () {
     // Inferred as Array<*Point?>
     val arr = [
-        Heap.new(Point{ 1, 2 }),
+        new Point{ 1, 2 },
         null,
-        Heap.new(Point{ 3, 4 })
+        new Point{ 3, 4 }
     ]
 
     // Explicit type annotation works too
-    val arr2: Array<*Point?> = [Heap.new(Point{ 5, 6 }), null]
+    val arr2: Array<*Point?> = [new Point{ 5, 6 }, null]
 }
 ```
 
@@ -1272,18 +1272,18 @@ Implicit return (expression as last statement) moves ownership just like explici
 ```slang
 // These are equivalent:
 createExplicit = () -> *Point {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     return p                           // Explicit return, moves p
 }
 
 createImplicit = () -> *Point {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     p                                  // Implicit return, moves p
 }
 
 // Direct allocation works too
 createDirect = () -> *Point {
-    Heap.new(Point{ 1, 2 })            // Implicit return of temporary
+    new Point{ 1, 2 }            // Implicit return of temporary
 }
 ```
 
@@ -1302,14 +1302,14 @@ identity = (p: *Point) -> *Point {
 // Useful for conditional wrapping
 maybeWrap = (p: *Point, shouldWrap: bool) -> *Container {
     if (shouldWrap) {
-        Heap.new(Container{ p })       // p moves into Container
+        new Container{ p }       // p moves into Container
     } else {
-        Heap.new(Container{ p })       // same
+        new Container{ p }       // same
     }
 }
 
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     val q = identity(p)                // p moves to identity, then to q
     // print(p.x)                      // Error: p was moved
     print(q.x)                         // OK: q owns it now
@@ -1410,15 +1410,15 @@ getNode = (list: &DoublyLinkedList, idx: i64) -> &DLLNode {
 }
 
 main = () {
-    var list = Heap.new(DoublyLinkedList{
-        Heap.new([
+    var list = new DoublyLinkedList{
+        new [
             DLLNode{ 10, 1, -1 },     // [0]: value=10, next=1, prev=none
             DLLNode{ 20, 2, 0 },      // [1]: value=20, next=2, prev=0
             DLLNode{ 30, -1, 1 }      // [2]: value=30, next=none, prev=1
-        ]),
+        ],
         0,   // head index
         2    // tail index
-    })
+    }
 
     // Forward traversal
     var idx = list.head
@@ -1483,12 +1483,12 @@ findDepth = (node: &TreeNode, parent: &TreeNode?) -> i64 {
 }
 
 main = () {
-    var tree = Heap.new(TreeNode{ 1, [
-        Heap.new(TreeNode{ 2, [] }),
-        Heap.new(TreeNode{ 3, [
-            Heap.new(TreeNode{ 4, [] })
-        ]})
-    ]})
+    var tree = new TreeNode{ 1, [
+        new TreeNode{ 2, [] },
+        new TreeNode{ 3, [
+            new TreeNode{ 4, [] }
+        ]}
+    ]}
 
     traverseWithParent(tree, null, (node, parent) {
         if (parent != null) {
@@ -1615,7 +1615,7 @@ Edge = struct {
 
 // Constructor
 newGraph = () -> *Graph {
-    Heap.new(Graph{ [], [], [] })
+    new Graph{ [], [], [] }
 }
 
 // Add node, returns its index (reuses deleted slots)
@@ -1792,15 +1792,15 @@ Tree = struct {
 }
 
 buildTree = () -> *Tree {
-    val child1 = Heap.new(TreeNode{ 1, 10, [] })
-    val child2 = Heap.new(TreeNode{ 2, 20, [] })
-    val root = Heap.new(TreeNode{ 0, 0, [child1, child2] })
+    val child1 = new TreeNode{ 1, 10, [] }
+    val child2 = new TreeNode{ 2, 20, [] }
+    val root = new TreeNode{ 0, 0, [child1, child2] }
 
-    var parents = Heap.new(Map{})
+    var parents = new Map{}
     parents.set(1, 0)  // child1's parent is root
     parents.set(2, 0)  // child2's parent is root
 
-    Heap.new(Tree{ root, parents })
+    new Tree{ root, parents }
 }
 
 getParentId = (tree: &Tree, nodeId: i64) -> i64? {
@@ -1837,7 +1837,7 @@ Point = class {
 }
 
 main = () {
-    var p = Heap.new(Point{ 3, 4 })
+    var p = new Point{ 3, 4 }
 
     print(p.magnitude())              // borrows p (immutable)
     p.scale(2)                        // borrows p (mutable)
@@ -1859,7 +1859,7 @@ Point = class {
 
     // Static factory - no self parameter
     static new = (x: i64, y: i64) -> *Point {
-        Heap.new(Point{ x, y })
+        new Point{ x, y }
     }
 
     // Static factory with default
@@ -1893,17 +1893,17 @@ Point = class {
 
     // Consuming method - self is moved in
     intoArray = (self: *Point) -> *Array<i64> {
-        Heap.new([self.x, self.y])
+        new [self.x, self.y]
     }   // self freed here
 }
 
 main = () {
     // Chaining on temporary - temporary is consumed
-    val arr = Heap.new(Point{ 1, 2 }).intoArray()
+    val arr = new Point{ 1, 2 }.intoArray()
     print(arr[0])                      // prints: 1
 
     // Chaining on variable - variable is moved
-    val p = Heap.new(Point{ 3, 4 })
+    val p = new Point{ 3, 4 }
     val arr2 = p.intoArray()           // p moved, consumed by method
     // print(p.x)                      // Error: p was moved
     print(arr2[1])                     // prints: 4
@@ -1928,8 +1928,8 @@ Node = struct {
 }
 
 main = () {
-    var a = Heap.new(Node{ null, null })
-    var b = Heap.new(Node{ null, a.weak() })
+    var a = new Node{ null, null }
+    var b = new Node{ null, a.weak() }
     a.next = b
 
     // Later: b.prev.upgrade() returns *Node? (null if freed)
@@ -1979,10 +1979,10 @@ For consuming elements from a collection during iteration:
 ```slang
 // Future syntax (not in this SEP)
 main = () {
-    var points = Heap.new([
-        Heap.new(Point{ 1, 2 }),
-        Heap.new(Point{ 3, 4 })
-    ])
+    var points = new [
+        new Point{ 1, 2 },
+        new Point{ 3, 4 }
+    ]
 
     // drain() consumes the array, yielding owned elements
     for p in points.drain() {
@@ -2020,7 +2020,7 @@ The three pointer types have clear, distinct purposes:
 No explicit `.borrow()` or `&` syntax needed:
 ```slang
 printPoint = (p: &Point) { print(p.x) }
-val p = Heap.new(Point{ 1, 2 })
+val p = new Point{ 1, 2 }
 printPoint(p)  // Just works - auto-borrows
 ```
 
@@ -2059,7 +2059,7 @@ Users must learn which types are copyable vs move-only:
 val x = 5
 val y = x      // OK - i64 is copyable
 
-val p = Heap.new(Point{ 1, 2 })
+val p = new Point{ 1, 2 }
 val q = p      // MOVES p - *Point is move-only
 print(p.x)     // ERROR: use of moved value
 ```
@@ -2069,7 +2069,7 @@ print(p.x)     // ERROR: use of moved value
 ### 2. Conditional Moves are Conservative (Medium)
 Moving in any branch invalidates the variable in all paths:
 ```slang
-val p = Heap.new(Point{ 1, 2 })
+val p = new Point{ 1, 2 }
 if condition {
     consume(p)  // moves p
 }
@@ -2277,7 +2277,7 @@ When the semantic analyzer encounters a type or method call:
 
 1. **Type lookup:** Check `BuiltinTypes` registry first, then user-defined types
 2. **Method lookup:** For `expr.method()`, check if `expr`'s type has the method in registry
-3. **Singleton lookup:** For `Heap.new()`, check `BuiltinSingletons` registry
+3. **Singleton lookup:** For `new `, check `BuiltinSingletons` registry
 4. **Constraint validation:** Ensure type arguments satisfy constraints (e.g., `*T?` fails)
 
 ```go
@@ -2308,7 +2308,7 @@ Built-in types need special code generation. Extend the codegen registry:
 // compiler/codegen/builtins.go
 
 type BuiltinCodegen interface {
-    GenerateAllocation(value Expression) string    // For Heap.new
+    GenerateAllocation(value Expression) string    // For new
     GenerateDeallocation(ptr Expression) string    // For scope exit
     GenerateCopy(ptr Expression) string            // For .copy()
     GenerateFieldAccess(ptr Expression, field string) string
@@ -2365,7 +2365,7 @@ Add token support for pointer syntax:
 
 Extend the parser to handle pointer expressions and types:
 - Parse `*T` and `&T` type syntax
-- Parse `Heap.new(expr)` as allocation expression
+- Parse `new expr` as allocation expression
 - Parse `.copy()` method calls
 - Parse `var` modifier on function parameters
 - Enforce `&T` only in parameter position
@@ -2374,7 +2374,7 @@ Extend the parser to handle pointer expressions and types:
 
 Add pointer types to the semantic analyzer:
 - Add `OwnedPointerType` and `RefPointerType` structs
-- `Heap.new(expr)` returns `*T` where T is inferred
+- `new expr` returns `*T` where T is inferred
 - Implicit conversion: `*T` → `&T` for function arguments
 - Error if `&T` used outside parameter position
 - Track `var` modifier on parameters for mutability
@@ -2554,16 +2554,16 @@ The bump allocator reduces memory usage by **~200x** for typical allocation patt
 ## Error Handling
 
 ```slang
-val p = Heap.new(42)
+val p = new 42
 print(p.x)                                // Error: *i64 has no fields
 
-val p = Heap.new(Point{ 1, 2 })
+val p = new Point{ 1, 2 }
 print(p[0])                               // Error: *Point not indexable
 
 val maybeP: *Point? = null
 print(maybeP.x)                           // Error: use ?.x for nullable pointer
 
-var q = Heap.new(Point{ 1, 2 })
+var q = new Point{ 1, 2 }
 q = q                                     // Error: cannot assign variable to itself
 
 foo(p, p)                                 // Error: 'p' moved in first argument
@@ -2594,7 +2594,7 @@ foo(p, p)                                 // Error: 'p' moved in first argument
 
 5. **Manual memory management from start**: Would complicate MVP. Starting with allocation-only allows proving the design before adding deallocation complexity.
 
-6. **`ptr::new(value)` syntax**: Simpler but doesn't allow for custom allocators. The `Heap.new(value)` design anticipates the allocator interface pattern.
+6. **`ptr::new(value)` syntax**: Simpler but doesn't allow for custom allocators. The `new value` design anticipates the allocator interface pattern.
 
 ## Syntax Choice Rationale
 
@@ -2647,14 +2647,14 @@ main = () {
 }
 ```
 
-This is explicitly out of scope for the initial implementation but informs the design choice of `Heap.new()` over `Own.new()`.
+This is explicitly out of scope for the initial implementation but informs the design choice of `new ` over `Own.new()`.
 
 # Testing
 
 ## Lexer/Parser Tests
 - Token recognition for `*`, `&`, `&&`, `Heap`
 - `*T`, `&T`, and `&&T` type parsing
-- `Heap.new(expr)` expressions
+- `new expr` expressions
 - `.copy()` method calls
 - `var` modifier on function parameters
 
@@ -2725,7 +2725,7 @@ This is explicitly out of scope for the initial implementation but informs the d
 ## E2E Tests
 Full programs using pointers with expected outputs:
 - Basic allocation
-- Stack to heap promotion (`Heap.new(stackValue)`)
+- Stack to heap promotion (`new stackValue`)
 - Pointers to structs with field access
 - Pointers to arrays with indexing (primitives return copy)
 - Pointers to arrays with indexing (owned elements return borrow)
@@ -2762,11 +2762,11 @@ Full programs using pointers with expected outputs:
 
 ## Example 1: Basic Allocation
 
-Demonstrates basic pointer allocation with `Heap.new`.
+Demonstrates basic pointer allocation with `new`.
 
 ```slang
 main = () {
-    val p = Heap.new(42)
+    val p = new 42
 
     // For primitives, pass to function that takes the value
     printValue = (x: i64) { print(x) }
@@ -2796,15 +2796,15 @@ main = () {
     print(p.x)                            // prints: 10
 
     // Move to heap
-    val h = Heap.new(p)                   // p moved to heap
+    val h = new p                   // p moved to heap
     // print(p.x)                         // Error: p was moved
 
     print(h.x)                            // prints: 10 (via heap pointer)
 
     // Useful for storing in data structures
     val points: Array<*Point> = [
-        Heap.new(Point{ 1, 2 }),
-        Heap.new(Point{ 3, 4 })
+        new Point{ 1, 2 },
+        new Point{ 3, 4 }
     ]
 }
 ```
@@ -2820,7 +2820,7 @@ Point = struct {
 }
 
 main = () {
-    val p = Heap.new(Point{ 10, 20 })
+    val p = new Point{ 10, 20 }
     print(p.x)                            // prints: 10 (auto-deref)
     print(p.y)                            // prints: 20 (auto-deref)
     print(p.x + p.y)                      // prints: 30
@@ -2837,7 +2837,7 @@ Shows auto-dereference for index access on a pointer to an array.
 
 ```slang
 main = () {
-    val arr = Heap.new([1, 2, 3, 4, 5])
+    val arr = new [1, 2, 3, 4, 5]
     print(arr[0])                         // prints: 1 (auto-deref)
     print(arr[2])                         // prints: 3
     print(arr[0] + arr[4])                // prints: 6
@@ -2858,9 +2858,9 @@ Node = struct {
 main = () {
     // Build list from tail to head
     // Assignment moves ownership automatically
-    val n3 = Heap.new(Node{ 30, null })
-    val n2 = Heap.new(Node{ 20, n3 })     // n3 moves into n2.next
-    val n1 = Heap.new(Node{ 10, n2 })     // n2 moves into n1.next
+    val n3 = new Node{ 30, null }
+    val n2 = new Node{ 20, n3 }     // n3 moves into n2.next
+    val n1 = new Node{ 10, n2 }     // n2 moves into n1.next
 
     // n3 and n2 are now invalid (moved)
     // print(n3.value)                    // Error: n3 was moved
@@ -2883,7 +2883,7 @@ Point = struct {
 }
 
 createPoint = (x: i64, y: i64) -> *Point {
-    Heap.new(Point{ x, y })
+    new Point{ x, y }
 }
 
 main = () {
@@ -2904,8 +2904,8 @@ Person = struct {
 }
 
 main = () {
-    val alice = Heap.new(Person{ "Alice", 30, null })
-    val bob = Heap.new(Person{ "Bob", 32, alice })  // alice moves into bob.spouse
+    val alice = new Person{ "Alice", 30, null }
+    val bob = new Person{ "Bob", 32, alice }  // alice moves into bob.spouse
 
     // Safe navigation returns nullable
     val spouseName: string? = bob.spouse?.name
@@ -2949,7 +2949,7 @@ consume = (p: *Point) {
 }                                         // p freed here
 
 main = () {
-    var p = Heap.new(Point{ 10, 20 })
+    var p = new Point{ 10, 20 }
 
     printPoint(p)                         // borrows as &Point
     printPoint(p)                         // can borrow multiple times
@@ -2982,12 +2982,12 @@ TreeNode = struct {
 
 // Creates a new leaf node
 leaf = (value: i64) -> *TreeNode {
-    Heap.new(TreeNode{ value, null, null })
+    new TreeNode{ value, null, null }
 }
 
 // Creates a new internal node - children move into the node
 node = (value: i64, left: *TreeNode, right: *TreeNode) -> *TreeNode {
-    Heap.new(TreeNode{ value, left, right })  // left and right move in
+    new TreeNode{ value, left, right }  // left and right move in
 }
 
 // Borrows tree to compute sum (&T = immutable borrow)
@@ -3026,16 +3026,16 @@ Point = struct {
 
 main = () {
     // val binding - can mutate var fields (val only controls reassignment)
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     // p.x = 10                           // Error: x is val field
     p.y = 20                              // OK: y is var field
     // p = other                          // Error: cannot reassign val binding
 
     // var binding - can also reassign the binding itself
-    var q = Heap.new(Point{ 1, 2 })
+    var q = new Point{ 1, 2 }
     // q.x = 10                           // Error: x is val field
     q.y = 30                              // OK: y is var field
-    q = Heap.new(Point{ 5, 6 })           // OK: q is var, can reassign
+    q = new Point{ 5, 6 }           // OK: q is var, can reassign
 
     print(q.y)                            // prints: 6
 }
@@ -3057,8 +3057,8 @@ setNext = (node: &&Node, next: *Node) {
 }
 
 main = () {
-    var n1 = Heap.new(Node{ 10, null })
-    val n2 = Heap.new(Node{ 20, null })
+    var n1 = new Node{ 10, null }
+    val n2 = new Node{ 20, null }
 
     setNext(n1, n2)                       // n2 ownership transferred
     // print(n2.value)                    // Error: n2 was moved
@@ -3078,8 +3078,8 @@ Point = struct {
 }
 
 main = () {
-    val p = Heap.new(Point{ 1, 2 })
-    val q = Heap.new(Point{ 1, 2 })       // same values, different allocation
+    val p = new Point{ 1, 2 }
+    val q = new Point{ 1, 2 }       // same values, different allocation
     val r = p.copy()                       // copy of p, different allocation
 
     // Identity comparison (address)
@@ -3107,7 +3107,7 @@ Point = struct {
 }
 
 main = () {
-    val p = Heap.new(Point{ 10, 20 })
+    val p = new Point{ 10, 20 }
 
     // Closure captures p, moving ownership into the closure
     val printX = () {
@@ -3132,11 +3132,11 @@ Point = struct {
 }
 
 main = () {
-    val points = Heap.new([
-        Heap.new(Point{ 1, 2 }),
-        Heap.new(Point{ 3, 4 }),
-        Heap.new(Point{ 5, 6 })
-    ])
+    val points = new [
+        new Point{ 1, 2 },
+        new Point{ 3, 4 },
+        new Point{ 5, 6 }
+    ]
 
     // Iteration borrows the array; each p borrows the element
     for p in points {
@@ -3167,7 +3167,7 @@ Point = struct {
 }
 
 createPoint = (x: i64, y: i64) -> *Point {
-    Heap.new(Point{ x, y })
+    new Point{ x, y }
 }
 
 main = () {
@@ -3186,7 +3186,7 @@ main = () {
     }
 
     createOuter = () -> *Outer {
-        Heap.new(Outer{ Heap.new(Point{ 100, 200 }) })
+        new Outer{ new Point{ 100, 200 } }
     }
 
     val v = createOuter().inner.x          // OK: all temps live until semicolon
@@ -3206,17 +3206,17 @@ Point = struct {
 
 main = () {
     // Primitive array - indexing returns copy
-    val nums = Heap.new([10, 20, 30])
+    val nums = new [10, 20, 30]
     val x = nums[0]                        // x: i64 (copy of value)
     val y = nums[0]                        // y: i64 (another copy)
     print(x + y)                           // prints: 20
 
     // Owned pointer array - indexing borrows
-    val points: *Array<*Point> = Heap.new([
-        Heap.new(Point{ 1, 2 }),
-        Heap.new(Point{ 3, 4 }),
-        Heap.new(Point{ 5, 6 })
-    ])
+    val points: *Array<*Point> = new [
+        new Point{ 1, 2 },
+        new Point{ 3, 4 },
+        new Point{ 5, 6 }
+    ]
 
     val p = points[0]                      // p: &Point (borrow)
     print(p.x)                             // prints: 1
@@ -3228,7 +3228,7 @@ main = () {
     print(points[0].x)                     // prints: 1
 
     // To replace an element, use .set()
-    val old = points.set(0, Heap.new(Point{ 100, 200 }))
+    val old = points.set(0, new Point{ 100, 200 })
     // old: *Point (the replaced element)
     print(points[0].x)                     // prints: 100
 
@@ -3250,19 +3250,19 @@ Point = struct {
 
 // ❌ Error: self-assignment
 bad1 = () {
-    var p = Heap.new(Point{ 1, 2 })
+    var p = new Point{ 1, 2 }
     p = p                                  // Error: cannot assign variable to itself
 }
 
 // ❌ Error: double move in expression
 bad2 = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     consume(p, p)                          // Error: 'p' moved twice
 }
 
 // ❌ Error: use after move in expression
 bad3 = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     foo(take(p), p.x)                      // Error: 'p' used after move
 }
 
@@ -3272,13 +3272,13 @@ Container = struct {
 }
 
 bad4 = () {
-    var c = Heap.new(Container{ Heap.new(Point{ 1, 2 }) })
+    var c = new Container{ new Point{ 1, 2 } }
     c = c.data                             // Error: overlapping move paths
 }
 
 // ❌ Error: mixed borrow types
 bad5 = () {
-    var p = Heap.new(Point{ 1, 2 })
+    var p = new Point{ 1, 2 }
     mixedBorrow(p, p)                      // Error: mutable + immutable borrow
 }
 
@@ -3288,7 +3288,7 @@ mixedBorrow = (a: &&Point, b: &Point) {
 
 // ❌ Error: mixed borrow and move
 bad6 = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     borrowAndMove(p, p)                    // Error: cannot borrow and move same value
 }
 
@@ -3298,7 +3298,7 @@ borrowAndMove = (r: &Point, p: *Point) {
 
 // ✅ OK: mutable borrow from val binding (val only controls reassignment)
 good_mutate = () {
-    val p = Heap.new(Point{ 1, 2 })        // val binding
+    val p = new Point{ 1, 2 }        // val binding
     mutate(p)                              // OK: val only prevents reassigning p
     print(p.x)                             // prints 10
 }
@@ -3309,22 +3309,22 @@ mutate = (p: &&Point) {
 
 // ❌ Error: reassign while borrowed
 bad8 = () {
-    var arr = Heap.new([1, 2, 3])
+    var arr = new [1, 2, 3]
     for x in arr {
-        arr = Heap.new([4, 5, 6])          // Error: cannot reassign while borrowed
+        arr = new [4, 5, 6]          // Error: cannot reassign while borrowed
     }
 }
 
 // ✅ OK: operators auto-dereference *primitive
 good0 = () {
-    val p = Heap.new(42)
+    val p = new 42
     val sum = p + 1                        // OK: auto-derefs, sum is 43
     val cmp = p > 10                       // OK: auto-derefs, cmp is true
 }
 
 // ✅ OK: multiple immutable borrows
 good1 = () {
-    val p = Heap.new(Point{ 1, 2 })
+    val p = new Point{ 1, 2 }
     readBoth(p, p)                         // OK: both immutable
 }
 
@@ -3414,11 +3414,11 @@ mutateDeep = (c: &&Container) {
 }
 
 main = () {
-    var container = Heap.new(Container{
-        Heap.new(Outer{
-            Heap.new(Inner{ 42 })
-        })
-    })
+    var container = new Container{
+        new Outer{
+            new Inner{ 42 }
+        }
+    }
 
     readDeep(container)                    // prints: 42
     mutateDeep(container)                  // modifies to 100

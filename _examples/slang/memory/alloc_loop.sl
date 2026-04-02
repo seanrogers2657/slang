@@ -7,7 +7,7 @@ Point = struct {
 }
 
 allocateAndReturn = (n: s64) -> s64 {
-    val p = Heap.new(Point{ n })
+    val p = new Point{ n }
     return p.x
 }
 

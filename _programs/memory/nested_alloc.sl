@@ -12,8 +12,8 @@ Outer = struct {
 }
 
 createAndCompute = (n: s64) -> s64 {
-    val inner = Heap.new(Inner{ n })
-    val outer = Heap.new(Outer{ inner, n * 2 })
+    val inner = new Inner{ n }
+    val outer = new Outer{ inner, n * 2 }
     return outer.data.value + outer.extra
 }
 

@@ -30,7 +30,7 @@ Calculator = class {
 }
 
 main = () {
-    val c = Heap.new(Calculator{ 10 })
+    val c = new Calculator{ 10 }
 
     // Test instance method calling later-defined method
     c.add_double(5)  // value = 10 + 10 = 20

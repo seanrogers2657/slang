@@ -5,7 +5,7 @@ Container = class {
     var value: s64
 
     create = (v: s64) -> *Container {
-        return Heap.new(Container{ v })
+        return new Container{ v }
     }
 
     get_value = (self: &Container) -> s64 {

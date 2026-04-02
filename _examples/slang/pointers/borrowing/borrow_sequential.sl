@@ -10,7 +10,7 @@ increment = (p: &&Point) {
 }
 
 main = () {
-    val p = Heap.new(Point{ 1 })
+    val p = new Point{ 1 }
 
     // Sequential mutable borrows - each ends before the next starts
     increment(p)  // First borrow ends when function returns

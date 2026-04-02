@@ -13,6 +13,6 @@ mutateBoth = (a: &&Point, b: &&Point) {
 }
 
 main = () {
-    var p = Heap.new(Point{ 10, 20 })
+    var p = new Point{ 10, 20 }
     mutateBoth(p, p)  // Error: cannot have two mutable borrows
 }

@@ -915,6 +915,38 @@ main = () {
 - Nested nullables (`T??`) are not allowed
 - Use null comparison (`x == null`, `x != null`) for null checks
 
+## Module System (SEP 10)
+
+### Import Syntax
+- `import` is a declaration keyword, not a function
+- Two forms: `import "path"` (implicit, name from last path segment) and `Name = import "path"` (explicit alias)
+- Import paths resolve within `packages/` directory only. No `./`, `../`, or `/` prefixes
+- Import path segments must match `[a-z][a-z0-9_]*`. Reserved paths: `main`, `std`
+
+### Compilation Pipeline
+- All programs — single-file or multi-package — go through `PackageCompiler`. No separate single-file path
+- `PackageCompiler` orchestrates 4 phases: (1) discovery/parsing, (2) semantic analysis, (3) IR generation. Backend is called by the caller
+- The semantic analyzer uses a 5-pass approach: register type names → resolve type fields → register function signatures → analyze top-level variables → analyze declaration bodies. This ordering is required for forward references
+- Top-level `var` declarations in non-root packages use `OpLoadGlobal`/`OpStoreGlobal` for `.data` section access
+
+### Name Mangling
+- Uses `__` as separator (e.g., `math__add`), not `_.` — slasm doesn't support `.` in labels
+- All compiler-internal assembly labels use the `_sl_` prefix. User function labels do not
+- IR name mangling for non-root packages happens post-generation in `PackageCompiler.GenerateIR()` — both function names and intra-package call references are mangled
+- Mangling functions: `ManglePrefix(pkgPath)` for prefix only, `MangleName(pkgPath, name)` for full symbol
+
+### Module System Types
+- Package types in `slpackage`: `PackageCompiler`, `PackageResolver`, `Package` (no `Sl` prefix — the package name provides context)
+- Semantic types: `PackageNamespace`, `Export`, `ExportKind` in `compiler/semantic/exports.go`
+- `PackageNamespaceType` is a sentinel type stored in scope to represent namespace references. It's not a real runtime type — `Equals()` always returns false
+
+### Module System Testing
+- Single-file e2e tests: `_examples/slang/` organized by feature
+- Multi-package project tests: `_examples/projects/`, each directory containing `main.sl` and optionally `packages/`
+- `@test:` directives in `main.sl` drive project test expectations
+- `error_stage=module` can appear in both Phase 1 (discovery) and Phase 2 (semantic) errors
+- All e2e tests route through `compileAndRun()` — `runSlangTest` and `runProjectTest` are thin wrappers
+
 ## Module Information
 
 - **Module Path**: `github.com/seanrogers2657/slang`

@@ -1568,3 +1568,76 @@ func TestLexerNullability(t *testing.T) {
 		})
 	}
 }
+
+func TestLexerImportKeyword(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []Token
+	}{
+		{
+			name:  "import keyword",
+			input: "import",
+			expected: []Token{
+				{Type: TokenTypeImport, Value: "import"},
+			},
+		},
+		{
+			name:  "implicit import",
+			input: `import "math"`,
+			expected: []Token{
+				{Type: TokenTypeImport, Value: "import"},
+				{Type: TokenTypeString, Value: "math"},
+			},
+		},
+		{
+			name:  "explicit import",
+			input: `m = import "math"`,
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "m"},
+				{Type: TokenTypeAssign, Value: "="},
+				{Type: TokenTypeImport, Value: "import"},
+				{Type: TokenTypeString, Value: "math"},
+			},
+		},
+		{
+			name:  "identifier starting with import",
+			input: "imports",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "imports"},
+			},
+		},
+		{
+			name:  "import with nested path",
+			input: `import "utils/helpers"`,
+			expected: []Token{
+				{Type: TokenTypeImport, Value: "import"},
+				{Type: TokenTypeString, Value: "utils/helpers"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("unexpected errors: %v", l.Errors)
+			}
+
+			if len(l.Tokens) != len(tt.expected) {
+				t.Fatalf("expected %d tokens, got %d: %v", len(tt.expected), len(l.Tokens), l.Tokens)
+			}
+
+			for i, token := range l.Tokens {
+				if token.Type != tt.expected[i].Type {
+					t.Errorf("token %d: expected type %v, got %v", i, tt.expected[i].Type, token.Type)
+				}
+				if token.Value != tt.expected[i].Value {
+					t.Errorf("token %d: expected value %q, got %q", i, tt.expected[i].Value, token.Value)
+				}
+			}
+		})
+	}
+}

@@ -251,12 +251,16 @@ func getMethodFromMap(methods map[string][]*MethodInfo, name string) ([]*MethodI
 
 // StructType represents a struct type with named fields
 type StructType struct {
-	Name   string            // struct name
-	Fields []StructFieldInfo // list of fields
+	Name        string            // struct name
+	PackagePath string            // package path ("main" for root, "geometry" for packages/geometry/)
+	Fields      []StructFieldInfo // list of fields
 }
 
 func (t StructType) String() string {
-	return t.Name
+	if t.PackagePath == "" || t.PackagePath == "main" {
+		return t.Name
+	}
+	return t.PackagePath + "." + t.Name
 }
 
 func (t StructType) Equals(other Type) bool {
@@ -264,8 +268,7 @@ func (t StructType) Equals(other Type) bool {
 	if !ok {
 		return false
 	}
-	// Nominal type equality - structs are equal if they have the same name
-	return t.Name == o.Name
+	return t.Name == o.Name && t.PackagePath == o.PackagePath
 }
 
 // GetField returns field info by name
@@ -295,13 +298,17 @@ type MethodInfo struct {
 
 // ClassType represents a class type with fields and methods
 type ClassType struct {
-	Name    string                     // class name
-	Fields  []StructFieldInfo          // list of fields (reuses struct field info)
-	Methods map[string][]*MethodInfo   // methods by name (slice for overloading support)
+	Name        string                     // class name
+	PackagePath string                     // package path ("main" for root)
+	Fields      []StructFieldInfo          // list of fields (reuses struct field info)
+	Methods     map[string][]*MethodInfo   // methods by name (slice for overloading support)
 }
 
 func (t ClassType) String() string {
-	return t.Name
+	if t.PackagePath == "" || t.PackagePath == "main" {
+		return t.Name
+	}
+	return t.PackagePath + "." + t.Name
 }
 
 func (t ClassType) Equals(other Type) bool {
@@ -309,8 +316,7 @@ func (t ClassType) Equals(other Type) bool {
 	if !ok {
 		return false
 	}
-	// Nominal type equality - classes are equal if they have the same name
-	return t.Name == o.Name
+	return t.Name == o.Name && t.PackagePath == o.PackagePath
 }
 
 // GetField returns field info by name
@@ -336,12 +342,16 @@ func (t ClassType) Size() int {
 
 // ObjectType represents a singleton object type (static methods only, no fields)
 type ObjectType struct {
-	Name    string                   // object name
-	Methods map[string][]*MethodInfo // methods by name (all must be static)
+	Name        string                   // object name
+	PackagePath string                   // package path ("main" for root)
+	Methods     map[string][]*MethodInfo // methods by name (all must be static)
 }
 
 func (t ObjectType) String() string {
-	return t.Name
+	if t.PackagePath == "" || t.PackagePath == "main" {
+		return t.Name
+	}
+	return t.PackagePath + "." + t.Name
 }
 
 func (t ObjectType) Equals(other Type) bool {
@@ -349,8 +359,7 @@ func (t ObjectType) Equals(other Type) bool {
 	if !ok {
 		return false
 	}
-	// Nominal type equality - objects are equal if they have the same name
-	return t.Name == o.Name
+	return t.Name == o.Name && t.PackagePath == o.PackagePath
 }
 
 // GetMethod returns all overloads for a method by name
@@ -791,6 +800,27 @@ func IsIntegerType(t Type) bool {
 		return true
 	}
 	return false
+}
+
+// integerBitWidth is implemented by all integer types.
+type integerBitWidth interface {
+	BitWidth() int
+	IsSigned() bool
+}
+
+// IntegerWidensTo checks if integer type 'from' can be implicitly widened to 'to'.
+// Widening is allowed when: both are integers (not floats), same signedness,
+// and from is narrower or equal width.
+func IntegerWidensTo(from, to Type) bool {
+	if !IsIntegerType(from) || !IsIntegerType(to) {
+		return false
+	}
+	f := from.(integerBitWidth)
+	t := to.(integerBitWidth)
+	if f.IsSigned() != t.IsSigned() {
+		return false
+	}
+	return f.BitWidth() <= t.BitWidth()
 }
 
 // IsFloatType checks if a type is any float type

@@ -151,10 +151,33 @@ func (s *SSABuilder) addPhiOperands(name string, phi *Value) *Value {
 }
 
 // tryRemoveTrivialPhi removes a phi if it has only one unique non-self value.
+// After replacement, recursively checks phi users that may have become trivial.
 func (s *SSABuilder) tryRemoveTrivialPhi(phi *Value) *Value {
 	same := findUniquePhi(phi)
 	if same == nil {
 		return phi // No unique value or multiple values - keep phi
+	}
+
+	// Collect phi users before replacement (they may become trivial)
+	var phiUsers []*Value
+	for _, use := range phi.Uses {
+		if use.Op == OpPhi && use != phi {
+			phiUsers = append(phiUsers, use)
+		}
+	}
+	if s.fn != nil {
+		for _, block := range s.fn.Blocks {
+			for _, v := range block.Values {
+				if v.Op == OpPhi && v != phi {
+					for _, pa := range v.PhiArgs {
+						if pa.Value == phi {
+							phiUsers = append(phiUsers, v)
+							break
+						}
+					}
+				}
+			}
+		}
 	}
 
 	// Replace all uses of phi with the unique value
@@ -165,6 +188,13 @@ func (s *SSABuilder) tryRemoveTrivialPhi(phi *Value) *Value {
 
 	// Remove from block
 	phi.Block.RemoveValue(phi)
+
+	// Recursively check phi users that may have become trivial
+	for _, user := range phiUsers {
+		if user.Block != nil { // still in a block (not already removed)
+			s.tryRemoveTrivialPhi(user)
+		}
+	}
 
 	return same
 }
@@ -186,11 +216,12 @@ func findUniquePhi(phi *Value) *Value {
 
 // replacePhiUses replaces all uses of oldVal with newVal.
 func (s *SSABuilder) replacePhiUses(oldVal, newVal *Value) {
-	// Update Args references
+	// Update Args references and transfer Uses to newVal
 	for _, use := range oldVal.Uses {
 		for i, arg := range use.Args {
 			if arg == oldVal {
 				use.Args[i] = newVal
+				newVal.Uses = append(newVal.Uses, use)
 			}
 		}
 	}

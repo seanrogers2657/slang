@@ -1,6 +1,6 @@
 # Status
 
-DRAFT, 2026-01-30
+IMPLEMENTED, 2026-04-02
 
 # Summary/Motivation
 
@@ -36,15 +36,22 @@ These decisions were made during proposal planning:
 
 2. **Everything is Public**: All top-level declarations are exported. Visibility modifiers are deferred to a separate SEP.
 
-3. **Import as Assignment**: Imports use Slang's existing assignment syntax: `math = import("math")`. This is consistent with how Slang declares everything via assignment (`main = () { }`, `Point = struct { }`). `import` is a built-in function restricted to top-level assignments. The path must be a plain string literal -- no string concatenation, no interpolation, no variables. The path must be fully determinable from the source text alone, enabling the compiler to resolve all dependencies in a single pass before any evaluation. The import returns a package namespace accessed via dot notation. Note that `import` becomes a reserved keyword and can no longer be used as an identifier name. The binding name (left-hand side) is arbitrary and does not need to match the directory name -- e.g., `m = import("math")` is valid and the package is accessed as `m.add(1, 2)`.
+3. **Import Declaration**: `import` is a declaration keyword (like `struct` or `class`), not a function. It supports two forms:
 
-4. **Imports Target Directories in `packages/`**: `import("math")` resolves to the `packages/math/` directory under the project root, never to a single file. This eliminates file-vs-directory ambiguity entirely. If you want a simple module, create a directory with one file in it. All declarations from all `.sl` files in the directory form a single namespace for the importer.
+    - **Implicit**: `import "math"` -- the binding name is derived from the last segment of the path. `import "math"` binds to `math`; `import "utils/helpers"` binds to `helpers`.
+    - **Explicit**: `Math = import "math"` -- the user chooses the binding name. This follows Slang's assignment syntax (`Point = struct { }`, `main = () { }`). The binding name is arbitrary and does not need to match the directory name.
+
+    The path must be a plain string literal -- no string concatenation, no interpolation, no variables. The path must be fully determinable from the source text alone, enabling the compiler to resolve all dependencies in a single pass before any evaluation. The import binds a compile-time package namespace accessed via dot notation (e.g., `math.add(1, 2)`). A namespace is not a runtime value -- it cannot be assigned to variables, passed to functions, or used in any expression context other than member access. `import` becomes a reserved keyword and can no longer be used as an identifier name.
+
+    When two implicit imports would produce the same binding name (e.g., `import "graphics/color"` and `import "theme/color"` both bind to `color`), the compiler reports an error and the user must use explicit form to alias one of them.
+
+4. **Imports Target Directories in `packages/`**: `import "math"` resolves to the `packages/math/` directory under the project root, never to a single file. This eliminates file-vs-directory ambiguity entirely. If you want a simple module, create a directory with one file in it. All declarations from all `.sl` files in the directory form a single namespace for the importer.
 
 5. **No Circular Dependencies**: The compiler rejects circular import chains. This enforces clean architecture and simplifies compilation order. If A imports B, B cannot import A (directly or transitively).
 
-6. **`packages/`-Relative Imports**: All import paths resolve within the `packages/` directory under the project root. The project root is the directory containing the entry file (the file passed to `sl build` or `sl run`). Paths do not use `./` or `../` prefixes. For example, `import("math")` resolves to `<project_root>/packages/math/`. `import("utils/helpers")` resolves to `<project_root>/packages/utils/helpers/`. In the future, standard library imports will use a reserved prefix (e.g., `import("std/math")`), but standard library support is deferred.
+6. **`packages/`-Relative Imports**: All import paths resolve within the `packages/` directory under the project root. The project root is the directory containing the entry file (the file passed to `sl build` or `sl run`). Paths do not use `./` or `../` prefixes. For example, `import "math"` resolves to `<project_root>/packages/math/`. `import "utils/helpers"` resolves to `<project_root>/packages/utils/helpers/`. In the future, standard library imports will use a reserved prefix (e.g., `import "std/math"`), but standard library support is deferred.
 
-7. **Import at Top Level Only**: Import statements must appear at the top of a file, before any other declarations. This makes dependency scanning fast (no need to parse the whole file). Unused imports are allowed -- the compiler does not warn or error on them.
+7. **Import at Top Level Only**: Import statements must appear at the top of a file, before any other declarations. This makes dependency scanning fast (no need to parse the whole file). Unused imports are allowed -- the compiler does not warn or error on them. This avoids friction during development when code is being written incrementally.
 
 8. **No Implicit Prelude**: Nothing is implicitly imported. Built-in functions (`print`, `exit`, `len`, etc.) remain globally available as compiler intrinsics, not as imports. This keeps the current behavior unchanged.
 
@@ -54,9 +61,15 @@ These decisions were made during proposal planning:
     - **Within a file**: top-to-bottom source order
     - Circular initialization dependencies within a package (e.g., `val x = y + 1` in `a.sl` and `val y = x + 1` in `b.sl`) are a compile error
 
-10. **Compilation Model**: `SlPackageCompiler` receives an explicit list of `.sl` files for the root package from its caller. The `sl` CLI discovers all `.sl` files in the entry file's directory and passes them in; tests pass just the single entry file. The compiler then discovers all imports transitively by scanning the `packages/` directory, topologically sorts packages, and compiles in dependency order. Each package is compiled once regardless of how many packages import it. The entry file can be located anywhere and the `sl` tool can be invoked from any directory. The directory containing the entry file is the root package -- it may contain additional `.sl` files that are part of the same package. The root package must contain a `main` function (compile error if missing). Only the specific file passed to `sl build` or `sl run` may define `main` -- other `.sl` files in the same root directory and all imported packages must not contain `main` functions (compile error: "package '<name>' must not declare a 'main' function"). If any package fails to compile, the build fails. Phase 1 collects all lexer, parser, and module errors before halting. Phase 2 stops at the first semantic error since later packages depend on earlier ones. All `.sl` files within a package directory are parsed before semantic analysis begins. The analyzer's two-pass approach (register all names, then type-check) enables forward references across files within the same package. Subdirectories within a package are not recursed into automatically -- they are independent packages that must be imported separately if needed (e.g., `import("math/integers")`).
+10. **Compilation Model**:
+    - **Root package**: The directory containing the entry file is the root package. It may contain additional `.sl` files that are part of the same package. The entry file can be located anywhere.
+    - **Import discovery**: The compiler discovers all imports transitively, topologically sorts packages, and compiles in dependency order. Each package is compiled once.
+    - **`main` function rules**: Only the entry file may define `main`. Other root package files and all imported packages must not.
+    - **Error strategy**: Syntax and module errors are collected across all packages before halting. Semantic errors stop at the first failing package since later packages depend on earlier ones.
+    - **Cross-file forward references**: Files within a package can reference each other's declarations. A two-pass analysis (register names, then type-check) enables this.
+    - **Subdirectory scoping**: Subdirectories are not recursed into — they are independent packages that must be imported separately (e.g., `import "math/integers"`).
 
-11. **Name Conflicts**: If two imports would create the same binding name, the compiler reports an error. The user must alias one of them. Import binding names also participate in same-package duplicate name checking -- if an import binding has the same name as a declaration in a sibling file of the same package, this is a compile error.
+11. **Name Conflicts**: If two imports would produce the same binding name (whether implicit or explicit), the compiler reports an error. For implicit imports with conflicting names (e.g., `import "graphics/color"` and `import "theme/color"`), the user must switch to explicit form to alias one of them. Import binding names also participate in same-package duplicate name checking -- if an import binding has the same name as a declaration in a sibling file of the same package, this is a compile error.
 
 12. **Global Variable Mutability**: Top-level `var` declarations are mutable and can be read and written by any package that imports them (e.g., `config.count = 5`). Top-level `val` declarations are read-only. Access control (restricting which packages can mutate a global) is deferred to the visibility SEP. Top-level `var` declarations with owned pointer types (`*T`) cannot be moved out of. Reading a global `*T` yields an implicit borrow (`&T` or `&&T` depending on context), never a move. This applies transitively -- if a global struct contains a `*T` field, that field also cannot be moved out of. To obtain an independent owned value, the caller must use `.copy()`. This prevents accidental invalidation of global state -- moving out of a global would leave it in an unusable state for the rest of the program. Primitive types (`s64`, `bool`, etc.) are unaffected since they are copied by value.
 
@@ -64,17 +77,18 @@ These decisions were made during proposal planning:
 
 14. **Root Package is Not Importable**: The root package (entry file's directory) exists outside of `packages/` and has no import path. It cannot be imported by any package. This is enforced structurally -- the package resolver only searches within `packages/`, so there is no path that could reference the root. This eliminates an entire class of circular dependency edge cases (any package imported by root could never import root back).
 
-15. **Import Path Character Set**: Import path segments must match `[a-z][a-z0-9_]*`. Each segment between `/` separators is validated independently. Uppercase letters, hyphens, dots, and other special characters are rejected with a compile error. The following paths are reserved and cannot be used as package names: `main` (reserved for the root package's mangling prefix) and `std` (reserved for the future standard library). `import("main")` and any path starting with `std/` are compile errors. This ensures import paths are valid Slang-style identifiers, produce clean mangled assembly labels, and map predictably to filesystem directories.
+15. **Import Path Character Set**: Import path segments must match `[a-z][a-z0-9_]*`. Each segment between `/` separators is validated independently. Uppercase letters, hyphens, dots, and other special characters are rejected with a compile error. The following paths are reserved and cannot be used as package names: `main` (reserved for the root package's mangling prefix) and `std` (reserved for the future standard library). `import "main"` and any path starting with `std/` are compile errors. This ensures import paths are valid Slang-style identifiers, produce clean mangled assembly labels, and map predictably to filesystem directories.
 
-16. **Unified Pipeline**: All programs — whether one file or many — go through the same compilation pipeline. A single-file program with no imports is the degenerate case: one root package, one file, zero dependencies. There is no separate "single-file mode." Name mangling, init function generation, and package resolution all apply uniformly. This eliminates branching in the compiler and ensures single-file programs are tested by the same code path as multi-file programs. The output changes slightly (e.g., `main` becomes `main_.main` in assembly), but behavior is identical.
+16. **Unified Pipeline**: All programs — whether one file or many — go through the same compilation pipeline. A single-file program with no imports is the degenerate case: one root package, one file, zero dependencies. There is no separate "single-file mode." Name mangling, init function generation, and package resolution all apply uniformly. This eliminates branching in the compiler and ensures single-file programs are tested by the same code path as multi-file programs. The output changes slightly (e.g., `main` becomes `main__main` in assembly), but behavior is identical.
 
-17. **Nominal Typing Across Packages**: Types from different packages are distinct even if structurally identical. If `geometry` defines `Point` with `val x: s64, val y: s64` and `physics` defines `Vector` with `val x: s64, val y: s64`, these are different types. A function accepting `geometry.Point` will not accept a `physics.Vector`. This is a consequence of type identity being based on package path + declaration name (see Step 5).
+17. **Nominal Typing Across Packages**: Types from different packages are distinct even if structurally identical. If `geometry` defines `Point` with `val x: s64, val y: s64` and `physics` defines `Vector` with `val x: s64, val y: s64`, these are different types. A function accepting `geometry.Point` will not accept a `physics.Vector`. This is a consequence of type identity being based on package path + declaration name (see Step 4).
 
 18. **Transitive Type Exposure**: A function may return or accept types from one of its own dependencies. The caller can use such values without importing the origin package -- type inference, field access, method calls, and passing to other functions all work. However, the caller cannot *name* the type in annotations (e.g., `val p: geometry.Point = ...`) or *construct* instances (e.g., `geometry.Point{ 1, 2 }`) without importing the origin package. This matches Go's behavior: you can pass around values of types you didn't import, but you need the import to refer to the type by name.
 
 # APIs
 
-- `import("path")` - Built-in function that loads a package and returns its namespace. Path must be a string literal, resolved within the `packages/` directory under the project root. Restricted to top-level assignments.
+- `import "path"` - Import declaration (implicit form). Binds the package namespace to a name derived from the last path segment. For example, `import "math"` binds to `math`; `import "utils/helpers"` binds to `helpers`.
+- `Name = import "path"` - Import declaration (explicit form). Binds the package namespace to the user-chosen name.
 - Package namespace access via `.` operator (e.g., `math.add(1, 2)`).
 
 # Description
@@ -94,7 +108,7 @@ Add to keywords map:
 "import":  TokenTypeImport,
 ```
 
-No new operators needed. The existing `(`, `)`, `"`, and `.` tokens handle import syntax.
+No new operators needed. The existing `"` and `.` tokens handle import syntax.
 
 ## Step 2: Parser Changes
 
@@ -117,44 +131,49 @@ Note: `ir.Position` already has a `File` field. This closes the gap between the 
 Add import declaration:
 ```go
 type ImportDecl struct {
-    Name     string   // binding name (e.g., "math")
-    Path     string   // import path (e.g., "utils" or "std/math")
+    Name     string   // binding name (e.g., "math", "Math"); derived from path for implicit imports
+    Path     string   // import path (e.g., "math", "utils/helpers")
+    Explicit bool     // true for `Name = import "path"`, false for `import "path"`
     Position Position
 }
 ```
 
-Add top-level variable declaration as a new `Declaration` type. Top-level variables have different semantics from in-function variables (global heap allocation, init ordering, package exports), so they get a dedicated AST node rather than reusing `VarDeclStmt`:
-```go
-type TopLevelVarDecl struct {
-    Name          string     // variable name
-    Mutable       bool       // true for var, false for val
-    TypeAnnotation string    // explicit type annotation (e.g., "s64", "geo.Point"), empty if inferred
-    Value         Expression // initializer expression
-    StartPos      Position
-    EndPos        Position
-}
-```
+Top-level variable declarations (`val x = 5`, `var count: s64 = 0`) reuse the existing `VarDeclStmt` AST node. The syntax is identical to in-function variables and the parser does not need to distinguish them. The semantic differences (global storage, init ordering, package exports) are handled by the semantic analyzer, which knows whether it is at top-level scope. If a typed AST distinction is needed, a `TypedTopLevelVarDecl` can be introduced in the semantic layer.
 
 Add `Imports` field to the existing `Program`:
 ```go
 type Program struct {
     Imports      []*ImportDecl      // import declarations (new)
-    Declarations []Declaration      // all other declarations (existing, plus TopLevelVarDecl)
+    Declarations []Declaration      // all other declarations (existing)
     // ... existing fields ...
 }
 ```
 
 ### Parser Changes
 
-**Parse import declarations**: An import looks like `name = import("path")`. The parser recognizes this pattern when it sees an identifier followed by `=` followed by the `import` keyword.
+**Parse import declarations**: The `import` keyword is recognized in two contexts:
 
+**Implicit form** -- when `import` appears at the start of a top-level statement (not after `=`):
 ```
-math = import("math")
+import "math"
+import "utils/helpers"
 ```
 
-Parses as:
-- Name: `"math"`
-- Path: `"math"`
+The parser consumes `import`, expects a string literal, and derives the binding name from the last path segment (`"math"` -> `math`, `"utils/helpers"` -> `helpers`).
+
+**Explicit form** -- when the parser sees an identifier followed by `=` followed by the `import` keyword:
+```
+Math = import "math"
+m = import "math"
+```
+
+The parser uses the left-hand identifier as the binding name.
+
+Both forms produce the same `ImportDecl` AST node. Examples:
+
+- `import "math"` -> Name: `"math"`, Path: `"math"`, Explicit: `false`
+- `Math = import "math"` -> Name: `"Math"`, Path: `"math"`, Explicit: `true`
+- `import "utils/helpers"` -> Name: `"helpers"`, Path: `"utils/helpers"`, Explicit: `false`
 
 **Qualified type names in annotations**: The parser must accept qualified names (`pkg.Type`) anywhere a type is currently accepted. This includes nullable types (`pkg.Type?`), pointer types (`*pkg.Type`), and borrow types (`&pkg.Type`, `&&pkg.Type`). The existing `parseTypeName()` returns a string (e.g., `"*Point"`, `"s64?"`). For qualified types, after consuming the type identifier, the parser checks for `.` followed by another identifier and produces a dotted string (e.g., `"geo.Point"`). No new AST node is needed — the semantic analyzer splits on `.` to resolve the package namespace and type name.
 
@@ -175,10 +194,10 @@ if p.CurrentToken().Type == lexer.TokenTypeDot {
 This naturally composes with existing modifiers: `*geo.Point` parses as `"*" + parseTypeName()` which produces `"*geo.Point"`. Same for `&geo.Point`, `&&geo.Point`, and `geo.Point?`.
 
 ```slang
-geo = import("geometry")
+Geo = import "geometry"
 
-transform = (p: &geo.Point) -> *geo.Point {
-    val result: geo.Point? = null
+transform = (p: &Geo.Point) -> *Geo.Point {
+    val result: Geo.Point? = null
     // ...
 }
 ```
@@ -222,31 +241,31 @@ if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeLBrace {
 // Otherwise it's a field access
 ```
 
-The semantic analyzer validates that `PackageAlias` (when non-empty) refers to a `SlPackageNamespace` and that `Name` is a struct/class type in that package.
+The semantic analyzer validates that `PackageAlias` (when non-empty) refers to a `PackageNamespace` and that `Name` is a struct/class type in that package.
 
-## Step 3: Package Resolution
+## Step 3: Compilation Pipeline
 
-**New file:** `compiler/slpackage/resolver.go`
+**Files:** `cmd/sl/main.go`, new `compiler/slpackage/compiler.go`, new `compiler/slpackage/resolver.go`
 
-The `SlPackageResolver` (defined in Step 4) translates import paths to file system paths within the `packages/` directory.
+### Package Resolution
+
+The `PackageResolver` translates import paths to file system paths within the `packages/` directory.
 
 Resolution rules:
-- `import("foo")` -> look for `<RootDir>/packages/foo/` directory (must be a directory)
-- `import("foo/bar")` -> look for `<RootDir>/packages/foo/bar/` directory
+- `import "foo"` -> look for `<RootDir>/packages/foo/` directory (must be a directory)
+- `import "foo/bar"` -> look for `<RootDir>/packages/foo/bar/` directory
 - Paths must not start with `./`, `../`, or `/` -- these are compile errors
 - Path segments must match `[a-z][a-z0-9_]*` -- invalid characters are a compile error
-- `import("main")` is a compile error -- `main` is reserved for the root package's mangling prefix
-- `import("std")` and paths starting with `std/` are compile errors -- reserved for the future standard library
+- `import "main"` is a compile error -- `main` is reserved for the root package's mangling prefix
+- `import "std"` and paths starting with `std/` are compile errors -- reserved for the future standard library
 - If `packages/` does not exist and imports are present, emit an error: "no 'packages' directory found; create a 'packages/' directory in the project root to use imports"
 - If `packages` exists but is not a directory, emit an error: "'packages' exists but is not a directory"
 - If the path does not resolve to a directory within `packages/`, emit an error
 - If the directory exists but contains no `.sl` files, emit an error (e.g., "package 'math' has no .sl files")
 - If `packages/` contains loose `.sl` files (not inside a subdirectory), emit a warning: "file 'helpers.sl' is directly in 'packages/' and is not part of any package; move it into a subdirectory"
-- Standard library paths (e.g., `import("std/math")`) are reserved for future use
+- Standard library paths (e.g., `import "std/math"`) are reserved for future use
 
-## Step 4: Compilation Pipeline
-
-**File:** `cmd/sl/main.go` and new `compiler/slpackage/compiler.go`
+### Pipeline Overview
 
 The compilation pipeline is unified — all programs go through the same phases. Here is the full pipeline with package support:
 
@@ -261,18 +280,18 @@ sl build main.sl / sl run main.sl
 │                                             │
 │  Starting from the entry file's directory:  │
 │  1. Read + lex + parse all .sl files        │
-│  2. Group per-file ASTs into PackageAST     │
+│  2. Wrap each file as ast.FileAST            │
 │  3. Extract imports from parsed ASTs        │
 │  4. Resolve import paths within packages/   │
 │  5. For each discovered package, repeat 1-4 │
 │  6. Cycle detection (DFS on import graph)   │
 │  7. Topological sort for later phases       │
 │                                             │
-│  Returns: map[string]*PackageAST            │
+│  Returns: map[string][]*ast.FileAST         │
 │  (per-file ASTs grouped by package path)    │
 │                                             │
 │  A single-file program with no imports      │
-│  produces one PackageAST with one FileAST   │
+│  produces one package with one FileAST      │
 │                                             │
 │  Errors: lexer/parser errors, missing       │
 │  package, empty package, invalid path,      │
@@ -285,12 +304,12 @@ sl build main.sl / sl run main.sl
 │  Phase 2: Semantic Analysis                 │
 │  (compiler/semantic)                        │
 │                                             │
-│  Consumes PackageASTs from Phase 1.         │
+│  Consumes file lists from Phase 1.          │
 │  For each package (in topological order):   │
 │    1. Register all names from all files     │
-│    2. Bind imports to SlPackageNamespaces   │
+│    2. Bind imports to PackageNamespaces   │
 │    3. Type check all file bodies            │
-│    4. Populate SlPackage.TypedAST & Exports │
+│    4. Populate Package.TypedAST & Exports │
 │    5. Detect circular init dependencies     │
 │                                             │
 │  Errors: type errors, undefined references, │
@@ -322,20 +341,20 @@ sl build main.sl / sl run main.sl
 
 The pipeline steps in detail:
 
-1. **Discovery & Parsing**: The compiler receives an explicit list of `.sl` files for the root package (provided by the caller). It reads, lexes, and parses these files, grouping per-file ASTs into a `PackageAST` (file boundaries are preserved, not merged). It then extracts imports from the parsed ASTs, resolves paths within `packages/`, and recursively discovers and parses transitive dependencies. For imported packages (within `packages/`), all `.sl` files in the directory are always discovered automatically. Each file is read and parsed exactly once -- parsing order is irrelevant since parsing is purely syntactic. After all packages are discovered, run cycle detection (DFS) and compute the topological sort. Phase 1 returns a `map[string]*PackageAST` for Phase 2 to consume. For a single-file program with no imports, this produces one `PackageAST` containing one `FileAST`.
-2. **Semantic Analysis**: Consume the `PackageAST` values from Phase 1. Analyze each package in topological (dependency) order using a two-pass approach: first register all top-level names from all files, then type-check all bodies. For each package, bind imports to `SlPackageNamespace` values from already-analyzed dependencies, and populate `SlPackage.TypedAST` and `SlPackage.Exports`. The `PackageAST` values are discarded after this phase.
+1. **Discovery & Parsing**: The compiler receives an explicit list of `.sl` files for the root package (provided by the caller). It reads, lexes, and parses these files, wrapping each in an `ast.FileAST` (file boundaries are preserved, not merged). It then extracts imports from the parsed ASTs, resolves paths within `packages/`, and recursively discovers and parses transitive dependencies. For imported packages (within `packages/`), all `.sl` files in the directory are always discovered automatically. Each file is read and parsed exactly once -- parsing order is irrelevant since parsing is purely syntactic. After all packages are discovered, run cycle detection (DFS) and compute the topological sort. Phase 1 returns a `map[string][]*ast.FileAST` for Phase 2 to consume. For a single-file program with no imports, this produces one package with one `FileAST`.
+2. **Semantic Analysis**: Consume the per-package file lists from Phase 1. Analyze each package in topological (dependency) order using a two-pass approach: first register all top-level names from all files, then type-check all bodies. For each package, bind imports to `PackageNamespace` values from already-analyzed dependencies, and populate `Package.TypedAST` and `Package.Exports`. The file lists are discarded after this phase.
 3. **IR Generation**: Generate IR for each package from its `TypedAST` with mangled names. Combine into a single `*ir.Program`.
 4. **Code Generation**: Emit combined assembly from the single `*ir.Program`, assemble, and link.
 
 All programs — including single-file programs with no imports — go through this pipeline. A single-file program simply produces one root package with one `FileAST` and an empty dependency graph. Since parsing is purely syntactic (no cross-file or cross-package dependencies), parse order does not matter. The topological sort computed in Phase 1 only governs Phase 2 onward, where dependency order is required.
 
-**Root package file discovery**: `SlPackageCompiler` does not discover root package files itself — it receives an explicit list from its caller. The `sl` CLI discovers all `.sl` files in the entry file's directory and passes them in. Tests pass just the single entry file. This separation keeps the compiler testable without filesystem side effects and avoids sibling file conflicts in test directories. Imported packages (within `packages/`) always have all their `.sl` files discovered automatically by the compiler, since they are self-contained directories.
+**Root package file discovery**: `PackageCompiler` does not discover root package files itself — it receives an explicit list from its caller. The `sl` CLI discovers all `.sl` files in the entry file's directory and passes them in. Tests pass just the single entry file. This separation keeps the compiler testable without filesystem side effects and avoids sibling file conflicts in test directories. Imported packages (within `packages/`) always have all their `.sl` files discovered automatically by the compiler, since they are self-contained directories.
 
 This introduces a new error stage `"module"` for errors during Phase 1 (import resolution, circular dependencies, missing/empty packages). Lexer and parser errors are also reported during Phase 1, since parsing now happens in this phase.
 
 ### Entry Point Restructuring
 
-The current `compileSourceWithIR` function in `cmd/sl/main.go` calls lexer, parser, analyzer, IR generator, and ARM64 backend sequentially for a single file. With the package system, this function delegates to `SlPackageCompiler` for Phases 1–3, then passes the combined IR to the backend:
+The current `compileSourceWithIR` function in `cmd/sl/main.go` calls lexer, parser, analyzer, IR generator, and ARM64 backend sequentially for a single file. With the package system, this function delegates to `PackageCompiler` for Phases 1–3, then passes the combined IR to the backend:
 
 ```go
 func compileSourceWithIR(filename string, verbose bool, timer *timing.Timer) (string, error) {
@@ -376,7 +395,7 @@ func compileSourceWithIR(filename string, verbose bool, timer *timing.Timer) (st
 }
 ```
 
-The key structural change: `compileSourceWithIR` no longer reads source files, calls the lexer, or calls the parser directly. All of that moves into `SlPackageCompiler.DiscoverAndParse()`. The function becomes a thin orchestrator that constructs the compiler, runs each phase, and hands the combined IR to the backend.
+The key structural change: `compileSourceWithIR` no longer reads source files, calls the lexer, or calls the parser directly. All of that moves into `PackageCompiler.DiscoverAndParse()`. The function becomes a thin orchestrator that constructs the compiler, runs each phase, and hands the combined IR to the backend.
 
 **Error collection strategy**: Phase 1 collects all lexer, parser, and module errors across all discovered packages before halting. If a package has a parse error, the compiler does not discover that package's imports (since the AST is incomplete), but continues parsing other already-discovered packages. All collected errors are reported together. Phase 2 (semantic analysis) stops at the first package with a semantic error, since later packages in the topological order depend on earlier ones being valid.
 
@@ -387,10 +406,13 @@ Eight new types and two updated types support the package system. Each has a sin
 ```go
 // --- AST layer (compiler/ast/ast.go) ---
 
-// ImportDecl represents `math = import("math")` in the AST.
+// ImportDecl represents an import declaration in the AST.
+// Implicit form: `import "math"` (Name derived from last path segment)
+// Explicit form: `Math = import "math"` (Name is user-chosen)
 type ImportDecl struct {
-    Name     string   // binding name (e.g., "math")
+    Name     string   // binding name (e.g., "math", "Math"); derived from path for implicit imports
     Path     string   // import path (e.g., "math", "utils/helpers")
+    Explicit bool     // true for `Name = import "path"`, false for `import "path"`
     Position Position
 }
 
@@ -414,48 +436,47 @@ type Program struct {
 ```
 
 ```go
-// --- Package layer (compiler/slpackage/) ---
+// --- AST layer (compiler/ast/ast.go) ---
 
 // FileAST pairs a source file path with its parsed AST.
 // File boundaries are preserved (not merged) so that error messages
 // can report which file an error came from.
+// Defined in ast to avoid circular imports -- both slpackage and
+// semantic reference FileAST, while ast has no dependency on either.
 type FileAST struct {
     Path string        // e.g., "packages/utils/format.sl"
-    AST  *ast.Program  // parsed AST for this one file
+    AST  *Program      // parsed AST for this one file
 }
+```
 
-// PackageAST groups the per-file ASTs for all files in a package.
-// This is the output of Phase 1 and the input to Phase 2.
-// A single-file program produces a PackageAST with one FileAST.
-type PackageAST struct {
-    Files []*FileAST  // one per .sl file, in alphabetical order
-}
+```go
+// --- Package layer (compiler/slpackage/) ---
 
-// SlPackageResolver translates import paths to filesystem directories.
+// PackageResolver translates import paths to filesystem directories.
 // Used during Phase 1 to locate packages within the packages/ directory.
-type SlPackageResolver struct {
+type PackageResolver struct {
     RootDir       string            // project root (entry file's directory)
     PackagesDir   string            // RootDir + "/packages"
     ResolvedPaths map[string]string // import path -> absolute directory path
 }
 
-// SlPackageCompiler orchestrates compilation across all packages.
+// PackageCompiler orchestrates compilation across all packages.
 // It owns all discovered packages and their compilation order.
 // The root package files are provided explicitly by the caller;
 // imported packages are discovered automatically from packages/.
-type SlPackageCompiler struct {
+type PackageCompiler struct {
     RootDir      string                // project root directory
     EntryFile    string                // the specific file passed to sl build/run (must contain main)
     RootFiles    []string              // all .sl files for root package (includes EntryFile)
-    Resolver     *SlPackageResolver
-    Packages     map[string]*SlPackage
-    CompileOrder []string              // topological order of package paths
+    Resolver     *PackageResolver
+    Packages     map[string]*Package
+    AnalysisOrder []string              // topological order of package paths
 }
 
-// SlPackage represents a single compilation unit (one directory of .sl files).
+// Package represents a single compilation unit (one directory of .sl files).
 // Identity fields (Path, Dir) are set at creation during Phase 1.
 // Result fields (TypedAST, Exports) are populated during Phase 2.
-type SlPackage struct {
+type Package struct {
     // Identity
     Path string // import path ("math", "utils/helpers"; "main" for root)
     Dir  string // absolute directory path on disk
@@ -470,71 +491,78 @@ type SlPackage struct {
 ```go
 // --- Semantic layer (compiler/semantic/) ---
 
+// ExportKind distinguishes the nature of an exported symbol.
+// Used by the semantic analyzer for assignment validation and error messages.
+type ExportKind int
+const (
+    ExportFunc ExportKind = iota // function declaration
+    ExportType                   // struct, class, or object declaration
+    ExportVal                    // immutable variable (val)
+    ExportVar                    // mutable variable (var)
+)
+
 // Export represents a single public symbol from a package.
-// The symbol's kind (function, struct, class, variable) is encoded in the
-// Type field -- no separate kind enum is needed.
 // Defined in semantic to avoid circular imports -- slpackage references
 // semantic.Export, while semantic has no dependency on slpackage.
 type Export struct {
-    Type    Type // the symbol's type (FunctionType, StructType, etc.)
-    Mutable bool // true for `var` declarations; false otherwise
+    Type Type       // the symbol's type (FunctionType, StructType, etc.)
+    Kind ExportKind // what kind of declaration this is
 }
 
-// SlPackageNamespace is bound to an import alias in the analyzer's scope.
-// When the analyzer processes `math = import("math")`, it creates a
-// SlPackageNamespace and binds it to "math" in the current scope.
-type SlPackageNamespace struct {
+// PackageNamespace is bound to an import name in the analyzer's scope.
+// When the analyzer processes `import "math"`, it creates a
+// PackageNamespace and binds it to "math" in the current scope.
+type PackageNamespace struct {
     Path    string            // canonical import path (e.g., "math")
-    Exports map[string]Export // references SlPackage.Exports directly
+    Exports map[string]Export // references Package.Exports directly
 }
 ```
 
-**Phase 1 returns `PackageAST` values** -- they are not stored on `SlPackage`:
+**Phase 1 returns per-package file lists** -- they are not stored on `Package`:
 
 ```go
-func (c *SlPackageCompiler) DiscoverAndParse() (map[string]*PackageAST, error) {
+func (c *PackageCompiler) DiscoverAndParse() (map[string][]*ast.FileAST, error) {
     // Root package: parse the explicit files in c.RootFiles
     // Imported packages: discover all .sl files in the resolved directory
     // For each package:
-    //   1. Parse each file into *ast.Program
-    //   2. Group into PackageAST (file boundaries preserved)
-    //   3. Extract imports from parsed ASTs, resolve paths, discover transitive deps
-    //   4. Cycle detection and topological sort
-    // Populates c.Packages (identity fields) and c.CompileOrder
-    // Returns PackageASTs keyed by package path
+    //   1. Parse each file into *ast.Program, wrap in ast.FileAST
+    //   2. Extract imports from parsed ASTs, resolve paths, discover transitive deps
+    //   3. Cycle detection and topological sort
+    // Populates c.Packages (identity fields) and c.AnalysisOrder
+    // Returns per-package file lists keyed by package path (alphabetical order)
 }
 ```
 
-**Phase 2 consumes the PackageASTs and populates results on SlPackage**:
+**Phase 2 consumes the file lists and populates results on Package**:
 
 ```go
-func (c *SlPackageCompiler) Analyze(pkgASTs map[string]*PackageAST) error {
-    for _, path := range c.CompileOrder {
+func (c *PackageCompiler) Analyze(pkgFiles map[string][]*ast.FileAST) error {
+    for _, path := range c.AnalysisOrder {
         pkg := c.Packages[path]
-        pkgAST := pkgASTs[path]
+        files := pkgFiles[path]
         // Two-pass analysis:
         //   Pass 1: register all top-level names from all files
         //   Pass 2: type-check all file bodies (all names now known)
-        // Create SlPackageNamespace for each import from already-analyzed deps
-        pkg.TypedAST = analyzePackage(pkgAST, /* dependency namespaces */)
+        // Create PackageNamespace for each import from already-analyzed deps
+        pkg.TypedAST = analyzePackage(files, /* dependency namespaces */)
         pkg.Exports = extractExports(pkg.TypedAST)
     }
-    // After this, the pkgASTs map can be garbage collected
+    // After this, the pkgFiles map can be garbage collected
 }
 ```
 
-## Step 5: Semantic Analysis Changes
+## Step 4: Semantic Analysis Changes
 
 **File:** `compiler/semantic/analyzer.go`
 
 ### Two-Pass Analysis
 
-The analyzer gains a new entry point that accepts a `PackageAST` instead of a single `*ast.Program`:
+The analyzer gains a new entry point that accepts a list of `FileAST` values instead of a single `*ast.Program`:
 
 ```go
 func (a *Analyzer) AnalyzePackage(
-    pkg *PackageAST,
-    deps map[string]*SlPackageNamespace,
+    files []*ast.FileAST,
+    deps map[string]*PackageNamespace,
 ) ([]*errors.CompilerError, *TypedProgram)
 ```
 
@@ -544,9 +572,9 @@ Analysis uses two conceptual phases to support cross-file forward references:
 
 **Phase B — Type checking**: Walk all files again and type-check every declaration body. Because all names were registered in Phase A, forward references resolve normally. Each file's declarations are checked in source order; files are processed in alphabetical order.
 
-`AnalyzePackage` is the sole entry point for semantic analysis. The old `Analyze(*ast.Program)` method is removed. Existing unit tests are updated to construct a one-file `PackageAST` and call `AnalyzePackage` directly. This ensures all code paths — tests included — exercise the same logic.
+`AnalyzePackage` is the sole entry point for semantic analysis. The old `Analyze(*ast.Program)` method is removed. Existing unit tests are updated to construct a one-element `[]*ast.FileAST` and call `AnalyzePackage` directly. This ensures all code paths — tests included — exercise the same logic.
 
-**`main` function validation**: The `SlPackageCompiler` tracks the entry file (the file passed to `sl build`/`sl run`). During Phase 2, the root package is validated:
+**`main` function validation**: The `PackageCompiler` tracks the entry file (the file passed to `sl build`/`sl run`). During Phase 2, the root package is validated:
 - The entry file must define a `main` function (compile error if missing)
 - Other root package files must not define `main` (compile error: "'main' must be defined in the entry file '<entry>.sl', not in '<other>.sl'")
 - Imported packages must not define `main` (compile error: "package '<name>' must not declare a 'main' function")
@@ -555,17 +583,32 @@ The output is one flat `*TypedProgram` per package. File boundaries are not need
 
 ### Package-Aware Symbol Table
 
-The analyzer uses `SlPackageNamespace` (defined in Step 4) to represent imported packages in scope.
+The analyzer uses `PackageNamespace` (defined in Step 3) to represent imported packages in scope.
 
-When analyzing an import declaration (e.g., `math = import("math")`):
-1. Look up `"math"` in the `deps` map passed to `AnalyzePackage`
-2. Bind the `SlPackageNamespace` to `"math"` in the current scope
+When analyzing an import declaration (e.g., `import "math"` or `Math = import "math"`):
+1. Look up the import path in the `deps` map passed to `AnalyzePackage`
+2. Bind the `PackageNamespace` to the import's binding name in the current scope
 
 When analyzing a dot expression on a namespace (e.g., `math.add`):
-1. Check if the left side resolves to a `SlPackageNamespace`
+1. Check if the left side resolves to a `PackageNamespace`
 2. Look up the right side in `ns.Exports`
 3. If not found, produce a clear error (e.g., "package 'math' has no declaration 'foo'")
 4. Return the `Export.Type` of the symbol
+
+### Namespace Misuse Errors
+
+A `PackageNamespace` is a compile-time construct, not a runtime value. The semantic analyzer rejects any use of an import binding outside of member access (`.`). Specifically:
+
+- `val x = math` -- error: "cannot use package 'math' as a value"
+- `print(math)` -- error: "cannot use package 'math' as a value"
+- `some_func(math)` -- error: "cannot use package 'math' as a value"
+- `return math` -- error: "cannot use package 'math' as a value"
+- `math = import "math"` inside a function body -- error: "import declarations must be at the top level"
+- `import "math"` inside a function body -- error: "import declarations must be at the top level"
+- `import math_var` where `math_var` is a variable -- error: "expected string literal after 'import'"
+- `import "math" + "/extra"` -- error: "expected string literal after 'import'"
+
+The implementation is straightforward: when the analyzer resolves an identifier to a `PackageNamespace` in any context other than the left side of a dot expression, it emits the "cannot use package as a value" error.
 
 ### Method Dispatch on Imported Types
 
@@ -576,13 +619,13 @@ When a method is called on an instance of an imported type (e.g., `a.get_balance
 3. Search for the method in that package's class/struct definition
 4. Validate the method signature (self parameter, argument types, return type)
 
-This means method resolution follows the type, not the import alias. If `acct = import("account")` and `a2 = import("account")`, then `acct.Account` and `a2.Account` are the same type and both resolve methods from the `account` package.
+This means method resolution follows the type, not the import alias. If `Acct = import "account"` and `A2 = import "account"`, then `Acct.Account` and `A2.Account` are the same type and both resolve methods from the `account` package.
 
 ### Qualified Type Names in Annotations
 
 The analyzer must resolve qualified type names in type annotations. When it encounters `geo.Point` in a type position (e.g., function parameter, variable type annotation, nullable type), it:
 
-1. Looks up `geo` in the current scope -- expects a `SlPackageNamespace`
+1. Looks up `geo` in the current scope -- expects a `PackageNamespace`
 2. Looks up `Point` in `ns.Exports` -- expects a type (struct, class)
 3. Returns the canonical type identity using `ns.Path` + `"Point"` (e.g., `geometry.Point`)
 
@@ -593,11 +636,11 @@ This applies to all type positions: `&geo.Point`, `&&geo.Point`, `*geo.Point`, `
 Types are identified by their **package path + declaration name**, not by the import alias used. For example, if `geometry/point.sl` declares `Point`, the canonical type identity is `geometry.Point` regardless of how it is imported:
 
 ```slang
-geo = import("geometry")
-g = import("geometry")
+Geo = import "geometry"
+G = import "geometry"
 
-val a = geo.Point{ 1, 2 }
-val b = g.Point{ 3, 4 }
+val a = Geo.Point{ 1, 2 }
+val b = G.Point{ 3, 4 }
 // a and b have the same type: geometry.Point
 ```
 
@@ -632,25 +675,27 @@ func (t StructType) String() string {
 
 The same pattern applies to `ClassType` and `ObjectType`. `FunctionType` is structural (no name), so it needs no change.
 
+**Display names in error messages**: Root package types display without a prefix (`Point`), while imported types include the package path (`geometry.Point`). This matches what the user writes in source code — root package types are always unqualified. If an error involves types from both the root and an imported package, the distinction is clear: bare `Point` is local, `geometry.Point` is imported.
+
 **How `PackagePath` is set:**
 - During semantic analysis Pass 1, the analyzer registers types with the `PackagePath` of the package being analyzed (e.g., `"geometry"` for types in `packages/geometry/`). The root package uses `"main"`.
-- When resolving `geo.Point`, the analyzer looks up `Point` in the `SlPackageNamespace` for `"geometry"`, which already has `PackagePath: "geometry"` set.
+- When resolving `geo.Point`, the analyzer looks up `Point` in the `PackageNamespace` for `"geometry"`, which already has `PackagePath: "geometry"` set.
 
 **Wrapper types work automatically:** `OwnedPointerType`, `RefPointerType`, `MutRefPointerType`, `NullableType`, and `ArrayType` all delegate equality to their inner/element type's `Equals()` method. No changes needed for these.
 
-**IR layer:** The `ir.StructType` uses mangled names (e.g., `geometry_.Point`), which are globally unique. No extra `PackagePath` field is needed in the IR.
+**IR layer:** The `ir.StructType` uses mangled names (e.g., `geometry__Point`), which are globally unique. No extra `PackagePath` field is needed in the IR.
 
-## Step 6: IR Generator Changes
+## Step 5: IR Generator Changes
 
 **File:** `compiler/ir/generator.go`
 
-The IR generator iterates through packages in `CompileOrder`, generating IR from each package's `TypedAST` into a single combined `*ir.Program`. A single `Generator` instance and single `*Program` are shared across all packages:
+The IR generator iterates through packages in `AnalysisOrder`, generating IR from each package's `TypedAST` into a single combined `*ir.Program`. A single `Generator` instance and single `*Program` are shared across all packages:
 
 ```go
-func (c *SlPackageCompiler) GenerateIR() (*ir.Program, error) {
+func (c *PackageCompiler) GenerateIR() (*ir.Program, error) {
     g := ir.NewGenerator()
 
-    for _, path := range c.CompileOrder {
+    for _, path := range c.AnalysisOrder {
         pkg := c.Packages[path]
         g.SetPackagePath(path)  // controls name mangling for this package
         if err := g.GeneratePackage(pkg.TypedAST); err != nil {
@@ -659,7 +704,7 @@ func (c *SlPackageCompiler) GenerateIR() (*ir.Program, error) {
     }
 
     // Generate init functions for packages with top-level variables
-    for _, path := range c.CompileOrder {
+    for _, path := range c.AnalysisOrder {
         pkg := c.Packages[path]
         g.GenerateInitFunction(path, pkg.TypedAST)
     }
@@ -673,32 +718,32 @@ func (c *SlPackageCompiler) GenerateIR() (*ir.Program, error) {
 All names are mangled with the package path as prefix:
 
 ```go
-func mangleName(packagePath string, name string) string {
-    // Convert "math" + "add" to "math_.add"
-    // Convert "utils/helpers" + "format" to "utils_.helpers_.format"
-    // Root package: "main" + "my_func" to "main_.my_func"
-    // Uses _. as separator -- unambiguous since . cannot appear in Slang identifiers
-    // and both _ and . are valid in macOS ARM64 assembly labels
+func MangleName(packagePath string, name string) string {
+    // Convert "math" + "add" to "math__add"
+    // Convert "utils/helpers" + "format" to "utils__helpers__format"
+    // Root package functions are not mangled (no prefix)
+    // Uses __ as separator -- unambiguous since __ cannot appear in Slang identifiers
+    // and is valid in both the native assembler (slasm) and macOS system assembler
 }
 ```
 
 ### How Multiple Packages Combine
 
-**Functions flatten into one `Functions` slice.** Mangled names prevent collisions. `math_.add` and `main_.add` coexist in the same slice.
+**Functions flatten into one `Functions` slice.** Mangled names prevent collisions. `math__add` and `add` (from root) coexist in the same slice.
 
-**Struct types use mangled names.** `geometry_.Point` and `physics_.Vector` are distinct IR structs. Each package registers its own structs during its generation pass. The `Generator.typeCache` (`semantic.Type` → `ir.Type`) ensures that if multiple packages reference `geometry.Point`, the same `ir.StructType` is reused — the `PackagePath` field on `semantic.StructType` makes each semantic type a unique cache key.
+**Struct types use mangled names.** `geometry__Point` and `physics__Vector` are distinct IR structs. Each package registers its own structs during its generation pass. The `Generator.typeCache` (`semantic.Type` → `ir.Type`) ensures that if multiple packages reference `geometry.Point`, the same `ir.StructType` is reused — the `PackagePath` field on `semantic.StructType` makes each semantic type a unique cache key.
 
 **String constants deduplicate automatically.** `Program.AddString()` already uses a `stringIndex` map. If package A and package B both use the string `"hello"`, they get the same index.
 
-**Global variables flatten into one `Globals` slice.** Mangled names prevent collisions (e.g., `math_.pi`, `config_.db_port`).
+**Global variables flatten into one `Globals` slice.** Mangled names prevent collisions (e.g., `math__pi`, `config__db_port`).
 
-**Cross-package calls resolve by mangled name.** When package B calls `math.add(1, 2)`, the semantic layer has already resolved this to the `add` function in the `math` package. The IR generator emits a call to the mangled name `math_.add`.
+**Cross-package calls resolve by mangled name.** When package B calls `math.add(1, 2)`, the semantic layer has already resolved this to the `add` function in the `math` package. The IR generator emits a call to the mangled name `math__add`.
 
 ### Generator State
 
 The `Generator` gains a `packagePath` field set via `SetPackagePath(path)`. This field is used by `registerStruct`, `generateFunction`, `generateClass`, and `generateObject` to produce mangled names. All other generator state (SSA builder, type cache, program) persists across packages.
 
-## Step 7: ARM64 Backend Changes
+## Step 6: ARM64 Backend Changes
 
 **File:** `compiler/ir/backend/arm64/backend.go`
 
@@ -706,11 +751,11 @@ Minimal changes needed:
 - Function labels use mangled names
 - Cross-package calls use `bl` to mangled labels
 - All package code is emitted into a single assembly file (no separate object files per package)
-- `_start` reads `ir.Program.InitOrder` to emit `bl` calls to init functions before `main_.main`
+- `_start` reads `ir.Program.InitOrder` to emit `bl` calls to init functions before `main__main`
 
-The `ir.Program` gains an `InitOrder` field populated by `SlPackageCompiler` during IR generation:
+The `ir.Program` gains an `InitOrder` field populated by `PackageCompiler` during IR generation:
 
-**`ir.Program.Main()` and `Validate()` updates**: With the unified pipeline, `main` is always mangled to `main_.main`. `Program.Main()` looks for `"main_.main"` and `Validate()` checks for the same. No conditional logic — all programs go through mangling.
+**`ir.Program.Main()` and `Validate()` updates**: With the unified pipeline, `main` is always mangled to `main__main`. `Program.Main()` looks for `"main__main"` and `Validate()` checks for the same. No conditional logic — all programs go through mangling.
 
 ```go
 type Program struct {
@@ -718,7 +763,7 @@ type Program struct {
     Structs   []*StructType
     Globals   []*Global
     Strings   []string
-    InitOrder []string  // ordered init function names (e.g., ["logger_.init", "main_.init"])
+    InitOrder []string  // ordered init function names (e.g., ["logger__init", "main__init"])
     // ...
 }
 ```
@@ -727,10 +772,10 @@ The backend emits `_start` as:
 ```asm
 _start:
     // call init functions in dependency order
-    bl _logger_.init       // from InitOrder[0]
-    bl _main_.init         // from InitOrder[1]
+    bl _logger__init       // from InitOrder[0]
+    bl _main__init         // from InitOrder[1]
     // then call main
-    bl _main_.main
+    bl _main__main
     mov x16, #1
     svc #0
 ```
@@ -747,15 +792,15 @@ All compiler-generated assembly labels use the `_sl_` prefix to avoid collisions
 - Assertion support: `_sl_assert_prefix`
 - Entry point: `_start` (reserved by the system, not user-accessible)
 
-Since import path segments must match `[a-z][a-z0-9_]*` and user mangled names use the `<pkg>_.` pattern (e.g., `math_.add`), the `_sl_` prefix is unambiguous — no valid package path starts with `_`.
+Since import path segments must match `[a-z][a-z0-9_]*` and user mangled names use the `<pkg>__` pattern (e.g., `math__add`), the `_sl_` prefix is unambiguous — no valid package path starts with `_sl_`.
 
-## Step 8: Directory Packages
+## Step 7: Directory Packages
 
 When an import path resolves to a directory within `packages/`:
 
 1. Find all `.sl` files in the directory (alphabetical order)
-2. Parse each file into its own `*ast.Program`
-3. Group into a `PackageAST` with one `FileAST` per file (file boundaries preserved)
+2. Parse each file into its own `*ast.Program`, wrap in `ast.FileAST`
+3. Return the `[]*ast.FileAST` list for this package
 4. The semantic analyzer's two-pass approach treats all files as a single namespace
 
 ```
@@ -763,8 +808,8 @@ project/
   main.sl
   packages/
     utils/
-      format.sl       ← one FileAST in the "utils" PackageAST
-      convert.sl      ← one FileAST in the "utils" PackageAST
+      format.sl       ← one FileAST in the "utils" file list
+      convert.sl      ← one FileAST in the "utils" file list
       internal/       ← NOT auto-included; separate package "utils/internal"
 ```
 
@@ -774,7 +819,7 @@ Rules:
 - Duplicate names across files in the same directory are a compile error
 - Files within the same package can reference each other's declarations directly (no import needed)
 
-## Step 9: Package Initialization
+## Step 8: Package Initialization
 
 Top-level variable declarations can have initializers that call functions. These run at runtime, before `main()`, in a deterministic order.
 
@@ -786,7 +831,7 @@ Only declarations are allowed at the top level of a file:
 - Class declarations: `Counter = class { ... }`
 - Object declarations: `Math = object { ... }`
 - Variable declarations: `val config = load_config()` or `var count: s64 = 0`
-- Import declarations: `math = import("math")`
+- Import declarations: `import "math"` or `Math = import "math"`
 
 Bare statements (e.g., `print("hello")` outside any function) are **not allowed** at the top level.
 
@@ -832,50 +877,72 @@ val y = x + 1   // depends on x from a.sl
 
 ### Global Variable Assembly Representation
 
-All top-level variables are uniformly represented as **pointers to heap memory**. Each global gets a `.quad 0` slot in the `.data` section (holding a pointer), and the package init function allocates heap memory, initializes the value, and stores the pointer into the `.data` slot. This applies to all types — primitives (`s64`, `bool`), structs, arrays, and owned pointers alike.
+The compiler chooses the storage strategy based on type:
 
-**Access pattern:**
-- **Reading a global**: load pointer from `.data` label, then load value through the pointer
-- **Writing a `var` global**: load pointer from `.data` label, then store value through the pointer
-- **Cross-package access** uses the same pattern with the mangled label (e.g., `math_.count`)
+- **Primitive types** (`s64`, `s32`, `bool`, `string`, etc.) are stored **directly in the `.data` section**. No heap allocation, no pointer indirection. The value occupies its natural size (e.g., 8 bytes for `s64`, 8 bytes for a `string` pointer). `string` is classified as primitive because its runtime representation is a single pointer to immutable static data (`.asciz` in the data section). Reassigning a `var` string swaps which static string the pointer references — the string contents are never mutated. This matches how local variables work — `val x = 42` and `val s = "hello"` mean the same thing regardless of scope.
+- **Compound types** (structs, classes, arrays, owned pointers) are stored as **pointers to heap memory**. Each global gets a `.quad 0` slot in the `.data` section (holding a pointer), and the package init function allocates heap memory, initializes the value, and stores the pointer into the `.data` slot.
 
-**Constant initializer example** (`val max_size: s64 = 42`):
+**Access patterns:**
+- **Reading a primitive global**: load value directly from `.data` label
+- **Writing a primitive `var` global**: store value directly to `.data` label
+- **Reading a compound global**: load pointer from `.data` label, then load value through the pointer
+- **Writing a compound `var` global**: load pointer from `.data` label, then store value through the pointer
+- **Cross-package access** uses the same patterns with the mangled label (e.g., `math__count`)
+
+**Primitive example** (`val max_size: s64 = 42`):
 ```asm
 // .data section
-main_.max_size:
-    .quad 0                                    // pointer slot, zero until init
+main__max_size:
+    .quad 42                                   // value stored directly
 
-// In _main_.init:
-    mov x0, #8                                 // size of s64
-    bl _sl_heap_alloc                           // returns heap pointer in x0
-    mov x1, #42                                // initial value
-    str x1, [x0]                               // store 42 into heap
-    adrp x2, main_.max_size@PAGE
-    str x0, [x2, main_.max_size@PAGEOFF]       // store pointer into .data slot
+// Reading:
+    adrp x0, main__max_size@PAGE
+    ldr x0, [x0, main__max_size@PAGEOFF]       // load value directly
+```
+
+**Primitive var example** (`var count: s64 = 0`):
+```asm
+// .data section
+main__count:
+    .quad 0                                    // value stored directly
+
+// Writing:
+    adrp x1, main__count@PAGE
+    str x0, [x1, main__count@PAGEOFF]          // store value directly
 ```
 
 **Runtime initializer example** (`val config = load_config()`):
 ```asm
-// In _main_.init:
-    bl _main_.load_config                       // call function, result in x0
+// .data section
+main__config:
+    .quad 0                                    // pointer slot, zero until init
+
+// In _main__init:
+    bl _main__load_config                       // call function, result in x0
     mov x10, x0                                // save result
     mov x0, #8                                 // size of return type
     bl _sl_heap_alloc                           // allocate heap slot
     str x10, [x0]                              // store result into heap
-    adrp x2, main_.config@PAGE
-    str x0, [x2, main_.config@PAGEOFF]         // store pointer into .data slot
+    adrp x2, main__config@PAGE
+    str x0, [x2, main__config@PAGEOFF]         // store pointer into .data slot
 ```
 
-**Struct initializer example** (`val origin = Point{ 0, 0 }`):
+**Struct example** (`val origin = Point{ 0, 0 }`):
 ```asm
-// In _main_.init:
+// .data section
+main__origin:
+    .quad 0                                    // pointer slot, zero until init
+
+// In _main__init:
     mov x0, #16                                // size of Point (2 x s64)
     bl _sl_heap_alloc                           // allocate heap memory
     str xzr, [x0]                              // x field = 0
     str xzr, [x0, #8]                          // y field = 0
-    adrp x2, main_.origin@PAGE
-    str x0, [x2, main_.origin@PAGEOFF]         // store pointer into .data slot
+    adrp x2, main__origin@PAGE
+    str x0, [x2, main__origin@PAGEOFF]         // store pointer into .data slot
 ```
+
+Note: primitives with constant initializers (e.g., `val max_size: s64 = 42`) can be initialized directly in the `.data` section and do not need an init function. Primitives with runtime initializers (e.g., `val result: s64 = compute()`) are stored directly in `.data` but require the init function to compute and store the value.
 
 ### Generated Code
 
@@ -883,10 +950,10 @@ The compiler generates a package init function for each package that has top-lev
 
 ```asm
 _start:
-    bl _logger_.init      // dependency initializes first
-    bl _validator_.init   // then its dependent
-    bl _main_.init        // entry package last
-    bl _main_.main        // then main()
+    bl _logger__init      // dependency initializes first
+    bl _validator__init   // then its dependent
+    bl _main__init        // entry package last
+    bl _main__main        // then main()
     mov x16, #1
     svc #0
 ```
@@ -895,7 +962,7 @@ _start:
 
 1. **Rust-Style Explicit Module Tree**: Requiring `mod` declarations to build a module tree. Rejected as too complex for Slang's philosophy. Files should be automatically discovered, not manually declared.
 
-2. **Single-File Imports**: Allowing `import("math")` to resolve to `math.sl` (a single file). Rejected because it creates ambiguity when both `math.sl` and `math/` exist. Directory-only imports are simpler and unambiguous. A single-file module is just a directory with one file in it.
+2. **Single-File Imports**: Allowing `import "math"` to resolve to `math.sl` (a single file). Rejected because it creates ambiguity when both `math.sl` and `math/` exist. Directory-only imports are simpler and unambiguous. A single-file module is just a directory with one file in it.
 
 3. **File-Relative Import Paths**: Resolving import paths relative to the importing file's directory (like Node.js/Python), using `./` and `../` prefixes. Rejected because it leads to fragile `../` chains for sibling packages and paths that change when files are moved. Root-relative paths are stable regardless of file location.
 
@@ -905,13 +972,16 @@ _start:
 
 6. **Bare Top-Level Statements**: Allowing `print("hello")` at the top level outside any function. Rejected because it conflates declarations with imperative code, and makes initialization ordering harder to reason about. Use a function called from `main()` or from a variable initializer instead.
 
-7. **Flat Package Layout (no `packages/` directory)**: Resolving import paths directly from the project root (e.g., `import("math")` -> `<root>/math/`). Rejected because it mixes importable packages with non-package directories (`docs/`, `build/`, `test/`, `.git/`), makes project structure ambiguous to humans, complicates the resolver (must distinguish packages from non-packages by context), and creates edge cases around root package importability. The `packages/` directory provides a clear boundary with no ambiguity.
+7. **Flat Package Layout (no `packages/` directory)**: Resolving import paths directly from the project root (e.g., `import "math"` -> `<root>/math/`). Rejected because it mixes importable packages with non-package directories (`docs/`, `build/`, `test/`, `.git/`), makes project structure ambiguous to humans, complicates the resolver (must distinguish packages from non-packages by context), and creates edge cases around root package importability. The `packages/` directory provides a clear boundary with no ambiguity.
 
 # Testing
 
 - **Lexer tests**: Token recognition for `import` keyword
 - **Parser tests**:
-  - Import declaration parsing
+  - Implicit import parsing (`import "math"`)
+  - Explicit import parsing (`Math = import "math"`)
+  - Implicit name derivation from path (`import "utils/helpers"` -> `helpers`)
+  - Both forms produce equivalent `ImportDecl` AST nodes
   - Qualified type names in annotations (`geo.Point`, `&geo.Point`, `geo.Point?`)
   - Error on import not at top level
 - **Module resolution and discovery tests** (error stage: `module`):
@@ -951,11 +1021,12 @@ _start:
   - Caller cannot construct instances of an unimported type (compile error)
 - **Single-file program tests** (unified pipeline):
   - Single-file program with no imports compiles correctly through the package pipeline
-  - Single-file program produces mangled names (`main_.main`) in assembly output
+  - Single-file program produces mangled names (`main__main`) in assembly output
   - Two `.sl` files in root directory are treated as one root package
+- **E2E test migration**: Existing 275+ single-file tests require no changes to their `@test:` directives — directives check exit codes and stdout content, not assembly labels. The test harness is updated to route all compilations through `PackageCompiler`. Stack trace output may change (function names become mangled, e.g., `main` -> `main__main`); any tests that assert on stack trace format are updated as part of this work.
 - **E2E tests**:
-  - All E2E tests use `SlPackageCompiler` (unified pipeline) -- there is no separate single-file mode
-  - Existing single-file tests in `_examples/slang/` pass one file to `SlPackageCompiler` as the root package
+  - All E2E tests use `PackageCompiler` (unified pipeline) -- there is no separate single-file mode
+  - Existing single-file tests in `_examples/slang/` pass one file to `PackageCompiler` as the root package
   - Multi-file project tests live in `_examples/slang/projects/`, each as a directory containing `main.sl` and optionally `packages/`
   - `@test:` directives are read from `main.sl` only (the entry file)
   - `error_contains` is sufficient for asserting error messages from any file in the project
@@ -1000,7 +1071,7 @@ square = (x: s64) -> s64 {
 
 ```slang
 // main.sl
-math = import("math")
+import "math"
 
 main = () {
     val result = math.add(3, 4)
@@ -1038,12 +1109,12 @@ distance = (p1: &Point, p2: &Point) -> s64 {
 
 ```slang
 // main.sl
-geo = import("geometry")
+import "geometry"
 
 main = () {
-    val a = geo.Point{ 0, 0 }
-    val b = geo.Point{ 3, 4 }
-    print(geo.distance(a, b))  // prints: 7
+    val a = geometry.Point{ 0, 0 }
+    val b = geometry.Point{ 3, 4 }
+    print(geometry.distance(a, b))  // prints: 7
 }
 ```
 
@@ -1082,7 +1153,7 @@ to_hex = (n: s64) -> s64 {
 
 ```slang
 // main.sl
-utils = import("utils")
+import "utils"
 
 main = () {
     print(utils.format_s64(42))
@@ -1097,9 +1168,9 @@ A program importing from several packages.
 
 ```slang
 // main.sl
-math = import("math")
-strings = import("strings")
-config = import("config")
+import "math"
+import "strings"
+import "config"
 
 main = () {
     val greeting = strings.concat("Hello, ", config.app_name)
@@ -1112,7 +1183,7 @@ main = () {
 
 ## Example 5: Import Aliasing
 
-The left-hand side of the import assignment is the local name. Use different names to avoid conflicts.
+Use the explicit form to choose a custom binding name. This is required when two implicit imports would conflict (e.g., both `math/integers` and `math/big` would bind to their last segment).
 
 ```
 project/
@@ -1127,8 +1198,8 @@ project/
 
 ```slang
 // main.sl
-int_math = import("math/integers")
-big_math = import("math/big")
+int_math = import "math/integers"
+big_math = import "math/big"
 
 main = () {
     val a = int_math.add(1, 2)
@@ -1161,7 +1232,7 @@ log = (msg: string) {
 
 ```slang
 // packages/validator/validator.sl
-logger = import("logger")
+import "logger"
 
 validate = (value: s64) -> bool {
     if value < 0 {
@@ -1174,7 +1245,7 @@ validate = (value: s64) -> bool {
 
 ```slang
 // main.sl
-validator = import("validator")
+import "validator"
 
 main = () {
     val ok = validator.validate(-5)
@@ -1200,13 +1271,13 @@ project/
 
 ```slang
 // packages/a/a.sl
-b = import("b")
+import "b"
 foo = () -> s64 { return b.bar() }
 ```
 
 ```slang
 // packages/b/b.sl
-a = import("a")
+import "a"
 bar = () -> s64 { return a.foo() }
 ```
 
@@ -1238,7 +1309,7 @@ val db_port: s64 = 5432
 
 ```slang
 // packages/db/db.sl
-config = import("config")
+import "config"
 
 // This runs at init time, after config package initializes
 val connection = connect(config.db_host, config.db_port)
@@ -1251,7 +1322,7 @@ connect = (host: string, port: s64) -> s64 {
 
 ```slang
 // main.sl
-db = import("db")
+import "db"
 
 // Initialization order:
 // 1. config package (no dependencies)
@@ -1293,10 +1364,10 @@ Account = class {
 
 ```slang
 // main.sl
-acct = import("account")
+import "account"
 
 main = () {
-    val a = acct.Account{ 1000 }
+    val a = account.Account{ 1000 }
     print(a.get_balance())  // prints: 1000
 
     a.deposit(500)
@@ -1304,7 +1375,7 @@ main = () {
 }
 ```
 
-Note: `a.get_balance()` resolves the method through `a`'s type (`account.Account`), not through the `acct` import alias. The analyzer looks up methods in the `account` package's class definition.
+Note: `a.get_balance()` resolves the method through `a`'s type (`account.Account`), not through the import binding. The analyzer looks up methods in the `account` package's class definition.
 
 ## Example 10: Same-Package Forward References
 
@@ -1352,7 +1423,7 @@ create_world = (w: s64, h: s64) -> World {
 
 ```slang
 // main.sl
-game = import("game")
+import "game"
 
 main = () {
     val world = game.create_world(100, 100)
@@ -1363,36 +1434,126 @@ main = () {
 }
 ```
 
+## Example 11: Two-File Root Package
+
+The root package can span multiple files without needing a `packages/` directory. Files in the same directory as `main.sl` are part of the root package and can reference each other directly.
+
+```
+project/
+  main.sl
+  helpers.sl
+```
+
+```slang
+// helpers.sl
+clamp = (value: s64, min: s64, max: s64) -> s64 {
+    if value < min {
+        return min
+    }
+    if value > max {
+        return max
+    }
+    return value
+}
+
+format_score = (score: s64) -> s64 {
+    return clamp(score, 0, 100)
+}
+```
+
+```slang
+// main.sl
+main = () {
+    val score = format_score(150)  // no import needed -- same package
+    print(score)  // prints: 100
+}
+```
+
+Note: `helpers.sl` must not define a `main` function -- only the entry file (`main.sl`) may. The `sl` CLI discovers both files automatically and compiles them as one root package.
+
+## Example 12: Error Messages
+
+Examples of compiler errors for common module-related mistakes, using Slang's existing error format.
+
+**Missing package:**
+```
+error: package 'networking' not found
+  --> main.sl:1:8 (module)
+   |
+ 1 | import "networking"
+   |        ^^^^^^^^^^^^
+   |
+   = hint: expected a directory at packages/networking/
+```
+
+**Circular dependency:**
+```
+error: circular dependency detected
+  --> packages/a/a.sl:1:8 (module)
+   |
+ 1 | import "b"
+   |        ^^^
+   |
+   = note: a -> b -> a
+```
+
+**Assigning to an immutable package variable:**
+```
+error: cannot assign to immutable variable 'pi' in package 'math'
+  --> main.sl:5:5 (semantic)
+   |
+ 5 |     math.pi = 4
+   |     ^^^^^^^
+   |
+   = hint: 'pi' is declared with 'val' in packages/math/constants.sl
+```
+
+**Using a namespace as a value:**
+```
+error: cannot use package 'math' as a value
+  --> main.sl:5:11 (semantic)
+   |
+ 5 |     print(math)
+   |           ^^^^
+   |
+   = hint: use 'math.<name>' to access a declaration from the package
+```
+
 # Implementation Order
 
-1. [ ] **Lexer** - Add `import` token
-2. [ ] **AST** - Add `ImportDecl`, `TopLevelVarDecl`, add `Imports` field to `Program`, add `File` to `Position`
-3. [ ] **Parser** - Parse import declarations, qualified type names (dotted strings in `parseTypeName`), qualified struct literals (`PackageAlias` on `StructLiteral`), top-level `val`/`var` as `TopLevelVarDecl`
-4. [ ] **SlPackageResolver** - Path resolution within `packages/` directory
-5. [ ] **SlPackageCompiler (Phase 1)** - `PackageAST`/`FileAST`, recursive parse-and-discover, cycle detection, topological sort; accepts entry file + explicit root file list; returns `map[string]*PackageAST`
-6. [ ] **SlPackageCompiler (Phase 2)** - Consume `PackageAST` values, `AnalyzePackage` with registration + type-checking phases, create `SlPackageNamespace` bindings, populate `SlPackage.TypedAST` and `SlPackage.Exports`; validate `main` is in entry file only
-7. [ ] **IR Generator** - Name mangling (`SetPackagePath`), cross-package calls, combined `*ir.Program`, `PackagePath` on semantic types
-8. [ ] **ARM64 Backend** - `_sl_` prefix for internal labels, `InitOrder`-driven `_start`, global variable `.data` slots, `main_.main` lookup
-9. [ ] **Package Initialization** - Init function generation, global heap allocation in init, ordering via `InitOrder`
-10. [ ] **E2E Tests** - All tests through `SlPackageCompiler`; project tests in `_examples/slang/projects/`
+1. [x] **Lexer** - `TokenTypeImport` keyword
+2. [x] **AST** - `ImportDecl`, `FileAST`, `Imports` on `Program`, `File` on `Position`, `PackageAlias` on `StructLiteral`
+3. [x] **Parser** - Import declarations (implicit + explicit), qualified type names in `parseTypeName`, qualified struct literals, top-level `val`/`var`, `new` with qualified operands
+4. [x] **PackageResolver** - Path validation, resolution, file discovery, loose files warning
+5. [x] **PackageCompiler (Phase 1)** - Discovery, parsing, cycle detection, topological sort
+6. [x] **PackageCompiler (Phase 2)** - `AnalyzePackage`, `PackageNamespace` bindings, export extraction, `main` validation, import/declaration name conflict detection
+7. [x] **IR Generator** - Name mangling (`__` separator), cross-package calls/method dispatch, combined `*ir.Program`, `PackagePath` on semantic types
+8. [x] **ARM64 Backend** - `_sl_` prefix for all internal labels
+9. [x] **Package Initialization** - Top-level `val`/`var` support, cross-package variable access, dependency-ordered initialization (injected into `main`)
+10. [x] **E2E Tests** - All tests through `PackageCompiler`; project tests in `_examples/projects/`
+
+### Deferred to future work:
+- `InitOrder`-driven `_start` with separate per-package init functions (currently all init happens at start of `main`)
+- `main__main` unified mangling for root package (root functions currently unmangled)
+- Compound type globals (structs, classes) in `.data` section (currently only primitive `var` uses `.data`)
 
 # Files Modified
 
 | File | Changes | Status |
 |------|---------|--------|
-| `compiler/lexer/lexer.go` | Add `TokenTypeImport` | Planned |
-| `compiler/ast/ast.go` | Add `ImportDecl`, `TopLevelVarDecl`, add `Imports` to `Program`, add `File` to `Position`, `PackageAlias` on `StructLiteral` | Planned |
-| `compiler/parser/parser.go` | Parse `import`, qualified type annotations (dotted strings), qualified struct literals, top-level `val`/`var` | Planned |
-| `compiler/slpackage/resolver.go` | New: `SlPackageResolver` -- path resolution within `packages/` | Planned |
-| `compiler/slpackage/compiler.go` | New: `SlPackageCompiler`, `SlPackage`, `Export`, `PackageAST`, `FileAST` -- compilation orchestration | Planned |
-| `compiler/semantic/analyzer.go` | `SlPackageNamespace`, `AnalyzePackage`, cross-package type checking, method dispatch, `main` validation | Planned |
-| `compiler/semantic/types.go` | Add `PackagePath` to `StructType`, `ClassType`, `ObjectType`; update `Equals()` and `String()` | Planned |
-| `compiler/ir/generator.go` | `SetPackagePath`, name mangling, cross-package references, combined `*ir.Program` | Planned |
-| `compiler/ir/program.go` | Add `InitOrder` field, update `Main()` and `Validate()` for `main_.main` | Planned |
-| `compiler/ir/backend/arm64/backend.go` | `_sl_` prefix for internal labels, `InitOrder`-driven `_start`, global `.data` slots | Planned |
-| `cmd/sl/main.go` | Pipeline delegates to `SlPackageCompiler`, root file discovery | Planned |
-| `test/sl/e2e_test.go` | All tests through `SlPackageCompiler`, project test discovery | Planned |
-| `test/testutil/expectations.go` | `LoadProjectTestCases` for directory-based tests | Planned |
+| `compiler/lexer/lexer.go` | `TokenTypeImport`, `File` field on Position | Done |
+| `compiler/ast/ast.go` | `ImportDecl`, `FileAST`, `Imports` on `Program`, `File` on `Position`, `PackageAlias` on `StructLiteral` | Done |
+| `compiler/parser/parser.go` | Import parsing (implicit + explicit), qualified types, qualified struct literals, top-level `val`/`var`, `new` with qualified operands | Done |
+| `compiler/slpackage/resolver.go` | New: `PackageResolver` -- path validation, resolution, file discovery | Done |
+| `compiler/slpackage/compiler.go` | New: `PackageCompiler`, `Package`, `GenerateIR`, `MangleName`, loose files warning | Done |
+| `compiler/semantic/analyzer.go` | `AnalyzePackage`, `PackageNamespace` bindings, namespace call/field resolution, namespace misuse errors, `main` validation, import/declaration conflict detection | Done |
+| `compiler/semantic/exports.go` | New: `ExportKind`, `Export`, `PackageNamespace`, `PackageNamespaceType`, `ExtractExports` | Done |
+| `compiler/semantic/types.go` | `PackagePath` on `StructType`, `ClassType`, `ObjectType`; updated `Equals()` and `String()` | Done |
+| `compiler/ir/generator.go` | Cross-package call mangling, method name mangling with package prefix, cross-package variable access, top-level stmt injection | Done |
+| `compiler/ir/backend/arm64/backend.go` | `_sl_` prefix for all internal labels | Done |
+| `cmd/sl/main.go` | Pipeline through `PackageCompiler`, root file discovery | Done |
+| `test/sl/e2e_test.go` | All tests through `PackageCompiler`, project test runner | Done |
+| `test/testutil/expectations.go` | `LoadProjectTestCases` for directory-based tests | Done |
 
 # Risks and Limitations
 
@@ -1427,7 +1588,7 @@ These are explicitly out of scope but may be added later:
 2. **Selective Imports**
    ```slang
    // Import specific symbols into local scope
-   { add, subtract } = import("math")
+   { add, subtract } = import "math"
    val result = add(1, 2)  // no prefix needed
    ```
 
@@ -1455,8 +1616,8 @@ These are explicitly out of scope but may be added later:
 7. **Standard Library**
    ```slang
    // Named imports for standard library packages
-   math = import("std/math")
-   io = import("std/io")
+   import "std/math"
+   import "std/io"
    ```
    - Ships alongside the compiler binary
    - Resolved via named paths (non-relative)

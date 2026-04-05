@@ -41,6 +41,11 @@ type parser struct {
 	Filename string // source filename for error reporting
 
 	Errors []*errors.CompilerError
+
+	// noStructLiterals suppresses struct literal parsing (both qualified and
+	// unqualified). Set to true when parsing if/while/for conditions where
+	// '{' should be interpreted as the start of a block, not a struct literal.
+	noStructLiterals bool
 }
 
 // toErrorPos converts an ast.Position to an errors.Position
@@ -166,12 +171,31 @@ func (p *parser) looksLikeObjectDecl() bool {
 	return p.looksLikeDecl(lexer.TokenTypeObject)
 }
 
-// skipUntilDecl skips tokens until we find a function, struct, class, or object declaration or reach end of input.
+// looksLikeImportDecl returns true if the current position looks like an explicit import declaration.
+// Pattern: identifier = import
+func (p *parser) looksLikeImportDecl() bool {
+	return p.looksLikeDecl(lexer.TokenTypeImport)
+}
+
+// looksLikeDeclarationProgram returns true if the current token starts a declaration-based program.
+func (p *parser) looksLikeDeclarationProgram() bool {
+	tok := p.CurrentToken().Type
+	return tok == lexer.TokenTypeImport ||
+		tok == lexer.TokenTypeVal ||
+		tok == lexer.TokenTypeVar ||
+		p.looksLikeImportDecl() ||
+		p.looksLikeFunctionDecl() ||
+		p.looksLikeStructDecl() ||
+		p.looksLikeClassDecl() ||
+		p.looksLikeObjectDecl()
+}
+
+// skipUntilDecl skips tokens until we find a function, struct, class, object, or import declaration or reach end of input.
 // This is used for error recovery to continue parsing after a syntax error.
 func (p *parser) skipUntilDecl() {
 	for !p.isAtEnd() {
-		// If we find a declaration, stop
-		if p.looksLikeFunctionDecl() || p.looksLikeStructDecl() || p.looksLikeClassDecl() || p.looksLikeObjectDecl() {
+		// If we find a declaration or import, stop
+		if p.CurrentToken().Type == lexer.TokenTypeImport || p.looksLikeImportDecl() || p.looksLikeFunctionDecl() || p.looksLikeStructDecl() || p.looksLikeClassDecl() || p.looksLikeObjectDecl() || p.CurrentToken().Type == lexer.TokenTypeVal || p.CurrentToken().Type == lexer.TokenTypeVar {
 			return
 		}
 		p.Index++
@@ -307,46 +331,69 @@ func (p *parser) Parse() *ast.Program {
 		StartPos:     startPos,
 	}
 
-	// Check if this is a declaration-based program or legacy statement-based program
-	if !p.isAtEnd() && (p.looksLikeFunctionDecl() || p.looksLikeStructDecl() || p.looksLikeClassDecl() || p.looksLikeObjectDecl()) {
-		// New style: parse declarations (functions, structs, classes, objects)
+	// Parse as declaration-based program if it starts with any recognized declaration form
+	if !p.isAtEnd() && p.looksLikeDeclarationProgram() {
+		seenNonImport := false
 		for !p.isAtEnd() {
 			p.skipNewlines()
 			if p.isAtEnd() {
 				break
 			}
 
-			// Check if current position looks like a declaration
-			if p.looksLikeFunctionDecl() {
+			// Check for import declarations (must come before other declarations)
+			if p.CurrentToken().Type == lexer.TokenTypeImport || p.looksLikeImportDecl() {
+				if seenNonImport {
+					p.addError("import declarations must appear before other declarations", p.CurrentToken().Pos)
+					// Skip past the bad import to avoid infinite loop
+					p.parseImportDecl()
+					continue
+				}
+				importDecl := p.parseImportDecl()
+				if importDecl != nil {
+					program.Imports = append(program.Imports, importDecl)
+				} else {
+					p.skipUntilDecl()
+				}
+			} else if p.looksLikeFunctionDecl() {
+				seenNonImport = true
 				fnDecl := p.ParseFunctionDecl()
 				if fnDecl != nil {
 					program.Declarations = append(program.Declarations, fnDecl)
 				} else {
-					// If parsing failed, try to recover by skipping to next declaration
 					p.skipUntilDecl()
 				}
 			} else if p.looksLikeStructDecl() {
+				seenNonImport = true
 				structDecl := p.ParseStructDecl()
 				if structDecl != nil {
 					program.Declarations = append(program.Declarations, structDecl)
 				} else {
-					// If parsing failed, try to recover by skipping to next declaration
 					p.skipUntilDecl()
 				}
 			} else if p.looksLikeClassDecl() {
+				seenNonImport = true
 				classDecl := p.ParseClassDecl()
 				if classDecl != nil {
 					program.Declarations = append(program.Declarations, classDecl)
 				} else {
-					// If parsing failed, try to recover by skipping to next declaration
 					p.skipUntilDecl()
 				}
 			} else if p.looksLikeObjectDecl() {
+				seenNonImport = true
 				objectDecl := p.ParseObjectDecl()
 				if objectDecl != nil {
 					program.Declarations = append(program.Declarations, objectDecl)
 				} else {
-					// If parsing failed, try to recover by skipping to next declaration
+					p.skipUntilDecl()
+				}
+			} else if p.CurrentToken().Type == lexer.TokenTypeVal || p.CurrentToken().Type == lexer.TokenTypeVar {
+				// Top-level variable declaration
+				seenNonImport = true
+				mutable := p.CurrentToken().Type == lexer.TokenTypeVar
+				varDecl := p.ParseVarDecl(mutable)
+				if varDecl != nil {
+					program.Statements = append(program.Statements, varDecl)
+				} else {
 					p.skipUntilDecl()
 				}
 			} else {
@@ -400,6 +447,16 @@ func (p *parser) Parse() *ast.Program {
 }
 
 func (p *parser) ParseStatement() ast.Statement {
+	// Check for import declaration inside function (not allowed)
+	if p.CurrentToken().Type == lexer.TokenTypeImport {
+		pos := p.CurrentToken().Pos
+		p.addError("import declarations are only allowed at the top level", pos).
+			WithHint("move the import declaration to the top of the file")
+		// Skip to next statement for error recovery
+		p.skipToNextStatement()
+		return nil
+	}
+
 	// Check for struct declaration inside function (not allowed)
 	if p.CurrentToken().Type == lexer.TokenTypeStruct {
 		pos := p.CurrentToken().Pos
@@ -689,8 +746,11 @@ func (p *parser) ParseIfStatement() ast.Statement {
 	ifKeyword := p.CurrentToken().Pos
 	p.advance() // consume 'if'
 
-	// Parse the condition expression
+	// Parse the condition expression.
+	// Suppress struct literals so '{' is interpreted as the block start, not a struct literal.
+	p.noStructLiterals = true
 	condition := p.parseExpression(precedenceLowest)
+	p.noStructLiterals = false
 	if condition == nil {
 		p.addError("expected condition after 'if'", ifKeyword)
 		return nil
@@ -845,7 +905,12 @@ func (p *parser) ParseWhileStatement() ast.Statement {
 	}
 
 	// Parse condition (required)
+	// Suppress struct literals when no parens, so '{' starts the block.
+	if !hasParens {
+		p.noStructLiterals = true
+	}
 	condition := p.parseExpression(precedenceLowest)
+	p.noStructLiterals = false
 	if condition == nil {
 		p.addError("expected condition in while statement", p.CurrentToken().Pos)
 		return nil
@@ -1035,6 +1100,18 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 				continue
 			}
 
+			// Check if this is a qualified struct literal (pkg.Type{ ... } or pkg.Type { ... })
+			// Suppressed inside if/while/for conditions where '{' starts a block.
+			if !p.noStructLiterals && !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeLBrace {
+				if ident, ok := left.(*ast.IdentifierExpr); ok {
+					structLit := p.parseQualifiedStructLiteral(ident.Name, ident.StartPos, memberName, memberPos)
+					if structLit != nil {
+						left = structLit
+						continue
+					}
+				}
+			}
+
 			// Otherwise it's a field access
 			left = &ast.FieldAccessExpr{
 				Object:   left,
@@ -1124,9 +1201,13 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 
 		p.advance() // consume operator
 
-		// For left-associative operators, we use opPrec for the right side
-		// For right-associative, we would use opPrec - 1
-		right := p.parseExpression(opPrec)
+		// For left-associative operators, we use opPrec for the right side.
+		// Elvis (?:) is right-associative so that a ?: b ?: c parses as a ?: (b ?: c).
+		rightPrec := opPrec
+		if op == "?:" {
+			rightPrec = opPrec - 1
+		}
+		right := p.parseExpression(rightPrec)
 		if right == nil {
 			p.addError(fmt.Sprintf("expected expression after operator '%s'", op), opPos)
 			return nil
@@ -1208,7 +1289,9 @@ func (p *parser) parsePrimary() ast.Expression {
 		newPos := p.CurrentToken().Pos
 		p.advance() // consume 'new'
 
-		operand := p.parsePrimary()
+		// Parse the operand as a full expression to handle qualified struct literals
+		// like `new account.Account{ 1000 }` where dot-access needs to be resolved
+		operand := p.parseExpression(precedenceLowest)
 		if operand == nil {
 			p.addError("expected expression after 'new'", newPos)
 			return nil
@@ -1220,13 +1303,35 @@ func (p *parser) parsePrimary() ast.Expression {
 		}
 	}
 
+	// Check for unary minus operator
+	if p.CurrentToken().Type == lexer.TokenTypeMinus {
+		opPos := p.CurrentToken().Pos
+		p.advance() // consume '-'
+
+		operand := p.parseExpression(precedencePrefix)
+		if operand == nil {
+			p.addError("expected expression after '-'", opPos)
+			return nil
+		}
+
+		return &ast.UnaryExpr{
+			Op:         "-",
+			Operand:    operand,
+			OpPos:      opPos,
+			OperandPos: operand.Pos(),
+			OperandEnd: operand.End(),
+		}
+	}
+
 	// Check for unary NOT operator
 	if p.CurrentToken().Type == lexer.TokenTypeNot {
 		opPos := p.CurrentToken().Pos
 		p.advance() // consume '!'
 
-		// Parse the operand (recursively call parsePrimary for highest precedence)
-		operand := p.parsePrimary()
+		// Parse the operand with precedencePrefix so that postfix operators
+		// (field access, method calls, indexing) bind tighter than '!'.
+		// This makes !obj.method() parse as !(obj.method()) not (!obj).method().
+		operand := p.parseExpression(precedencePrefix)
 		if operand == nil {
 			p.addError("expected expression after '!'", opPos)
 			return nil
@@ -1251,15 +1356,14 @@ func (p *parser) parsePrimary() ast.Expression {
 			return p.parseCallExpr(token.Value, token.Pos)
 		}
 
-		// Check if this is a struct literal (Name { ... })
-		// The brace must be on the same line and immediately after the identifier (no space)
-		// This prevents "if a == b {" from being parsed as "b { ..."
-		// For struct literals with space like "Point { 1, 2 }", the user should use "Point{ 1, 2 }"
-		if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeLBrace {
+		// Check if this is a struct literal (Name { ... } or Name{ ... })
+		// Suppressed inside if/while/for conditions where '{' starts a block.
+		if !p.noStructLiterals && !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeLBrace {
 			bracePos := p.CurrentToken().Pos
 			identEnd := token.Pos.Column + len(token.Value)
-			// Only parse as struct literal if brace is DIRECTLY after identifier (no space)
-			if bracePos.Line == token.Pos.Line && bracePos.Column == identEnd {
+			// Only parse as struct literal if brace is on the same line
+			if bracePos.Line == token.Pos.Line {
+				_ = identEnd // whitespace no longer matters
 				return p.parseStructLiteral(token.Value, token.Pos)
 			}
 		}
@@ -1503,6 +1607,88 @@ func (p *parser) parseStructLiteral(name string, namePos ast.Position) ast.Expre
 		Arguments:      arguments,
 		NamedArguments: namedArguments,
 		RightBrace:     rightBrace,
+	}
+}
+
+// parseQualifiedStructLiteral parses a qualified struct literal: pkg.Type{ ... }
+// The package alias and struct name have already been consumed; '{' is the current token.
+func (p *parser) parseQualifiedStructLiteral(pkgAlias string, pkgPos ast.Position, structName string, structNamePos ast.Position) ast.Expression {
+	leftBrace := p.CurrentToken().Pos
+	p.advance() // consume '{'
+
+	p.skipNewlines()
+
+	arguments := []ast.Expression{}
+	namedArguments := []ast.NamedArgument{}
+	hasNamedArgs := false
+	hasPositionalArgs := false
+
+	if !p.isAtEnd() && p.CurrentToken().Type != lexer.TokenTypeRBrace {
+		if p.isNamedArgument() {
+			hasNamedArgs = true
+			namedArg := p.parseNamedArgument()
+			if namedArg != nil {
+				namedArguments = append(namedArguments, *namedArg)
+			}
+		} else {
+			hasPositionalArgs = true
+			arg := p.parseExpression(precedenceLowest)
+			if arg != nil {
+				arguments = append(arguments, arg)
+			}
+		}
+
+		for !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeComma {
+			p.advance() // consume ','
+			p.skipNewlines()
+
+			if p.CurrentToken().Type == lexer.TokenTypeRBrace {
+				break
+			}
+
+			if p.isNamedArgument() {
+				if hasPositionalArgs {
+					p.addError("cannot mix positional and named arguments", p.CurrentToken().Pos)
+					return nil
+				}
+				hasNamedArgs = true
+				namedArg := p.parseNamedArgument()
+				if namedArg != nil {
+					namedArguments = append(namedArguments, *namedArg)
+				}
+			} else {
+				if hasNamedArgs {
+					p.addError("cannot mix positional and named arguments", p.CurrentToken().Pos)
+					return nil
+				}
+				hasPositionalArgs = true
+				arg := p.parseExpression(precedenceLowest)
+				if arg != nil {
+					arguments = append(arguments, arg)
+				}
+			}
+		}
+	}
+
+	p.skipNewlines()
+
+	if p.isAtEnd() || p.CurrentToken().Type != lexer.TokenTypeRBrace {
+		p.addError(fmt.Sprintf("expected '}' after struct fields, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		return nil
+	}
+
+	rightBrace := p.CurrentToken().Pos
+	p.advance() // consume '}'
+
+	return &ast.StructLiteral{
+		PackageAlias:    pkgAlias,
+		PackageAliasPos: pkgPos,
+		Name:            structName,
+		NamePos:         structNamePos,
+		LeftBrace:       leftBrace,
+		Arguments:       arguments,
+		NamedArguments:  namedArguments,
+		RightBrace:      rightBrace,
 	}
 }
 
@@ -1912,6 +2098,17 @@ func (p *parser) parseTypeName() (string, ast.Position) {
 	typeName := p.CurrentToken().Value
 	p.advance() // consume type identifier
 
+	// Check for qualified type: pkg.Type (e.g., geometry.Point)
+	if !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeDot {
+		p.advance() // consume '.'
+		if p.isAtEnd() || p.CurrentToken().Type != lexer.TokenTypeIdentifier {
+			p.addError("expected type name after '.'", p.CurrentToken().Pos)
+			return "", typePos
+		}
+		typeName = typeName + "." + p.CurrentToken().Value
+		p.advance() // consume qualified name
+	}
+
 	// Check for generic type: Name<T> (e.g., Own<Point>, Ref<Point>)
 	if p.CurrentToken().Type == lexer.TokenTypeLessThan {
 		p.advance() // consume '<'
@@ -2185,6 +2382,72 @@ func (p *parser) ParseObjectDecl() *ast.ObjectDecl {
 		Methods:       methods,
 		RightBrace:    rightBrace,
 	}
+}
+
+// parseImportDecl parses an import declaration.
+// Implicit form:  import "path"
+// Explicit form:  Name = import "path"
+func (p *parser) parseImportDecl() *ast.ImportDecl {
+	var nameStr string
+	var namePos ast.Position
+	var equalsPos ast.Position
+	explicit := false
+
+	// Check if this is an explicit import: Name = import "path"
+	if p.CurrentToken().Type == lexer.TokenTypeIdentifier {
+		nameStr = p.CurrentToken().Value
+		namePos = p.CurrentToken().Pos
+		p.advance() // consume identifier
+
+		equalsPos = p.CurrentToken().Pos
+		p.advance() // consume '='
+		explicit = true
+	}
+
+	// Consume 'import' keyword
+	importPos := p.CurrentToken().Pos
+	p.advance() // consume 'import'
+
+	// Expect string literal for the path
+	if p.isAtEnd() || p.CurrentToken().Type != lexer.TokenTypeString {
+		if p.isAtEnd() {
+			p.addError("expected string literal after 'import'", importPos)
+		} else {
+			p.addError(fmt.Sprintf("expected string literal after 'import', got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+		}
+		return nil
+	}
+
+	pathStr := p.CurrentToken().Value
+	pathPos := p.CurrentToken().Pos
+	p.advance() // consume string literal
+
+	// For implicit imports, derive name from the last path segment
+	if !explicit {
+		nameStr = deriveImportName(pathStr)
+		namePos = importPos
+	}
+
+	return &ast.ImportDecl{
+		ImportPos: importPos,
+		Name:      nameStr,
+		Path:      pathStr,
+		Explicit:  explicit,
+		NamePos:   namePos,
+		EqualsPos: equalsPos,
+		PathPos:   pathPos,
+	}
+}
+
+// deriveImportName extracts the binding name from an import path.
+// It returns the last segment after splitting on '/'.
+func deriveImportName(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '/' {
+			return path[i+1:]
+		}
+	}
+	return path
 }
 
 // parseClassMembers parses class fields and methods

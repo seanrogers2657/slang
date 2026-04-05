@@ -52,8 +52,8 @@
 // # Usage
 //
 //	// Generate IR from typed AST
-//	gen := ir.NewGenerator()
-//	prog, err := gen.Generate(typedAST)
+//	gen := ir.NewGenerator(ir.GeneratorConfig{})
+//	prog, err := gen.GenerateProgram(typedAST)
 //
 //	// Print IR for debugging
 //	ir.NewPrinter(os.Stdout).PrintProgram(prog)

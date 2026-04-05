@@ -53,7 +53,6 @@ func TestAnalyzeBinaryExpression_TypeError(t *testing.T) {
 		{"string + int", bin(strLit("test"), "+", intLit("3"))},
 		{"int + string", bin(intLit("5"), "+", strLit("test"))},
 		{"string - string", bin(strLit("a"), "-", strLit("b"))},
-		{"string == string", bin(strLit("a"), "==", strLit("b"))},
 	}
 
 	for _, tt := range tests {
@@ -376,10 +375,10 @@ func TestAnalyzeTypeMismatch(t *testing.T) {
 		rightType string
 		errorMsg  string
 	}{
-		{"s32 + s64", "s32", "s64", "requires operands of the same type"},
-		{"s8 + s16", "s8", "s16", "requires operands of the same type"},
-		{"u8 + u16", "u8", "u16", "requires operands of the same type"},
+		// Same signedness with widening is now allowed (s8+s16, s32+s64, u8+u16)
+		// Different signedness still errors
 		{"s32 + u32", "s32", "u32", "requires operands of the same type"},
+		{"s8 + u8", "s8", "u8", "requires operands of the same type"},
 	}
 
 	for _, tt := range tests {

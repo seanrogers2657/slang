@@ -79,6 +79,8 @@ type Analyzer struct {
 	currentFunctionName string                 // name of current function being analyzed
 	loopDepth         int                     // tracks nested loop depth for break/continue validation
 	currentClass      *ClassType              // class being analyzed (for 'self' validation)
+	requireMain       bool                    // whether to require a 'main' function (true for root package)
+	packagePath       string                  // package path for type registration ("main" for root)
 }
 
 // NewAnalyzer creates a new semantic analyzer
@@ -92,6 +94,8 @@ func NewAnalyzer(filename string) *Analyzer {
 		TypeRegistry:      NewTypeRegistry(),
 		currentReturnType: nil,
 		currentClass:      nil,
+		requireMain:       true,                    // default: require main (root package)
+		packagePath:       "main",                  // default: root package
 	}
 }
 
@@ -173,6 +177,86 @@ func (a *Analyzer) mergeConditionalMoves(thenMoves, elseMoves []moveRecord) {
 	}
 }
 
+// AnalyzePackage performs semantic analysis on a package consisting of one or more files.
+// This is the primary entry point for the module system.
+// isRoot indicates whether this is the root package (which must contain a main function).
+// deps is a map of import path -> PackageNamespace for already-analyzed dependencies (nil for no deps).
+func (a *Analyzer) AnalyzePackage(files []*ast.FileAST, pkgPath string, isRoot bool, deps map[string]*PackageNamespace) ([]*errors.CompilerError, *TypedProgram) {
+	a.requireMain = isRoot
+	a.packagePath = pkgPath
+	// Merge all files' declarations into a single program
+	merged := &ast.Program{
+		Declarations: []ast.Declaration{},
+		Statements:   []ast.Statement{},
+	}
+
+	for _, f := range files {
+		merged.Declarations = append(merged.Declarations, f.AST.Declarations...)
+		merged.Statements = append(merged.Statements, f.AST.Statements...)
+		merged.Imports = append(merged.Imports, f.AST.Imports...)
+	}
+
+	if len(files) > 0 {
+		merged.StartPos = files[0].AST.StartPos
+		merged.EndPos = files[len(files)-1].AST.EndPos
+	}
+
+	// Bind import namespaces in scope, checking for duplicate import names
+	seenImportNames := make(map[string]string) // name -> import path
+	if deps != nil {
+		for _, imp := range merged.Imports {
+			if prevPath, exists := seenImportNames[imp.Name]; exists {
+				a.addError(
+					fmt.Sprintf("import name '%s' is already used by import \"%s\"", imp.Name, prevPath),
+					imp.ImportPos, imp.ImportPos,
+				).WithHint("use explicit import form to alias one of them")
+			}
+			seenImportNames[imp.Name] = imp.Path
+			if ns, ok := deps[imp.Path]; ok {
+				a.currentScope.variables[imp.Name] = VariableInfo{
+					Type:    PackageNamespaceType{Namespace: ns},
+					Mutable: false,
+				}
+			}
+		}
+	}
+
+	// Check for conflicts between import names and declaration names
+	importNames := make(map[string]ast.Position)
+	for _, imp := range merged.Imports {
+		importNames[imp.Name] = imp.ImportPos
+	}
+	for _, decl := range merged.Declarations {
+		var declName string
+		var declPos ast.Position
+		switch d := decl.(type) {
+		case *ast.FunctionDecl:
+			declName = d.Name
+			declPos = d.NamePos
+		case *ast.StructDecl:
+			declName = d.Name
+			declPos = d.NamePos
+		case *ast.ClassDecl:
+			declName = d.Name
+			declPos = d.NamePos
+		case *ast.ObjectDecl:
+			declName = d.Name
+			declPos = d.NamePos
+		}
+		if declName != "" {
+			if impPos, conflict := importNames[declName]; conflict {
+				_ = impPos // import position available if needed for better error
+				a.addError(
+					fmt.Sprintf("declaration '%s' conflicts with import of the same name", declName),
+					declPos, declPos,
+				)
+			}
+		}
+	}
+
+	return a.Analyze(merged)
+}
+
 // Analyze performs semantic analysis on a program
 func (a *Analyzer) Analyze(program *ast.Program) ([]*errors.CompilerError, *TypedProgram) {
 	typedProgram := &TypedProgram{
@@ -182,62 +266,156 @@ func (a *Analyzer) Analyze(program *ast.Program) ([]*errors.CompilerError, *Type
 		EndPos:       program.EndPos,
 	}
 
-	// Handle declaration-based programs
-	if len(program.Declarations) > 0 {
-		// First pass: register all type names (so forward references work)
-		for _, decl := range program.Declarations {
-			switch d := decl.(type) {
-			case *ast.StructDecl:
-				a.registerStructName(d)
-			case *ast.ClassDecl:
-				a.registerClassName(d)
-			case *ast.ObjectDecl:
-				a.registerObjectName(d)
-			}
-		}
-
-		// Second pass: resolve field/method types (now all type names are known)
-		for _, decl := range program.Declarations {
-			switch d := decl.(type) {
-			case *ast.StructDecl:
-				a.resolveStructFields(d)
-			case *ast.ClassDecl:
-				a.resolveClassFieldsAndMethods(d)
-			case *ast.ObjectDecl:
-				a.resolveObjectMethods(d)
-			}
-		}
-
-		// Third pass: collect all function signatures
-		hasMain := false
-		for _, decl := range program.Declarations {
-			if fnDecl, ok := decl.(*ast.FunctionDecl); ok {
-				a.registerFunction(fnDecl)
-				if fnDecl.Name == "main" {
-					hasMain = true
-				}
-			}
-		}
-
-		if !hasMain {
-			// Add error if no main function found - point to end of file
-			a.addError("program must have a 'main' function", program.EndPos, program.EndPos)
-		}
-
-		// Fourth pass: analyze all declarations
-		for _, decl := range program.Declarations {
-			typedDecl := a.analyzeDeclaration(decl)
-			typedProgram.Declarations = append(typedProgram.Declarations, typedDecl)
-		}
-	} else {
-		// Handle legacy statement-based programs
-		for _, stmt := range program.Statements {
-			typedStmt := a.analyzeStatement(stmt)
-			typedProgram.Statements = append(typedProgram.Statements, typedStmt)
+	// Pass 1: register all type names (so forward references work)
+	for _, decl := range program.Declarations {
+		switch d := decl.(type) {
+		case *ast.StructDecl:
+			a.registerStructName(d)
+		case *ast.ClassDecl:
+			a.registerClassName(d)
+		case *ast.ObjectDecl:
+			a.registerObjectName(d)
 		}
 	}
 
+	// Pass 2: resolve field/method types (now all type names are known)
+	for _, decl := range program.Declarations {
+		switch d := decl.(type) {
+		case *ast.StructDecl:
+			a.resolveStructFields(d)
+		case *ast.ClassDecl:
+			a.resolveClassFieldsAndMethods(d)
+		case *ast.ObjectDecl:
+			a.resolveObjectMethods(d)
+		}
+	}
+
+	// Pass 3: collect all function signatures
+	hasMain := false
+	for _, decl := range program.Declarations {
+		if fnDecl, ok := decl.(*ast.FunctionDecl); ok {
+			a.registerFunction(fnDecl)
+			if fnDecl.Name == "main" {
+				hasMain = true
+			}
+		}
+	}
+
+	if !hasMain && a.requireMain && len(program.Declarations) > 0 {
+		a.addError("program must have a 'main' function", program.EndPos, program.EndPos)
+	}
+
+	// Check for circular initialization dependencies among top-level variables
+	a.checkCircularInit(program.Statements)
+
+	// Pass 4: analyze top-level variable declarations (val/var)
+	for _, stmt := range program.Statements {
+		typedStmt := a.analyzeStatement(stmt)
+		typedProgram.Statements = append(typedProgram.Statements, typedStmt)
+	}
+
+	// Pass 5: analyze all declarations (function bodies, class methods, etc.)
+	for _, decl := range program.Declarations {
+		typedDecl := a.analyzeDeclaration(decl)
+		typedProgram.Declarations = append(typedProgram.Declarations, typedDecl)
+	}
+
 	return a.errors, typedProgram
+}
+
+// hasTopLevelVarDecls checks if any statements are variable declarations.
+// checkCircularInit detects circular dependencies among top-level variable initializers.
+// e.g., val x = y + 1 and val y = x + 1 is a cycle.
+func (a *Analyzer) checkCircularInit(stmts []ast.Statement) {
+	// Build dependency graph: variable name -> set of variable names referenced in initializer
+	varNames := make(map[string]bool)
+	deps := make(map[string][]string)
+
+	for _, stmt := range stmts {
+		varDecl, ok := stmt.(*ast.VarDeclStmt)
+		if !ok {
+			continue
+		}
+		varNames[varDecl.Name] = true
+		refs := collectIdentifierRefs(varDecl.Initializer)
+		for _, ref := range refs {
+			deps[varDecl.Name] = append(deps[varDecl.Name], ref)
+		}
+	}
+
+	// DFS cycle detection (only consider references to other top-level variables)
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	colors := make(map[string]int)
+
+	var dfs func(node string) bool
+	dfs = func(node string) bool {
+		colors[node] = gray
+		for _, dep := range deps[node] {
+			if !varNames[dep] {
+				continue // not a top-level variable, skip
+			}
+			if colors[dep] == gray {
+				a.addError(
+					fmt.Sprintf("circular initialization dependency: '%s' and '%s' depend on each other", node, dep),
+					ast.Position{}, ast.Position{},
+				)
+				return true
+			}
+			if colors[dep] == white {
+				if dfs(dep) {
+					return true
+				}
+			}
+		}
+		colors[node] = black
+		return false
+	}
+
+	for name := range varNames {
+		if colors[name] == white {
+			dfs(name)
+		}
+	}
+}
+
+// collectIdentifierRefs extracts all identifier names referenced in an expression tree.
+func collectIdentifierRefs(expr ast.Expression) []string {
+	if expr == nil {
+		return nil
+	}
+	var refs []string
+	switch e := expr.(type) {
+	case *ast.IdentifierExpr:
+		refs = append(refs, e.Name)
+	case *ast.BinaryExpr:
+		refs = append(refs, collectIdentifierRefs(e.Left)...)
+		refs = append(refs, collectIdentifierRefs(e.Right)...)
+	case *ast.UnaryExpr:
+		refs = append(refs, collectIdentifierRefs(e.Operand)...)
+	case *ast.CallExpr:
+		for _, arg := range e.Arguments {
+			refs = append(refs, collectIdentifierRefs(arg)...)
+		}
+	case *ast.GroupingExpr:
+		refs = append(refs, collectIdentifierRefs(e.Expr)...)
+	case *ast.FieldAccessExpr:
+		refs = append(refs, collectIdentifierRefs(e.Object)...)
+	case *ast.MethodCallExpr:
+		refs = append(refs, collectIdentifierRefs(e.Object)...)
+		for _, arg := range e.Arguments {
+			refs = append(refs, collectIdentifierRefs(arg)...)
+		}
+	case *ast.IndexExpr:
+		refs = append(refs, collectIdentifierRefs(e.Array)...)
+		refs = append(refs, collectIdentifierRefs(e.Index)...)
+	case *ast.NewExpr:
+		refs = append(refs, collectIdentifierRefs(e.Operand)...)
+	}
+	return refs
 }
 
 // registerFunction registers a function's signature in the function registry
@@ -303,8 +481,9 @@ func (a *Analyzer) registerStructName(s *ast.StructDecl) {
 
 	// Register the struct with empty fields (will be resolved in second pass)
 	a.TypeRegistry.RegisterStruct(s.Name, StructType{
-		Name:   s.Name,
-		Fields: nil, // Placeholder until resolveStructFields is called
+		Name:        s.Name,
+		PackagePath: a.packagePath,
+		Fields:      nil, // Placeholder until resolveStructFields is called
 	})
 }
 
@@ -328,42 +507,11 @@ func (a *Analyzer) resolveStructFields(s *ast.StructDecl) {
 		}
 	}
 
-	// Update the struct with resolved fields
+	// Update the struct with resolved fields (preserve PackagePath from registration)
 	a.TypeRegistry.UpdateStruct(s.Name, StructType{
-		Name:   s.Name,
-		Fields: fields,
-	})
-}
-
-// registerStruct registers a struct type in the struct registry (legacy - for testing)
-func (a *Analyzer) registerStruct(s *ast.StructDecl) {
-	// Check for duplicate struct
-	if _, exists := a.TypeRegistry.LookupStruct(s.Name); exists {
-		a.addError(fmt.Sprintf("struct '%s' is already declared", s.Name), s.NamePos, s.NamePos)
-		return
-	}
-
-	// Convert field types
-	fields := make([]StructFieldInfo, len(s.Fields))
-	for i, field := range s.Fields {
-		fieldType := a.resolveTypeName(field.TypeName, field.TypePos)
-
-		// Ref<T> cannot be used as struct field type
-		if IsRefPointer(fieldType) {
-			a.addError("&T cannot be used as a struct field type; use *T instead", field.TypePos, field.TypePos)
-		}
-
-		fields[i] = StructFieldInfo{
-			Name:    field.Name,
-			Type:    fieldType,
-			Mutable: field.Mutable,
-			Index:   i,
-		}
-	}
-
-	a.TypeRegistry.RegisterStruct(s.Name, StructType{
-		Name:   s.Name,
-		Fields: fields,
+		Name:        s.Name,
+		PackagePath: a.packagePath,
+		Fields:      fields,
 	})
 }
 
@@ -381,9 +529,10 @@ func (a *Analyzer) registerClassName(c *ast.ClassDecl) {
 
 	// Register the class with empty fields/methods (will be resolved in second pass)
 	a.TypeRegistry.RegisterClass(c.Name, ClassType{
-		Name:    c.Name,
-		Fields:  nil,                             // Placeholder until resolveClassFields is called
-		Methods: make(map[string][]*MethodInfo),  // Placeholder until resolveClassMethods is called
+		Name:        c.Name,
+		PackagePath: a.packagePath,
+		Fields:      nil,                             // Placeholder until resolveClassFields is called
+		Methods:     make(map[string][]*MethodInfo),  // Placeholder until resolveClassMethods is called
 	})
 }
 
@@ -401,8 +550,9 @@ func (a *Analyzer) registerObjectName(o *ast.ObjectDecl) {
 
 	// Register the object with empty methods (will be resolved in second pass)
 	a.TypeRegistry.RegisterObject(o.Name, ObjectType{
-		Name:    o.Name,
-		Methods: make(map[string][]*MethodInfo),  // Placeholder until resolveObjectMethods is called
+		Name:        o.Name,
+		PackagePath: a.packagePath,
+		Methods:     make(map[string][]*MethodInfo),  // Placeholder until resolveObjectMethods is called
 	})
 }
 
@@ -645,8 +795,10 @@ func (a *Analyzer) resolveTypeNameCore(name string, pos ast.Position, reportErro
 		return NullableType{InnerType: innerType}
 	}
 
-	// Check for T[] array syntax (before pointer prefixes so *Point[] = array of *Point)
-	if strings.HasSuffix(name, "[]") {
+	// Check for T[] array syntax, but NOT when there's a borrow prefix.
+	// &s64[] should parse as &(s64[]) = RefPointer{ArrayType}, not Array{RefPointer{s64}}.
+	// *Point[] stays as ArrayType{OwnedPointerType{Point}} (array of owned pointers).
+	if strings.HasSuffix(name, "[]") && !strings.HasPrefix(name, "&") {
 		elementTypeName := name[:len(name)-2] // extract T from T[]
 		elementType := a.resolveTypeNameCore(elementTypeName, pos, reportErrors)
 		if _, isErr := elementType.(ErrorType); isErr {
@@ -707,6 +859,29 @@ func (a *Analyzer) resolveTypeNameCore(name string, pos ast.Position, reportErro
 	t := TypeFromName(name)
 	if _, isErr := t.(ErrorType); !isErr {
 		return t
+	}
+
+	// Check for qualified type name: pkg.Type (e.g., geometry.Point)
+	if dotIdx := strings.IndexByte(name, '.'); dotIdx != -1 {
+		pkgAlias := name[:dotIdx]
+		typeName := name[dotIdx+1:]
+
+		varInfo, found := a.currentScope.lookup(pkgAlias)
+		if !found {
+			maybeError(fmt.Sprintf("undefined package '%s'", pkgAlias))
+			return TypeError
+		}
+		nsType, isNs := varInfo.Type.(PackageNamespaceType)
+		if !isNs {
+			maybeError(fmt.Sprintf("'%s' is not a package", pkgAlias))
+			return TypeError
+		}
+		export, exportFound := nsType.Namespace.Exports[typeName]
+		if !exportFound {
+			maybeError(fmt.Sprintf("package '%s' has no type '%s'", nsType.Namespace.Path, typeName))
+			return TypeError
+		}
+		return export.Type
 	}
 
 	// Try user-defined types (struct, class, object)
@@ -1687,6 +1862,13 @@ func (a *Analyzer) analyzeIndexAssignStatement(stmt *ast.IndexAssignStmt) TypedS
 	typedValue := a.analyzeExpression(stmt.Value)
 	valueType := typedValue.GetType()
 
+	// Unwrap reference types to support indexing through &&T[] parameters
+	if ref, ok := arrayType.(RefPointerType); ok {
+		arrayType = ref.ElementType
+	} else if mutRef, ok := arrayType.(MutRefPointerType); ok {
+		arrayType = mutRef.ElementType
+	}
+
 	// Check that the array is actually an array type
 	arrType, isArray := arrayType.(ArrayType)
 	if !isArray {
@@ -1711,10 +1893,17 @@ func (a *Analyzer) analyzeIndexAssignStatement(stmt *ast.IndexAssignStmt) TypedS
 	if ident, ok := stmt.Array.(*ast.IdentifierExpr); ok {
 		info, found := a.currentScope.lookup(ident.Name)
 		if found && !info.Mutable {
-			a.addError(
-				fmt.Sprintf("cannot assign to element of immutable array '%s'", ident.Name),
-				stmt.LeftBracket, stmt.Equals,
-			).WithHint("consider using 'var' instead of 'val' if you need to modify elements")
+			// Allow mutation through &&T[] mutable reference parameters
+			isMutRef := false
+			if _, ok := info.Type.(MutRefPointerType); ok {
+				isMutRef = true
+			}
+			if !isMutRef {
+				a.addError(
+					fmt.Sprintf("cannot assign to element of immutable array '%s'", ident.Name),
+					stmt.LeftBracket, stmt.Equals,
+				).WithHint("consider using 'var' instead of 'val' if you need to modify elements")
+			}
 		}
 	}
 
@@ -1827,6 +2016,13 @@ func (a *Analyzer) analyzeIndexExpr(expr *ast.IndexExpr) TypedExpression {
 	// Analyze the index expression
 	typedIndex := a.analyzeExpression(expr.Index)
 	indexType := typedIndex.GetType()
+
+	// Unwrap reference types to support indexing through &T[] and &&T[] parameters
+	if ref, ok := arrayType.(RefPointerType); ok {
+		arrayType = ref.ElementType
+	} else if mutRef, ok := arrayType.(MutRefPointerType); ok {
+		arrayType = mutRef.ElementType
+	}
 
 	// Check that the expression is an array type
 	arrType, isArray := arrayType.(ArrayType)
@@ -2379,6 +2575,12 @@ func (a *Analyzer) analyzeCallExpr(call *ast.CallExpr) TypedExpression {
 						continue
 					}
 				}
+				// Auto-borrow: ArrayType -> Ref<ArrayType> (pass array by immutable reference)
+				if _, isArr := argType.(ArrayType); isArr {
+					if refType.ElementType.Equals(argType) {
+						continue
+					}
+				}
 			}
 
 			// Check for implicit Own<T> to MutRef<T> conversion (auto-borrow, mutable)
@@ -2394,6 +2596,12 @@ func (a *Analyzer) analyzeCallExpr(call *ast.CallExpr) TypedExpression {
 							ArgIndex: i,
 						})
 						// Auto-borrow is valid
+						continue
+					}
+				}
+				// Auto-borrow: ArrayType -> MutRef<ArrayType> (pass array by mutable reference)
+				if _, isArr := argType.(ArrayType); isArr {
+					if mutRefType.ElementType.Equals(argType) {
 						continue
 					}
 				}
@@ -2661,6 +2869,11 @@ func (a *Analyzer) analyzeStructLiteralNamed(call *ast.CallExpr, structType Stru
 // analyzeStructLiteralExpr analyzes a struct literal expression with braces (e.g., Point { 10, 20 } or Point { x: 10, y: 20 })
 // Also handles class literals (e.g., Counter { 10 })
 func (a *Analyzer) analyzeStructLiteralExpr(lit *ast.StructLiteral) TypedExpression {
+	// Handle qualified struct literal (pkg.Type{ ... })
+	if lit.PackageAlias != "" {
+		return a.analyzeQualifiedStructLiteral(lit)
+	}
+
 	// Check if this is a known struct type
 	if structType, ok := a.TypeRegistry.LookupStruct(lit.Name); ok {
 		// Handle named arguments
@@ -2710,6 +2923,103 @@ func (a *Analyzer) analyzeStructLiteralExpr(lit *ast.StructLiteral) TypedExpress
 		lit.NamePos, lit.NamePos,
 	)
 	return &TypedLiteralExpr{Type: ErrorType{}}
+}
+
+// analyzeNamespaceFieldAccess handles accessing a variable or constant from a package namespace.
+func (a *Analyzer) analyzeNamespaceFieldAccess(ns *PackageNamespace, expr *ast.FieldAccessExpr) TypedExpression {
+	export, found := ns.Exports[expr.Field]
+	if !found {
+		a.addError(
+			fmt.Sprintf("package '%s' has no declaration '%s'", ns.Path, expr.Field),
+			expr.FieldPos, expr.FieldPos,
+		)
+		return &TypedFieldAccessExpr{
+			Type:     TypeError,
+			Object:   &TypedIdentifierExpr{Type: TypeError, Name: ns.Path},
+			Dot:      expr.Dot,
+			Field:    expr.Field,
+			FieldPos: expr.FieldPos,
+		}
+	}
+
+	// Return a typed identifier that references the cross-package variable
+	// The name is qualified: "config.db_port" for later IR mangling
+	return &TypedIdentifierExpr{
+		Type:     export.Type,
+		Name:     ns.Path + "." + expr.Field,
+		StartPos: expr.Object.Pos(),
+		EndPos:   expr.FieldPos,
+	}
+}
+
+// analyzeQualifiedStructLiteral handles pkg.Type{ ... } struct construction.
+func (a *Analyzer) analyzeQualifiedStructLiteral(lit *ast.StructLiteral) TypedExpression {
+	// Look up the package namespace
+	varInfo, found := a.currentScope.lookup(lit.PackageAlias)
+	if !found {
+		a.addError(
+			fmt.Sprintf("undefined package '%s'", lit.PackageAlias),
+			lit.PackageAliasPos, lit.PackageAliasPos,
+		)
+		return &TypedLiteralExpr{Type: ErrorType{}}
+	}
+
+	nsType, isNs := varInfo.Type.(PackageNamespaceType)
+	if !isNs {
+		a.addError(
+			fmt.Sprintf("'%s' is not a package", lit.PackageAlias),
+			lit.PackageAliasPos, lit.PackageAliasPos,
+		)
+		return &TypedLiteralExpr{Type: ErrorType{}}
+	}
+
+	ns := nsType.Namespace
+
+	// Look up the type in the package's exports
+	export, exportFound := ns.Exports[lit.Name]
+	if !exportFound {
+		a.addError(
+			fmt.Sprintf("package '%s' has no type '%s'", ns.Path, lit.Name),
+			lit.NamePos, lit.NamePos,
+		)
+		return &TypedLiteralExpr{Type: ErrorType{}}
+	}
+
+	// Must be a struct or class type
+	switch t := export.Type.(type) {
+	case StructType:
+		if lit.HasNamedArguments() {
+			return a.analyzeStructLiteralExprNamed(lit, t)
+		}
+		return a.analyzeStructLiteralPositional(lit, t.Fields, t.Name, func(args []TypedExpression) TypedExpression {
+			return &TypedStructLiteralExpr{
+				Type:       t,
+				TypePos:    lit.NamePos,
+				LeftBrace:  lit.LeftBrace,
+				Args:       args,
+				RightBrace: lit.RightBrace,
+			}
+		})
+	case ClassType:
+		if lit.HasNamedArguments() {
+			return a.analyzeClassLiteralExprNamed(lit, t)
+		}
+		return a.analyzeStructLiteralPositional(lit, t.Fields, t.Name, func(args []TypedExpression) TypedExpression {
+			return &TypedClassLiteralExpr{
+				Type:       t,
+				TypePos:    lit.NamePos,
+				LeftBrace:  lit.LeftBrace,
+				Args:       args,
+				RightBrace: lit.RightBrace,
+			}
+		})
+	default:
+		a.addError(
+			fmt.Sprintf("'%s.%s' is not a struct or class type", ns.Path, lit.Name),
+			lit.NamePos, lit.NamePos,
+		)
+		return &TypedLiteralExpr{Type: ErrorType{}}
+	}
 }
 
 // analyzeStructLiteralPositional analyzes a struct/class literal with positional arguments
@@ -2817,6 +3127,15 @@ func (a *Analyzer) analyzeAnonStructLiteralNamed(lit *ast.AnonStructLiteral, str
 
 // analyzeFieldAccessExpr analyzes a field access expression (e.g., p.x, rect.topLeft.x)
 func (a *Analyzer) analyzeFieldAccessExpr(expr *ast.FieldAccessExpr) TypedExpression {
+	// Check if this is accessing a package namespace (e.g., config.db_port)
+	if ident, ok := expr.Object.(*ast.IdentifierExpr); ok {
+		if varInfo, found := a.currentScope.lookup(ident.Name); found {
+			if nsType, isNs := varInfo.Type.(PackageNamespaceType); isNs {
+				return a.analyzeNamespaceFieldAccess(nsType.Namespace, expr)
+			}
+		}
+	}
+
 	// Analyze the object expression
 	typedObject := a.analyzeExpression(expr.Object)
 	objectType := typedObject.GetType()
@@ -2932,6 +3251,15 @@ func (a *Analyzer) analyzeFieldAccessExpr(expr *ast.FieldAccessExpr) TypedExpres
 
 // analyzeMethodCallExpr analyzes a method call expression (e.g., p.copy(), instance.method())
 func (a *Analyzer) analyzeMethodCallExpr(expr *ast.MethodCallExpr) TypedExpression {
+	// Check if this is a call on a package namespace (e.g., math.add(1, 2))
+	if ident, ok := expr.Object.(*ast.IdentifierExpr); ok && !expr.SafeNavigation {
+		if varInfo, found := a.currentScope.lookup(ident.Name); found {
+			if nsType, isNs := varInfo.Type.(PackageNamespaceType); isNs {
+				return a.analyzeNamespaceCall(nsType.Namespace, expr)
+			}
+		}
+	}
+
 	// Check if this is a static method call on a class or object name
 	// (Safe navigation doesn't apply to static method calls)
 	if ident, ok := expr.Object.(*ast.IdentifierExpr); ok && !expr.SafeNavigation {
@@ -3036,6 +3364,83 @@ func (a *Analyzer) analyzeMethodCallExpr(expr *ast.MethodCallExpr) TypedExpressi
 		Arguments:      typedArgs,
 		RightParen:     expr.RightParen,
 		SafeNavigation: expr.SafeNavigation,
+	}
+}
+
+// analyzeNamespaceCall analyzes a function call on a package namespace (e.g., math.add(1, 2)).
+func (a *Analyzer) analyzeNamespaceCall(ns *PackageNamespace, expr *ast.MethodCallExpr) TypedExpression {
+	// Type arguments
+	typedArgs := make([]TypedExpression, len(expr.Arguments))
+	for i, arg := range expr.Arguments {
+		typedArgs[i] = a.analyzeExpression(arg)
+	}
+
+	// Look up the function in the package's exports
+	export, found := ns.Exports[expr.Method]
+	if !found {
+		a.addError(
+			fmt.Sprintf("package '%s' has no declaration '%s'", ns.Path, expr.Method),
+			expr.MethodPos, expr.MethodPos,
+		)
+		return &TypedCallExpr{
+			Type:       TypeError,
+			Name:       ns.Path + "." + expr.Method,
+			NamePos:    expr.MethodPos,
+			LeftParen:  expr.LeftParen,
+			Arguments:  typedArgs,
+			RightParen: expr.RightParen,
+		}
+	}
+
+	// Must be a function export
+	fnType, isFn := export.Type.(FunctionType)
+	if !isFn {
+		a.addError(
+			fmt.Sprintf("'%s.%s' is not a function", ns.Path, expr.Method),
+			expr.MethodPos, expr.MethodPos,
+		)
+		return &TypedCallExpr{
+			Type:       TypeError,
+			Name:       ns.Path + "." + expr.Method,
+			NamePos:    expr.MethodPos,
+			LeftParen:  expr.LeftParen,
+			Arguments:  typedArgs,
+			RightParen: expr.RightParen,
+		}
+	}
+
+	// Check argument count
+	if len(typedArgs) != len(fnType.ParamTypes) {
+		a.addError(
+			fmt.Sprintf("function '%s.%s' expects %d arguments, got %d", ns.Path, expr.Method, len(fnType.ParamTypes), len(typedArgs)),
+			expr.LeftParen, expr.RightParen,
+		)
+	} else {
+		// Check argument types
+		for i, arg := range typedArgs {
+			if !arg.GetType().Equals(fnType.ParamTypes[i]) {
+				if _, isErr := arg.GetType().(ErrorType); !isErr {
+					a.addError(
+						fmt.Sprintf("argument %d to '%s.%s': expected '%s', got '%s'", i+1, ns.Path, expr.Method, fnType.ParamTypes[i].String(), arg.GetType().String()),
+						arg.Pos(), arg.End(),
+					)
+				}
+			}
+		}
+	}
+
+	returnType := fnType.ReturnType
+	if returnType == nil {
+		returnType = TypeVoid
+	}
+
+	return &TypedCallExpr{
+		Type:       returnType,
+		Name:       ns.Path + "." + expr.Method,
+		NamePos:    expr.MethodPos,
+		LeftParen:  expr.LeftParen,
+		Arguments:  typedArgs,
+		RightParen: expr.RightParen,
 	}
 }
 
@@ -3774,6 +4179,19 @@ func (a *Analyzer) analyzeIdentifier(ident *ast.IdentifierExpr) TypedExpression 
 		typ = TypeError
 	} else {
 		typ = info.Type
+		// Check for package namespace misuse — namespaces can only be used with dot-access
+		if nsType, isNs := typ.(PackageNamespaceType); isNs {
+			a.addError(
+				fmt.Sprintf("cannot use package '%s' as a value", nsType.Namespace.Path),
+				ident.StartPos, ident.EndPos,
+			).WithHint(fmt.Sprintf("use '%s.<name>' to access a declaration from the package", ident.Name))
+			return &TypedIdentifierExpr{
+				Type:     TypeError,
+				Name:     ident.Name,
+				StartPos: ident.StartPos,
+				EndPos:   ident.EndPos,
+			}
+		}
 		// Check for use-after-move
 		if ownerInfo, tracked := a.ownershipScope.lookup(ident.Name); tracked {
 			if ownerInfo.State == StateMoved {
@@ -4002,6 +4420,33 @@ func (a *Analyzer) analyzeUnaryExpression(expr *ast.UnaryExpr) TypedExpression {
 		}
 	}
 
+	if expr.Op == "-" {
+		// Unary minus requires integer operand
+		if !IsIntegerType(operandType) {
+			if _, isErr := operandType.(ErrorType); !isErr {
+				a.addError(
+					fmt.Sprintf("operator '-' requires integer operand, got '%s'", operandType.String()),
+					expr.OperandPos, expr.OperandEnd,
+				).WithHint("unary minus only works with integer types")
+			}
+			return &TypedUnaryExpr{
+				Type:       TypeError,
+				Op:         expr.Op,
+				Operand:    operand,
+				OpPos:      expr.OpPos,
+				OperandEnd: expr.OperandEnd,
+			}
+		}
+
+		return &TypedUnaryExpr{
+			Type:       operandType,
+			Op:         expr.Op,
+			Operand:    operand,
+			OpPos:      expr.OpPos,
+			OperandEnd: expr.OperandEnd,
+		}
+	}
+
 	// Unknown unary operator
 	a.addError(fmt.Sprintf("unknown operator '%s'", expr.Op), expr.OpPos, expr.OpPos)
 	return &TypedUnaryExpr{
@@ -4093,14 +4538,21 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 			return TypeError
 		}
 
-		// Strict type matching: both operands must have the same type
+		// Type matching: both operands must have the same type, or one must widen to the other
 		if !leftType.Equals(rightType) {
-			a.addError(
-				fmt.Sprintf("operator '%s' requires operands of the same type, but got '%s' and '%s'",
-					op, leftType.String(), rightType.String()),
-				leftPos, rightPos,
-			).WithHint("both operands must have the same type (no implicit conversion)")
-			return TypeError
+			if IntegerWidensTo(leftType, rightType) {
+				// left widens to right — use right's type as result
+				leftType = rightType
+			} else if IntegerWidensTo(rightType, leftType) {
+				// right widens to left — use left's type as result
+			} else {
+				a.addError(
+					fmt.Sprintf("operator '%s' requires operands of the same type, but got '%s' and '%s'",
+						op, leftType.String(), rightType.String()),
+					leftPos, rightPos,
+				).WithHint("both operands must have the same type (no implicit conversion)")
+				return TypeError
+			}
 		}
 
 		// Modulo only works with integers
@@ -4158,6 +4610,24 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 			}
 		}
 
+		// Boolean equality: == and != work on booleans
+		if op == "==" || op == "!=" {
+			_, leftIsBool := leftType.(BooleanType)
+			_, rightIsBool := rightType.(BooleanType)
+			if leftIsBool && rightIsBool {
+				return TypeBoolean
+			}
+		}
+
+		// String equality: == and != work on strings
+		if op == "==" || op == "!=" {
+			_, leftIsStr := leftType.(StringType)
+			_, rightIsStr := rightType.(StringType)
+			if leftIsStr && rightIsStr {
+				return TypeBoolean
+			}
+		}
+
 		// Check left operand is numeric
 		if !IsIntegerType(leftType) && !IsFloatType(leftType) {
 			a.addError(
@@ -4176,14 +4646,16 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 			return TypeError
 		}
 
-		// Strict type matching: both operands must have the same type
+		// Type matching: both operands must have the same type, or one must widen to the other
 		if !leftType.Equals(rightType) {
-			a.addError(
-				fmt.Sprintf("operator '%s' requires operands of the same type, but got '%s' and '%s'",
-					op, leftType.String(), rightType.String()),
-				leftPos, rightPos,
-			).WithHint("both operands must have the same type (no implicit conversion)")
-			return TypeError
+			if !IntegerWidensTo(leftType, rightType) && !IntegerWidensTo(rightType, leftType) {
+				a.addError(
+					fmt.Sprintf("operator '%s' requires operands of the same type, but got '%s' and '%s'",
+						op, leftType.String(), rightType.String()),
+					leftPos, rightPos,
+				).WithHint("both operands must have the same type (no implicit conversion)")
+				return TypeError
+			}
 		}
 
 		// Comparison result is boolean

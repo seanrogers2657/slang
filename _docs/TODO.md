@@ -1,0 +1,5 @@
+# TODO
+
+- Change string representation from null-terminated C strings to ptr+len (like Go/Rust). Currently `StringType` is defined as 16 bytes (ptr+len) in the IR but the runtime uses null-terminated strings and calculates length by scanning for `\0`.
+- Unify nullable representation: represent all nullable value types (`s64?`, `bool?`, etc.) as heap-allocated pointers instead of 16-byte tagged unions. This would eliminate the `IsReferenceNullable()` dual-path code throughout the backend (load, store, phi, params, returns, copy, print) which is a major source of bugs. All nullables become 8-byte pointers: null=0, non-null=heap pointer. Performance can be recovered later with escape analysis.
+- Consider replacing SSA IR with a load/store model. The backend is stack-based with no register allocation or SSA-based optimizations, so phi nodes add complexity (~260 lines in `ssa_builder.go`) with no benefit. A load/store model (variables live in stack slots, reads are loads, writes are stores) would eliminate phi-related bugs entirely and simplify every control flow construct. SSA can be reintroduced later when optimizations are needed.

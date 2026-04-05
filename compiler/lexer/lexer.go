@@ -29,6 +29,7 @@ var keywords = map[string]TokenType{
 	"self":     TokenTypeSelf,
 	"object":   TokenTypeObject,
 	"new":      TokenTypeNew,
+	"import":   TokenTypeImport,
 }
 
 type TokenType int
@@ -88,6 +89,7 @@ const (
 	TokenTypeSelf     // 'self' keyword
 	TokenTypeObject   // 'object' keyword
 	TokenTypeNew      // 'new' keyword
+	TokenTypeImport   // 'import' keyword
 )
 
 // String returns a human-readable name for the token type
@@ -201,6 +203,8 @@ func (t TokenType) String() string {
 		return "OBJECT"
 	case TokenTypeNew:
 		return "NEW"
+	case TokenTypeImport:
+		return "IMPORT"
 	default:
 		return "UNKNOWN"
 	}
@@ -261,6 +265,7 @@ func (p *lexer) addErrorAt(message string, startPos ast.Position) *errors.Compil
 // currentPos returns the current position in the source
 func (p *lexer) currentPos() ast.Position {
 	return ast.Position{
+		File:   p.Filename,
 		Line:   p.Line,
 		Column: p.Column,
 		Offset: p.Index,

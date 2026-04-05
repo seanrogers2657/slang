@@ -34,6 +34,9 @@ const (
 	OpOr  // logical or
 	OpNot // logical not (unary)
 
+	// String operations
+	OpStrEq // string equality (Args[0], Args[1] -> bool)
+
 	// Memory operations
 	OpAlloc    // allocate memory (AuxInt = size), returns pointer
 	OpFree     // free memory (Args[0] = ptr, AuxInt = size)
@@ -56,6 +59,10 @@ const (
 	OpCall   // function call (Args = arguments, AuxString = func name)
 	OpReturn // return from function (Args[0] = return value, or empty for void)
 	OpExit   // exit program (Args[0] = exit code)
+
+	// Global variable operations
+	OpLoadGlobal  // load from global variable (AuxString = global name)
+	OpStoreGlobal // store to global variable (AuxString = global name, Args[0] = value), no result
 
 	// Type conversions
 	OpZeroExt   // zero extend (Args[0] = value, Type = target type)
@@ -107,6 +114,8 @@ func (op Op) String() string {
 		return "Or"
 	case OpNot:
 		return "Not"
+	case OpStrEq:
+		return "StrEq"
 	case OpAlloc:
 		return "Alloc"
 	case OpFree:
@@ -141,6 +150,10 @@ func (op Op) String() string {
 		return "Return"
 	case OpExit:
 		return "Exit"
+	case OpLoadGlobal:
+		return "LoadGlobal"
+	case OpStoreGlobal:
+		return "StoreGlobal"
 	case OpZeroExt:
 		return "ZeroExt"
 	case OpSignExt:

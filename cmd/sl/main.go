@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"path/filepath"
+
 	"github.com/seanrogers2657/slang/assembler"
 	nativeasm "github.com/seanrogers2657/slang/assembler/slasm"
 	"github.com/seanrogers2657/slang/assembler/system"
@@ -16,8 +18,8 @@ import (
 	"github.com/seanrogers2657/slang/compiler/ir/backend"
 	"github.com/seanrogers2657/slang/compiler/ir/backend/arm64"
 	"github.com/seanrogers2657/slang/compiler/lexer"
-	"github.com/seanrogers2657/slang/compiler/parser"
 	"github.com/seanrogers2657/slang/compiler/semantic"
+	"github.com/seanrogers2657/slang/compiler/slpackage"
 	"github.com/seanrogers2657/slang/errors"
 	"github.com/seanrogers2657/slang/internal/timing"
 	"github.com/urfave/cli/v2"
@@ -334,108 +336,83 @@ func printIRStats(prog *ir.Program) {
 	fmt.Println()
 }
 
-// compileSourceWithIR performs compilation using the IR pipeline
-// This is the new compilation path that uses SSA-form IR and the ARM64 backend
+// compileSourceWithIR performs compilation using the IR pipeline via PackageCompiler
 func compileSourceWithIR(filename string, verbose bool, timer *timing.Timer) (string, error) {
-	// Read source file
-	if timer != nil {
-		timer.Start("Read Source")
-	}
-	source, err := os.ReadFile(filename)
-	if err != nil {
-		return "", fmt.Errorf("failed to read source file: %w", err)
-	}
-
 	// Read source lines for error reporting
 	sourceLines, err := errors.ReadSourceLines(filename)
 	if err != nil {
 		return "", fmt.Errorf("failed to read source file: %w", err)
 	}
-	if timer != nil {
-		timer.End()
-	}
 
 	// Verbose: print source input
 	if verbose {
+		source, _ := os.ReadFile(filename)
 		printSection("SOURCE INPUT")
 		fmt.Printf("File: %s\n", filename)
 		printDivider()
 		fmt.Println(string(source))
 	}
 
-	var allErrors []*errors.CompilerError
+	// Set up PackageCompiler
+	absFilename, err := filepath.Abs(filename)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve path: %w", err)
+	}
+	rootDir := filepath.Dir(absFilename)
 
-	// Lexical analysis
+	// Discover root package files.
+	// If a packages/ directory exists, this is a multi-file project and all .sl
+	// files in the root dir form the root package (per SEP 10 design).
+	// Otherwise, only the entry file is compiled (standalone single-file program).
+	var rootFiles []string
+	packagesDir := filepath.Join(rootDir, "packages")
+	if info, statErr := os.Stat(packagesDir); statErr == nil && info.IsDir() {
+		rootFiles, _ = slpackage.DiscoverSlFiles(rootDir)
+	}
+	if len(rootFiles) == 0 {
+		rootFiles = []string{absFilename}
+	}
+	compiler := slpackage.NewCompiler(rootDir, absFilename, rootFiles)
+
+	// Phase 1: Discovery & Parsing
 	if timer != nil {
-		timer.Start("Lexer")
+		timer.Start("Discovery & Parsing")
 	}
-	lex := lexer.NewLexerWithFilename(source, filename)
-	lex.Parse()
-	if timer != nil {
-		timer.End()
-	}
-
-	allErrors = append(allErrors, lex.Errors...)
-	if len(allErrors) > 0 {
-		fmt.Println(errors.FormatErrors(allErrors, sourceLines))
-		return "", errAlreadyReported{}
-	}
-
-	// Verbose: print lexer output
-	if verbose {
-		printSection("LEXER OUTPUT")
-		fmt.Println(formatTokens(lex.Tokens))
-	}
-
-	// Parsing
-	if timer != nil {
-		timer.Start("Parser")
-	}
-	pars := parser.NewParser(lex.Tokens)
-	parsedAST := pars.Parse()
+	pkgFiles, phase1Errs := compiler.DiscoverAndParse()
 	if timer != nil {
 		timer.End()
 	}
-
-	allErrors = append(allErrors, pars.Errors...)
-	if len(allErrors) > 0 {
-		fmt.Println(errors.FormatErrors(allErrors, sourceLines))
+	if len(phase1Errs) > 0 {
+		fmt.Println(errors.FormatErrors(phase1Errs, sourceLines))
 		return "", errAlreadyReported{}
 	}
 
-	// Verbose: print parser output
-	if verbose {
-		printSection("PARSER OUTPUT")
-		fmt.Println(formatAST(parsedAST))
-	}
-
-	// Semantic analysis
+	// Phase 2: Semantic Analysis
 	if timer != nil {
 		timer.Start("Semantic Analysis")
 	}
-	analyzer := semantic.NewAnalyzer(filename)
-	semanticErrors, typedAST := analyzer.Analyze(parsedAST)
-	allErrors = append(allErrors, semanticErrors...)
+	phase2Errs, typedPrograms := compiler.Analyze(pkgFiles)
 	if timer != nil {
 		timer.End()
 	}
-
-	if len(allErrors) > 0 {
-		fmt.Println(errors.FormatErrors(allErrors, sourceLines))
+	if len(phase2Errs) > 0 {
+		fmt.Println(errors.FormatErrors(phase2Errs, sourceLines))
 		return "", errAlreadyReported{}
 	}
 
 	// Verbose: print semantic analysis output
 	if verbose {
-		printSection("SEMANTIC ANALYSIS OUTPUT")
-		fmt.Println(formatTypedAST(typedAST))
+		if typedAST := typedPrograms["main"]; typedAST != nil {
+			printSection("SEMANTIC ANALYSIS OUTPUT")
+			fmt.Println(formatTypedAST(typedAST))
+		}
 	}
 
-	// IR Generation
+	// Phase 3: IR Generation
 	if timer != nil {
 		timer.Start("IR Generation")
 	}
-	irProg, err := ir.Generate(typedAST)
+	irProg, err := compiler.GenerateIR(typedPrograms)
 	if err != nil {
 		return "", fmt.Errorf("IR generation failed: %w", err)
 	}
@@ -447,15 +424,11 @@ func compileSourceWithIR(filename string, verbose bool, timer *timing.Timer) (st
 	if verbose {
 		printSection("IR OUTPUT")
 		fmt.Println(ir.String(irProg))
-
-		// Print IR statistics
 		printIRStats(irProg)
 	}
 
 	// Validate IR
 	irErrors := ir.Validate(irProg)
-
-	// Verbose: print validation results
 	if verbose {
 		printSection("IR VALIDATION")
 		if len(irErrors) == 0 {
@@ -469,10 +442,8 @@ func compileSourceWithIR(filename string, verbose bool, timer *timing.Timer) (st
 		}
 		fmt.Println()
 	}
-
 	if len(irErrors) > 0 {
 		if !verbose {
-			// If not verbose, still print the errors
 			for _, e := range irErrors {
 				fmt.Println(e.Error())
 			}
@@ -480,7 +451,7 @@ func compileSourceWithIR(filename string, verbose bool, timer *timing.Timer) (st
 		return "", fmt.Errorf("IR validation failed")
 	}
 
-	// ARM64 Code Generation
+	// Phase 4: ARM64 Code Generation
 	if timer != nil {
 		timer.Start("ARM64 Backend")
 	}
@@ -497,7 +468,6 @@ func compileSourceWithIR(filename string, verbose bool, timer *timing.Timer) (st
 		timer.End()
 	}
 
-	// Verbose: print assembly output
 	if verbose {
 		printSection("ARM64 ASSEMBLY OUTPUT")
 		fmt.Printf("Generated Assembly (%d bytes):\n", len(assemblyOutput))

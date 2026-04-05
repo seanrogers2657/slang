@@ -14,12 +14,9 @@ import (
 
 	"github.com/seanrogers2657/slang/assembler"
 	"github.com/seanrogers2657/slang/assembler/slasm"
-	"github.com/seanrogers2657/slang/compiler/ir"
 	"github.com/seanrogers2657/slang/compiler/ir/backend"
 	"github.com/seanrogers2657/slang/compiler/ir/backend/arm64"
-	"github.com/seanrogers2657/slang/compiler/lexer"
-	"github.com/seanrogers2657/slang/compiler/parser"
-	"github.com/seanrogers2657/slang/compiler/semantic"
+	"github.com/seanrogers2657/slang/compiler/slpackage"
 	slangErrors "github.com/seanrogers2657/slang/errors"
 	"github.com/seanrogers2657/slang/test/testutil"
 )
@@ -60,62 +57,86 @@ func TestE2E(t *testing.T) {
 	}
 }
 
+func TestE2EProjects(t *testing.T) {
+	examplesDir := getExamplesDir()
+	projectsDir := filepath.Join(filepath.Dir(examplesDir), "projects")
+
+	// Skip if no projects directory exists yet
+	if _, err := os.Stat(projectsDir); os.IsNotExist(err) {
+		t.Skip("no projects directory found")
+	}
+
+	testCases, err := testutil.LoadProjectTestCases(projectsDir)
+	if err != nil {
+		t.Fatalf("failed to load project test cases: %v", err)
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.Name, func(t *testing.T) {
+			t.Parallel()
+
+			if tc.Skip != "" {
+				t.Skipf("skipping: %s", tc.Skip)
+			}
+
+			runProjectTest(t, tc)
+		})
+	}
+}
+
+func runProjectTest(t *testing.T, tc *testutil.TestExpectation) {
+	t.Helper()
+	rootDir := filepath.Dir(tc.FilePath)
+	rootFiles, err := slpackage.DiscoverSlFiles(rootDir)
+	if err != nil {
+		t.Fatalf("failed to discover root files: %v", err)
+	}
+	if len(rootFiles) == 0 {
+		t.Fatal("no .sl files found in project root")
+	}
+	compileAndRun(t, tc, rootDir, rootFiles)
+}
+
 func runSlangTest(t *testing.T, tc *testutil.TestExpectation) {
 	t.Helper()
+	rootDir := filepath.Dir(tc.FilePath)
+	compileAndRun(t, tc, rootDir, []string{tc.FilePath})
+}
 
-	// Read the source file
-	source, err := os.ReadFile(tc.FilePath)
-	if err != nil {
-		t.Fatalf("failed to read source file: %v", err)
-	}
+// compileAndRun runs the full compilation pipeline and checks expectations.
+func compileAndRun(t *testing.T, tc *testutil.TestExpectation, rootDir string, rootFiles []string) {
+	t.Helper()
 
-	// Lexer stage
-	l := lexer.NewLexer(source)
-	l.Parse()
+	compiler := slpackage.NewCompiler(rootDir, tc.FilePath, rootFiles)
 
-	if len(l.Errors) > 0 {
-		if tc.ExpectError && tc.ErrorStage == "lexer" {
-			checkCompilerErrorContains(t, l.Errors, tc.ErrorContains)
+	// Phase 1: Discovery & Parsing
+	pkgFiles, phase1Errs := compiler.DiscoverAndParse()
+	if len(phase1Errs) > 0 {
+		if tc.ExpectError && (tc.ErrorStage == "lexer" || tc.ErrorStage == "parser" || tc.ErrorStage == "module") {
+			checkCompilerErrorContains(t, phase1Errs, tc.ErrorContains)
 			return
 		}
-		t.Fatalf("lexer errors: %v", l.Errors)
+		t.Fatalf("phase 1 errors: %v", phase1Errs)
 	}
 
-	// Parser stage
-	p := parser.NewParser(l.Tokens)
-	program := p.Parse()
-
-	if len(p.Errors) > 0 {
-		if tc.ExpectError && tc.ErrorStage == "parser" {
-			checkCompilerErrorContains(t, p.Errors, tc.ErrorContains)
+	// Phase 2: Semantic Analysis
+	phase2Errs, typedPrograms := compiler.Analyze(pkgFiles)
+	if len(phase2Errs) > 0 {
+		if tc.ExpectError && (tc.ErrorStage == "semantic" || tc.ErrorStage == "module") {
+			checkCompilerErrorContains(t, phase2Errs, tc.ErrorContains)
 			return
 		}
-		t.Fatalf("parser errors: %v", p.Errors)
+		t.Fatalf("semantic errors: %v", phase2Errs)
 	}
 
-	if program == nil || (len(program.Statements) == 0 && len(program.Declarations) == 0) {
-		t.Fatalf("parser returned nil or empty program")
-	}
-
-	// Semantic analysis stage
-	analyzer := semantic.NewAnalyzer("<test>")
-	semanticErrors, typedAST := analyzer.Analyze(program)
-
-	if len(semanticErrors) > 0 {
-		if tc.ExpectError && tc.ErrorStage == "semantic" {
-			checkCompilerErrorContains(t, semanticErrors, tc.ErrorContains)
-			return
-		}
-		t.Fatalf("semantic errors: %v", semanticErrors)
-	}
-
-	// If we expected an error but got none
-	if tc.ExpectError {
+	// If we expected an error but got none before code generation
+	if tc.ExpectError && tc.ErrorStage != "codegen" {
 		t.Fatalf("expected %s error but compilation succeeded", tc.ErrorStage)
 	}
 
-	// Code generation stage - IR pipeline
-	irProg, irErr := ir.Generate(typedAST)
+	// Phase 3: IR Generation
+	irProg, irErr := compiler.GenerateIR(typedPrograms)
 	if irErr != nil {
 		if tc.ExpectError && tc.ErrorStage == "codegen" {
 			if tc.ErrorContains != "" && !strings.Contains(irErr.Error(), tc.ErrorContains) {
@@ -126,6 +147,7 @@ func runSlangTest(t *testing.T, tc *testutil.TestExpectation) {
 		t.Fatalf("IR generation error: %v", irErr)
 	}
 
+	// Phase 4: ARM64 Backend
 	arm64Backend := arm64.New(backend.DefaultConfig())
 	asmOutput, err := arm64Backend.Generate(irProg)
 	if err != nil {
@@ -136,6 +158,10 @@ func runSlangTest(t *testing.T, tc *testutil.TestExpectation) {
 			return
 		}
 		t.Fatalf("ARM64 backend error: %v", err)
+	}
+
+	if tc.ExpectError {
+		t.Fatalf("expected %s error but compilation succeeded", tc.ErrorStage)
 	}
 
 	// If stdout expectations exist, build and run
@@ -241,91 +267,20 @@ func getProgramsDir() string {
 }
 
 // TestProgramsCompile tests that all programs in _programs/ compile successfully.
-// These are more complex programs that may use features not yet fully implemented,
-// so we only verify compilation, not execution.
+// Finds any .sl file with a main function, recursively.
 func TestProgramsCompile(t *testing.T) {
 	programsDir := getProgramsDir()
 
-	// Find all .sl files recursively
-	var slFiles []string
-	err := filepath.Walk(programsDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() && strings.HasSuffix(path, ".sl") {
-			slFiles = append(slFiles, path)
-		}
-		return nil
-	})
+	testCases, err := testutil.LoadProgramTestCases(programsDir)
 	if err != nil {
-		t.Fatalf("failed to walk programs directory: %v", err)
+		t.Fatalf("failed to load program test cases: %v", err)
 	}
 
-	if len(slFiles) == 0 {
-		t.Fatalf("no .sl files found in %s", programsDir)
-	}
-
-	for _, filePath := range slFiles {
-		filePath := filePath // capture range variable
-		// Create test name from relative path
-		relPath, _ := filepath.Rel(programsDir, filePath)
-		testName := strings.TrimSuffix(relPath, ".sl")
-
-		t.Run(testName, func(t *testing.T) {
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.Name, func(t *testing.T) {
 			t.Parallel()
-			testProgramCompiles(t, filePath)
+			runProjectTest(t, tc)
 		})
 	}
-}
-
-func testProgramCompiles(t *testing.T, filePath string) {
-	t.Helper()
-
-	// Read the source file
-	source, err := os.ReadFile(filePath)
-	if err != nil {
-		t.Fatalf("failed to read source file: %v", err)
-	}
-
-	// Lexer stage
-	l := lexer.NewLexer(source)
-	l.Parse()
-
-	if len(l.Errors) > 0 {
-		t.Fatalf("lexer errors: %v", l.Errors)
-	}
-
-	// Parser stage
-	p := parser.NewParser(l.Tokens)
-	program := p.Parse()
-
-	if len(p.Errors) > 0 {
-		t.Fatalf("parser errors: %v", p.Errors)
-	}
-
-	if program == nil || (len(program.Statements) == 0 && len(program.Declarations) == 0) {
-		t.Fatalf("parser returned nil or empty program")
-	}
-
-	// Semantic analysis stage
-	analyzer := semantic.NewAnalyzer(filePath)
-	semanticErrors, typedAST := analyzer.Analyze(program)
-
-	if len(semanticErrors) > 0 {
-		t.Fatalf("semantic errors: %v", semanticErrors)
-	}
-
-	// Code generation stage - IR pipeline
-	irProg, irErr := ir.Generate(typedAST)
-	if irErr != nil {
-		t.Fatalf("IR generation error: %v", irErr)
-	}
-
-	arm64Backend := arm64.New(backend.DefaultConfig())
-	_, err = arm64Backend.Generate(irProg)
-	if err != nil {
-		t.Fatalf("ARM64 backend error: %v", err)
-	}
-
-	// Success - program compiles without execution
 }

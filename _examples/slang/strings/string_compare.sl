@@ -1,6 +1,6 @@
-// @test: expect_error=true
-// @test: error_stage=semantic
-// @test: error_contains=requires numeric operands
+// @test: exit_code=0
+// @test: stdout=true\n
+// String equality comparison
 main = () {
-    "hello" == "hello"
+    print("hello" == "hello")
 }

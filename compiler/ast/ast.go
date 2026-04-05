@@ -2,9 +2,10 @@ package ast
 
 // Position represents a position in the source code
 type Position struct {
-	Line   int // line number (1-indexed)
-	Column int // column number (1-indexed)
-	Offset int // byte offset (0-indexed)
+	File   string // source filename (empty for single-file compilation)
+	Line   int    // line number (1-indexed)
+	Column int    // column number (1-indexed)
+	Offset int    // byte offset (0-indexed)
 }
 
 // Node is the base interface for all AST nodes
@@ -120,17 +121,24 @@ func (c *CallExpr) exprNode()     {}
 // HasNamedArguments returns true if the call uses named arguments
 func (c *CallExpr) HasNamedArguments() bool { return len(c.NamedArguments) > 0 }
 
-// StructLiteral represents a struct instantiation with braces (e.g., Point { 10, 20 } or Point { x: 10, y: 20 })
+// StructLiteral represents a struct instantiation with braces (e.g., Point { 10, 20 } or geo.Point { 10, 20 })
 type StructLiteral struct {
-	Name           string          // struct name
-	NamePos        Position        // position of struct name
-	LeftBrace      Position        // position of '{'
-	Arguments      []Expression    // list of positional argument expressions
-	NamedArguments []NamedArgument // list of named arguments (e.g., x: 10, y: 20)
-	RightBrace     Position        // position of '}'
+	PackageAlias    string          // import alias (e.g., "geometry"), empty if unqualified
+	PackageAliasPos Position        // position of package alias, zero if unqualified
+	Name            string          // struct name (e.g., "Point")
+	NamePos         Position        // position of struct name
+	LeftBrace       Position        // position of '{'
+	Arguments       []Expression    // list of positional argument expressions
+	NamedArguments  []NamedArgument // list of named arguments (e.g., x: 10, y: 20)
+	RightBrace      Position        // position of '}'
 }
 
-func (s *StructLiteral) Pos() Position { return s.NamePos }
+func (s *StructLiteral) Pos() Position {
+	if s.PackageAlias != "" {
+		return s.PackageAliasPos
+	}
+	return s.NamePos
+}
 func (s *StructLiteral) End() Position { return s.RightBrace }
 func (s *StructLiteral) exprNode()     {}
 
@@ -591,12 +599,45 @@ func (o *ObjectDecl) End() Position { return o.RightBrace }
 func (o *ObjectDecl) declNode()     {}
 
 // ============================================================================
+// Imports
+// ============================================================================
+
+// ImportDecl represents an import declaration.
+// Implicit form: import "math"          (Name derived from last path segment)
+// Explicit form: Math = import "math"   (Name is user-chosen)
+type ImportDecl struct {
+	ImportPos Position // position of 'import' keyword
+	Name      string   // binding name (derived or explicit)
+	Path      string   // import path string
+	Explicit  bool     // true for 'Name = import "path"' form
+	NamePos   Position // position of binding name (zero for implicit)
+	EqualsPos Position // position of '=' (zero for implicit)
+	PathPos   Position // position of path string literal
+}
+
+func (d *ImportDecl) Pos() Position {
+	if d.Explicit {
+		return d.NamePos
+	}
+	return d.ImportPos
+}
+func (d *ImportDecl) End() Position { return d.PathPos }
+
+// FileAST associates a file path with its parsed AST.
+// Used by the module system when compiling multi-file projects.
+type FileAST struct {
+	Path string   // absolute or relative file path
+	AST  *Program // parsed program for this file
+}
+
+// ============================================================================
 // Program
 // ============================================================================
 
 // Program represents the root node of the AST
 type Program struct {
-	Declarations []Declaration // top-level declarations (functions, etc.)
+	Imports      []*ImportDecl // import declarations (must appear before other declarations)
+	Declarations []Declaration // top-level declarations (functions, structs, classes, objects)
 	Statements   []Statement   // legacy: top-level statements (will be deprecated)
 	StartPos     Position
 	EndPos       Position

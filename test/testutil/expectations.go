@@ -208,3 +208,87 @@ func LoadTestCases(dir, pattern string) ([]*TestExpectation, error) {
 
 	return expectations, nil
 }
+
+// LoadProjectTestCases discovers project directories (containing main.sl)
+// and parses expectations from each project's main.sl file.
+// Recursively searches all subdirectories — any directory with main.sl is a project.
+func LoadProjectTestCases(dir string) ([]*TestExpectation, error) {
+	var expectations []*TestExpectation
+
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if d.Name() != "main.sl" {
+			return nil
+		}
+
+		exp, parseErr := ParseExpectations(path)
+		if parseErr != nil {
+			return fmt.Errorf("failed to parse %s: %w", path, parseErr)
+		}
+
+		// Name is the relative path of the project directory
+		projectDir := filepath.Dir(path)
+		relPath, _ := filepath.Rel(dir, projectDir)
+		exp.Name = relPath
+
+		expectations = append(expectations, exp)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk directory %q: %w", dir, err)
+	}
+
+	return expectations, nil
+}
+
+// LoadProgramTestCases discovers .sl files that contain a main function.
+// Recursively searches all subdirectories. Files inside packages/ subdirectories
+// are skipped since they are library code, not standalone programs.
+func LoadProgramTestCases(dir string) ([]*TestExpectation, error) {
+	var expectations []*TestExpectation
+
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".sl") {
+			return nil
+		}
+
+		// Skip files inside packages/ directories — they're library code
+		rel, _ := filepath.Rel(dir, path)
+		if strings.Contains(rel, "packages"+string(filepath.Separator)) {
+			return nil
+		}
+
+		// Check if file contains a main function
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		if !strings.Contains(string(content), "main = ()") {
+			return nil
+		}
+
+		exp, parseErr := ParseExpectations(path)
+		if parseErr != nil {
+			return fmt.Errorf("failed to parse %s: %w", path, parseErr)
+		}
+
+		relPath, _ := filepath.Rel(dir, path)
+		exp.Name = strings.TrimSuffix(relPath, filepath.Ext(relPath))
+
+		expectations = append(expectations, exp)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk directory %q: %w", dir, err)
+	}
+
+	return expectations, nil
+}

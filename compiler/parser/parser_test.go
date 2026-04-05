@@ -3480,3 +3480,236 @@ func TestParserObjectFieldError(t *testing.T) {
 		t.Errorf("expected error about objects not having fields, got: %v", p.Errors)
 	}
 }
+
+func TestParserImportDecl(t *testing.T) {
+	tests := []struct {
+		name             string
+		source           string
+		expectedImports  int
+		expectedDecls    int
+		importName       string
+		importPath       string
+		importExplicit   bool
+	}{
+		{
+			name:            "implicit import",
+			source:          "import \"math\"\nmain = () { }",
+			expectedImports: 1,
+			expectedDecls:   1,
+			importName:      "math",
+			importPath:      "math",
+			importExplicit:  false,
+		},
+		{
+			name:            "explicit import",
+			source:          "m = import \"math\"\nmain = () { }",
+			expectedImports: 1,
+			expectedDecls:   1,
+			importName:      "m",
+			importPath:      "math",
+			importExplicit:  true,
+		},
+		{
+			name:            "implicit import with nested path",
+			source:          "import \"collections/list\"\nmain = () { }",
+			expectedImports: 1,
+			expectedDecls:   1,
+			importName:      "list",
+			importPath:      "collections/list",
+			importExplicit:  false,
+		},
+		{
+			name:            "multiple imports",
+			source:          "import \"math\"\nimport \"io\"\nmain = () { }",
+			expectedImports: 2,
+			expectedDecls:   1,
+			importName:      "math",
+			importPath:      "math",
+			importExplicit:  false,
+		},
+		{
+			name:            "mixed implicit and explicit",
+			source:          "import \"math\"\nio = import \"std/io\"\nmain = () { }",
+			expectedImports: 2,
+			expectedDecls:   1,
+			importName:      "math",
+			importPath:      "math",
+			importExplicit:  false,
+		},
+		{
+			name:            "import with struct and function",
+			source:          "import \"math\"\nPoint = struct { val x: s64 }\nmain = () { }",
+			expectedImports: 1,
+			expectedDecls:   2,
+			importName:      "math",
+			importPath:      "math",
+			importExplicit:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+			if len(l.Errors) > 0 {
+				t.Fatalf("unexpected lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			if len(p.Errors) > 0 {
+				t.Fatalf("unexpected parser errors: %v", p.Errors)
+			}
+
+			if len(program.Imports) != tt.expectedImports {
+				t.Fatalf("expected %d imports, got %d", tt.expectedImports, len(program.Imports))
+			}
+
+			if len(program.Declarations) != tt.expectedDecls {
+				t.Fatalf("expected %d declarations, got %d", tt.expectedDecls, len(program.Declarations))
+			}
+
+			// Check first import
+			imp := program.Imports[0]
+			if imp.Name != tt.importName {
+				t.Errorf("expected import name %q, got %q", tt.importName, imp.Name)
+			}
+			if imp.Path != tt.importPath {
+				t.Errorf("expected import path %q, got %q", tt.importPath, imp.Path)
+			}
+			if imp.Explicit != tt.importExplicit {
+				t.Errorf("expected import explicit=%v, got %v", tt.importExplicit, imp.Explicit)
+			}
+		})
+	}
+}
+
+func TestParserImportErrors(t *testing.T) {
+	tests := []struct {
+		name           string
+		source         string
+		errorContains  string
+	}{
+		{
+			name:          "import after declaration",
+			source:        "main = () { }\nimport \"math\"",
+			errorContains: "import declarations must appear before",
+		},
+		{
+			name:          "import with non-string path",
+			source:        "import 42\nmain = () { }",
+			errorContains: "expected string literal after 'import'",
+		},
+		{
+			name:          "import inside function",
+			source:        "main = () {\n    import \"math\"\n}",
+			errorContains: "import declarations are only allowed at the top level",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+
+			p := NewParser(l.Tokens)
+			p.Parse()
+
+			if len(p.Errors) == 0 {
+				t.Fatal("expected parser errors, got none")
+			}
+
+			found := false
+			for _, err := range p.Errors {
+				if strings.Contains(err.Error(), tt.errorContains) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected error containing %q, got: %v", tt.errorContains, p.Errors)
+			}
+		})
+	}
+}
+
+func TestDeriveImportName(t *testing.T) {
+	tests := []struct {
+		path     string
+		expected string
+	}{
+		{"math", "math"},
+		{"std/math", "math"},
+		{"collections/list", "list"},
+		{"a/b/c", "c"},
+		{"singleword", "singleword"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := deriveImportName(tt.path)
+			if got != tt.expected {
+				t.Errorf("deriveImportName(%q) = %q, want %q", tt.path, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParserQualifiedTypeName(t *testing.T) {
+	tests := []struct {
+		name         string
+		source       string
+		expectedType string // the type annotation string in the parameter
+	}{
+		{
+			name:         "qualified type in parameter",
+			source:       "import \"geo\"\nfoo = (p: geo.Point) { }",
+			expectedType: "geo.Point",
+		},
+		{
+			name:         "qualified pointer type",
+			source:       "import \"geo\"\nfoo = (p: *geo.Point) { }",
+			expectedType: "*geo.Point",
+		},
+		{
+			name:         "qualified ref type",
+			source:       "import \"geo\"\nfoo = (p: &geo.Point) { }",
+			expectedType: "&geo.Point",
+		},
+		{
+			name:         "qualified nullable type",
+			source:       "import \"geo\"\nfoo = (p: geo.Point?) { }",
+			expectedType: "geo.Point?",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			if len(program.Declarations) < 1 {
+				t.Fatal("expected at least 1 declaration")
+			}
+			fnDecl, ok := program.Declarations[0].(*ast.FunctionDecl)
+			if !ok {
+				t.Fatalf("expected FunctionDecl, got %T", program.Declarations[0])
+			}
+			if len(fnDecl.Parameters) < 1 {
+				t.Fatal("expected at least 1 parameter")
+			}
+			if fnDecl.Parameters[0].TypeName != tt.expectedType {
+				t.Errorf("expected type %q, got %q", tt.expectedType, fnDecl.Parameters[0].TypeName)
+			}
+		})
+	}
+}

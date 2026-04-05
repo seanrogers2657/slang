@@ -3,6 +3,7 @@ package ir
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/seanrogers2657/slang/compiler/ast"
 	"github.com/seanrogers2657/slang/compiler/semantic"
@@ -56,15 +57,54 @@ type Generator struct {
 	// Track variables whose ownership has been transferred (moved)
 	// These should not be freed during cleanup
 	movedVars map[string]bool
+
+	// Top-level statements (val/var) to inject at the start of main.
+	// Each statement carries the package prefix to apply during generation.
+	topLevelStmts []PrefixedStmt
+
+	// Package prefix for variable name mangling (e.g., "math__" for non-root packages)
+	packagePrefix string
+
+	// Global variables — names that should use OpLoadGlobal/OpStoreGlobal
+	globalVars map[string]Type
 }
 
-// NewGenerator creates a new IR generator.
-func NewGenerator() *Generator {
-	return &Generator{
-		prog:      NewProgram(),
-		ssa:       NewSSABuilder(),
-		typeCache: make(map[semantic.Type]Type),
+// GeneratorConfig holds options for IR generation.
+type GeneratorConfig struct {
+	// PackagePrefix is prepended to variable names (e.g., "math__" for non-root packages).
+	PackagePrefix string
+
+	// TopLevelStmts are all packages' top-level statements to inject at the start of main.
+	// Each carries its own prefix. Only used by the root package generator.
+	TopLevelStmts []PrefixedStmt
+
+	// GlobalVars is a set of mangled variable names that should use .data section
+	// access (OpLoadGlobal/OpStoreGlobal) instead of SSA variables.
+	GlobalVars map[string]bool
+}
+
+// NewGenerator creates an IR generator with the given configuration.
+func NewGenerator(config GeneratorConfig) *Generator {
+	g := &Generator{
+		prog:          NewProgram(),
+		ssa:           NewSSABuilder(),
+		typeCache:     make(map[semantic.Type]Type),
+		globalVars:    make(map[string]Type),
+		packagePrefix: config.PackagePrefix,
+		topLevelStmts: config.TopLevelStmts,
 	}
+
+	// Register globals for OpLoadGlobal/OpStoreGlobal during generation.
+	// Only emit .data labels for globals that belong to this package.
+	for name := range config.GlobalVars {
+		g.globalVars[name] = TypeS64
+		if (config.PackagePrefix == "" && !strings.Contains(name, "__")) ||
+			(config.PackagePrefix != "" && strings.HasPrefix(name, config.PackagePrefix)) {
+			g.prog.Globals = append(g.prog.Globals, &Global{Name: name, Type: TypeS64})
+		}
+	}
+
+	return g
 }
 
 // pushScope creates a new scope for tracking owned pointers.
@@ -137,13 +177,29 @@ func (g *Generator) markMoved(name string) {
 }
 
 // Generate converts a TypedProgram to IR.
+// PrefixedStmt pairs a top-level statement with its package prefix for IR generation.
+type PrefixedStmt struct {
+	Stmt   semantic.TypedStatement
+	Prefix string // e.g., "config__" for non-root, "" for root
+}
+
+// Generate converts a TypedProgram to IR using default configuration.
+// This is the simple entry point for single-file programs.
 func Generate(typed *semantic.TypedProgram) (*Program, error) {
-	g := NewGenerator()
+	g := NewGenerator(GeneratorConfig{})
 	return g.GenerateProgram(typed)
 }
 
 // GenerateProgram generates IR for an entire program.
 func (g *Generator) GenerateProgram(typed *semantic.TypedProgram) (*Program, error) {
+	// If no prefixed stmts were set externally (single-file via Generate()),
+	// wrap the program's own statements with the current prefix
+	if len(g.topLevelStmts) == 0 && len(typed.Statements) > 0 {
+		for _, stmt := range typed.Statements {
+			g.topLevelStmts = append(g.topLevelStmts, PrefixedStmt{Stmt: stmt, Prefix: g.packagePrefix})
+		}
+	}
+
 	// First pass: register all struct types
 	for _, decl := range typed.Declarations {
 		if sd, ok := decl.(*semantic.TypedStructDecl); ok {
@@ -208,6 +264,18 @@ func (g *Generator) generateFunction(fd *semantic.TypedFunctionDecl) error {
 
 		// Track owned pointer parameters for cleanup
 		g.trackOwnedVar(param.Name, param.Type)
+	}
+
+	// For main, inject top-level statements before the body
+	if fd.Name == "main" && len(g.topLevelStmts) > 0 {
+		for _, ps := range g.topLevelStmts {
+			savedPrefix := g.packagePrefix
+			g.packagePrefix = ps.Prefix
+			if err := g.generateStatement(ps.Stmt); err != nil {
+				return err
+			}
+			g.packagePrefix = savedPrefix
+		}
 	}
 
 	// Generate function body
@@ -765,16 +833,14 @@ func (g *Generator) generateWhen(we *semantic.TypedWhenExpr) (*Value, error) {
 	for i, c := range we.Cases {
 		if c.IsElse {
 			// Else case: generate body and jump to merge
-			if err := g.generateStatement(c.Body); err != nil {
+			val, err := g.generateWhenCaseBody(c.Body, resultType)
+			if err != nil {
 				return nil, err
 			}
 
-			// If expression, get result value
-			if resultType != nil && g.block != nil {
-				val := g.getLastValue()
-				if val != nil {
-					phiArgs = append(phiArgs, &PhiArg{From: g.block, Value: val})
-				}
+			// If expression, collect phi arg
+			if resultType != nil && g.block != nil && val != nil {
+				phiArgs = append(phiArgs, &PhiArg{From: g.block, Value: val})
 			}
 
 			// Jump to merge
@@ -810,16 +876,14 @@ func (g *Generator) generateWhen(we *semantic.TypedWhenExpr) (*Value, error) {
 
 			// Generate then block
 			g.block = thenBlock
-			if err := g.generateStatement(c.Body); err != nil {
+			val, err := g.generateWhenCaseBody(c.Body, resultType)
+			if err != nil {
 				return nil, err
 			}
 
-			// If expression, get result value
-			if resultType != nil && g.block != nil {
-				val := g.getLastValue()
-				if val != nil {
-					phiArgs = append(phiArgs, &PhiArg{From: g.block, Value: val})
-				}
+			// If expression, collect phi arg
+			if resultType != nil && g.block != nil && val != nil {
+				phiArgs = append(phiArgs, &PhiArg{From: g.block, Value: val})
 			}
 
 			// Jump to merge
@@ -854,6 +918,27 @@ func (g *Generator) getLastValue() *Value {
 		return nil
 	}
 	return g.block.Values[len(g.block.Values)-1]
+}
+
+// generateWhenCaseBody generates a when case body and returns the result value
+// for expression-position when. For bare identifiers/expressions, this directly
+// evaluates the expression rather than relying on getLastValue(), which fails
+// when the expression doesn't emit a new value into the current block.
+func (g *Generator) generateWhenCaseBody(body semantic.TypedStatement, resultType Type) (*Value, error) {
+	// If this is an expression-position when, try to get the value directly
+	if resultType != nil {
+		if exprStmt, ok := body.(*semantic.TypedExprStmt); ok {
+			return g.generateExpr(exprStmt.Expr)
+		}
+	}
+	// For block bodies or statement-position when, generate normally
+	if err := g.generateStatement(body); err != nil {
+		return nil, err
+	}
+	if resultType != nil {
+		return g.getLastValue(), nil
+	}
+	return nil, nil
 }
 
 // generateExpr generates IR for an expression.
@@ -987,7 +1072,7 @@ func (g *Generator) generateLiteral(le *semantic.TypedLiteralExpr) (*Value, erro
 
 // generateIdentifier generates IR for an identifier expression.
 func (g *Generator) generateIdentifier(ie *semantic.TypedIdentifierExpr) (*Value, error) {
-	// Look up the current SSA definition
+	// readVariable handles prefixing/mangling automatically
 	return g.readVariable(ie.Name, g.block), nil
 }
 
@@ -1003,9 +1088,37 @@ func (g *Generator) generateBinary(be *semantic.TypedBinaryExpr) (*Value, error)
 		if result, handled, err := g.tryGenerateNullComparison(be); handled {
 			return result, err
 		}
+		// String comparison uses OpStrEq instead of numeric OpEq
+		if _, isStr := be.Left.GetType().(semantic.StringType); isStr {
+			return g.generateStringComparison(be)
+		}
 	}
 
 	return g.generateBinaryOp(be)
+}
+
+// generateStringComparison generates IR for string == and != comparisons.
+func (g *Generator) generateStringComparison(be *semantic.TypedBinaryExpr) (*Value, error) {
+	left, err := g.generateExpr(be.Left)
+	if err != nil {
+		return nil, err
+	}
+	right, err := g.generateExpr(be.Right)
+	if err != nil {
+		return nil, err
+	}
+
+	v := g.block.NewValue(OpStrEq, TypeBool)
+	v.AddArg(left)
+	v.AddArg(right)
+
+	if be.Op == "!=" {
+		// Negate the result
+		notV := g.block.NewValue(OpNot, TypeBool)
+		notV.AddArg(v)
+		return notV, nil
+	}
+	return v, nil
 }
 
 // tryGenerateNullComparison handles `x == null` and `x != null` comparisons.
@@ -1223,7 +1336,36 @@ func (g *Generator) generateCall(ce *semantic.TypedCallExpr) (*Value, error) {
 	}
 
 	resultType := g.convertType(ce.Type)
-	return g.builder().Call(ce.Name, resultType, args...), nil
+
+	// Mangle cross-package call names: "math.add" -> "math__add",
+	// "graphics/color.red" -> "graphics__color__red"
+	callName := ce.Name
+	if strings.Contains(callName, ".") {
+		callName = strings.ReplaceAll(callName, "/", "__")
+		callName = strings.ReplaceAll(callName, ".", "__")
+	}
+
+	// Wrap args to match nullable parameter types.
+	if targetFn := g.prog.FunctionByName(callName); targetFn != nil {
+		for i, arg := range args {
+			if i < len(targetFn.Params) {
+				paramType := targetFn.Params[i].Type
+				if _, isNullable := paramType.(*NullableType); isNullable {
+					if arg.Op == OpWrapNull {
+						// null literal — update its type to match the param
+						arg.Type = paramType
+					} else if _, argIsNullable := arg.Type.(*NullableType); !argIsNullable {
+						// Non-nullable value — wrap it
+						wrap := g.block.NewValue(OpWrap, paramType)
+						wrap.AddArg(arg)
+						args[i] = wrap
+					}
+				}
+			}
+		}
+	}
+
+	return g.builder().Call(callName, resultType, args...), nil
 }
 
 // generateFieldAccess generates IR for field access.
@@ -1424,13 +1566,7 @@ func (g *Generator) generateMethodCall(mc *semantic.TypedMethodCallExpr) (*Value
 	}
 
 	// Determine mangled function name (include param count for overloading)
-	className := g.getTypeName(mc.Object.GetType())
-	// Count params: self (for instance methods) + explicit arguments
-	paramCount := len(mc.Arguments)
-	if mc.ResolvedMethod != nil && !mc.ResolvedMethod.IsStatic {
-		paramCount++ // Count self parameter
-	}
-	mangledName := fmt.Sprintf("%s_%s_%d", className, mc.Method, paramCount)
+	mangledName := g.mangleMethodName(mc.Object.GetType(), mc)
 
 	resultType := g.convertType(mc.Type)
 
@@ -1567,7 +1703,49 @@ func (g *Generator) mangleMethodName(receiverType semantic.Type, mc *semantic.Ty
 	if mc.ResolvedMethod != nil && !mc.ResolvedMethod.IsStatic {
 		paramCount++ // Count self parameter
 	}
+
+	// For cross-package types, prefix with the package path
+	pkgPath := g.getTypePackagePath(receiverType)
+	if pkgPath != "" && pkgPath != "main" {
+		prefix := strings.ReplaceAll(pkgPath, "/", "__") + "__"
+		return fmt.Sprintf("%s%s_%s_%d", prefix, className, mc.Method, paramCount)
+	}
+
 	return fmt.Sprintf("%s_%s_%d", className, mc.Method, paramCount)
+}
+
+// getTypePackagePath returns the PackagePath for a nominal type, unwrapping pointers/nullables.
+func (g *Generator) getTypePackagePath(t semantic.Type) string {
+	// Unwrap pointer types
+	if ownedPtr, ok := t.(semantic.OwnedPointerType); ok {
+		return g.getTypePackagePath(ownedPtr.ElementType)
+	}
+	if refPtr, ok := t.(semantic.RefPointerType); ok {
+		return g.getTypePackagePath(refPtr.ElementType)
+	}
+	if mutRefPtr, ok := t.(semantic.MutRefPointerType); ok {
+		return g.getTypePackagePath(mutRefPtr.ElementType)
+	}
+	// Unwrap nullable
+	if nt, ok := t.(semantic.NullableType); ok {
+		return g.getTypePackagePath(nt.InnerType)
+	}
+
+	switch ty := t.(type) {
+	case semantic.StructType:
+		return ty.PackagePath
+	case *semantic.StructType:
+		return ty.PackagePath
+	case semantic.ClassType:
+		return ty.PackagePath
+	case *semantic.ClassType:
+		return ty.PackagePath
+	case semantic.ObjectType:
+		return ty.PackagePath
+	case *semantic.ObjectType:
+		return ty.PackagePath
+	}
+	return ""
 }
 
 // mergeNullCheckResults creates a phi node to merge null and non-null paths.
@@ -1777,13 +1955,44 @@ func (g *Generator) generateIfExpr(is *semantic.TypedIfStmt) (*Value, error) {
 // writeVariable records a definition of a variable in a block.
 // Delegates to SSABuilder.
 func (g *Generator) writeVariable(name string, block *Block, val *Value) {
-	g.ssa.WriteVariable(name, block, val)
+	pname := g.prefixedName(name)
+	if _, isGlobal := g.globalVars[pname]; isGlobal {
+		// Write to global variable via OpStoreGlobal
+		store := block.NewValue(OpStoreGlobal, TypeVoid)
+		store.AuxString = pname
+		store.AddArg(val)
+		// Also update SSA for reads within the same function
+		g.ssa.WriteVariable(pname, block, val)
+		return
+	}
+	g.ssa.WriteVariable(pname, block, val)
 }
 
 // readVariable returns the current definition of a variable.
-// Delegates to SSABuilder.
+// For global variables, emits OpLoadGlobal.
 func (g *Generator) readVariable(name string, block *Block) *Value {
-	return g.ssa.ReadVariable(name, block)
+	pname := g.prefixedName(name)
+	if globalType, isGlobal := g.globalVars[pname]; isGlobal {
+		// Read from global variable via OpLoadGlobal
+		load := block.NewValue(OpLoadGlobal, globalType)
+		load.AuxString = pname
+		return load
+	}
+	return g.ssa.ReadVariable(pname, block)
+}
+
+// prefixedName applies the package prefix to a variable name.
+// Cross-package references (containing ".") are mangled separately, not prefixed.
+// Function parameters (within the current function) are prefixed.
+func (g *Generator) prefixedName(name string) string {
+	// Cross-package references have dots (e.g., "math.add") and may have
+	// slashes for nested packages (e.g., "graphics/color.red") — mangle both
+	if strings.Contains(name, ".") {
+		mangled := strings.ReplaceAll(name, "/", "__")
+		mangled = strings.ReplaceAll(mangled, ".", "__")
+		return mangled
+	}
+	return g.packagePrefix + name
 }
 
 // sealBlock marks a block as sealed (no more predecessors will be added).

@@ -81,7 +81,7 @@ func (lm *LabelManager) InitBlockLabels(fn *ir.Function) {
 
 // panicMessage defines a runtime panic with its assembly label and message.
 type panicMessage struct {
-	Label   string // Assembly label (e.g., "_panic_div_zero")
+	Label   string // Assembly label (e.g., "_sl_panic_div_zero")
 	Message string // Error message including newline
 }
 
@@ -90,15 +90,15 @@ func (p panicMessage) Len() int { return len(p.Message) }
 
 // Runtime panic messages - message lengths are auto-computed.
 var (
-	PanicDivZero          = panicMessage{"_panic_div_zero", "panic: division by zero\n"}
-	PanicModZero          = panicMessage{"_panic_mod_zero", "panic: modulo by zero\n"}
-	PanicBounds           = panicMessage{"_panic_bounds", "panic: array index out of bounds\n"}
-	PanicOverflowAdd      = panicMessage{"_panic_overflow_add", "panic: integer overflow: addition\n"}
-	PanicOverflowSub      = panicMessage{"_panic_overflow_sub", "panic: integer overflow: subtraction\n"}
-	PanicOverflowMul      = panicMessage{"_panic_overflow_mul", "panic: integer overflow: multiplication\n"}
-	PanicUnsignedOverAdd  = panicMessage{"_panic_unsigned_overflow_add", "panic: unsigned overflow: addition\n"}
-	PanicUnsignedUnderSub = panicMessage{"_panic_unsigned_underflow_sub", "panic: unsigned underflow: subtraction\n"}
-	PanicUnsignedOverMul  = panicMessage{"_panic_unsigned_overflow_mul", "panic: unsigned overflow: multiplication\n"}
+	PanicDivZero          = panicMessage{"_sl_panic_div_zero", "panic: division by zero\n"}
+	PanicModZero          = panicMessage{"_sl_panic_mod_zero", "panic: modulo by zero\n"}
+	PanicBounds           = panicMessage{"_sl_panic_bounds", "panic: array index out of bounds\n"}
+	PanicOverflowAdd      = panicMessage{"_sl_panic_overflow_add", "panic: integer overflow: addition\n"}
+	PanicOverflowSub      = panicMessage{"_sl_panic_overflow_sub", "panic: integer overflow: subtraction\n"}
+	PanicOverflowMul      = panicMessage{"_sl_panic_overflow_mul", "panic: integer overflow: multiplication\n"}
+	PanicUnsignedOverAdd  = panicMessage{"_sl_panic_unsigned_overflow_add", "panic: unsigned overflow: addition\n"}
+	PanicUnsignedUnderSub = panicMessage{"_sl_panic_unsigned_underflow_sub", "panic: unsigned underflow: subtraction\n"}
+	PanicUnsignedOverMul  = panicMessage{"_sl_panic_unsigned_overflow_mul", "panic: unsigned overflow: multiplication\n"}
 )
 
 // allPanicMessages lists all panic messages for data section emission.
@@ -162,6 +162,9 @@ func (g *generator) generate() (string, error) {
 	// Emit print helper functions
 	g.emitPrintHelpers()
 
+	// Emit string comparison helper
+	g.emitStrEqHelper()
+
 	// Emit panic helper
 	g.emitPanicHelper()
 
@@ -185,18 +188,18 @@ func (g *generator) emitDataSection() {
 	g.emit(".align 3")
 
 	// Heap pointers (for dynamic allocator with free lists)
-	g.emit("_heap_ptr:")
+	g.emit("_sl_heap_ptr:")
 	g.emit("    .quad 0")  // Current bump allocation pointer
-	g.emit("_heap_end:")
+	g.emit("_sl_heap_end:")
 	g.emit("    .quad 0")  // End of current arena
-	g.emit("_arena_head:")
+	g.emit("_sl_arena_head:")
 	g.emit("    .quad 0")  // Head of arena linked list
-	g.emit("_current_arena:")
+	g.emit("_sl_current_arena:")
 	g.emit("    .quad 0")  // Current arena being bump-allocated from
 
 	// Free list heads for size classes: 16, 32, 64, 128, 256, 512, 1024, 2048 bytes
 	// Each entry is a pointer to the first free block of that size class (or 0 if empty)
-	g.emit("_free_lists:")
+	g.emit("_sl_free_lists:")
 	g.emit("    .quad 0")  // Size class 0: 16 bytes
 	g.emit("    .quad 0")  // Size class 1: 32 bytes
 	g.emit("    .quad 0")  // Size class 2: 64 bytes
@@ -207,17 +210,17 @@ func (g *generator) emitDataSection() {
 	g.emit("    .quad 0")  // Size class 7: 2048 bytes
 
 	// Newline for print
-	g.emit("_newline:")
+	g.emit("_sl_newline:")
 	g.emitRaw(`    .asciz "\n"`)
 
 	// Boolean strings
-	g.emit("_true_str:")
+	g.emit("_sl_true_str:")
 	g.emitRaw(`    .asciz "true"`)
-	g.emit("_false_str:")
+	g.emit("_sl_false_str:")
 	g.emitRaw(`    .asciz "false"`)
 
 	// Assertion prefix
-	g.emit("_assert_prefix:")
+	g.emit("_sl_assert_prefix:")
 	g.emitRaw(`    .asciz "assertion failed: "`)
 
 	// Runtime error messages (from registry)
@@ -227,24 +230,30 @@ func (g *generator) emitDataSection() {
 	}
 
 	// Stack trace helper strings
-	g.emit("_panic_at_prefix:")
+	g.emit("_sl_panic_at_prefix:")
 	g.emitRaw(`    .asciz "at "`)
-	g.emit("_panic_at_suffix:")
+	g.emit("_sl_panic_at_suffix:")
 	g.emitRaw(`    .asciz "()\n"`)
 
 	// Function name strings for stack traces
 	for _, fn := range g.prog.Functions {
-		g.emit("_fn_name_%s:", fn.Name)
+		g.emit("_sl_fn_name_%s:", fn.Name)
 		g.emitRaw(`    .asciz "` + fn.Name + `"`)
 	}
 
 	// Emit string constants
 	for i, s := range g.strings {
-		g.emit("_str%d:", i)
+		g.emit("_sl_str%d:", i)
 		g.emitRaw(`    .asciz "` + escapeString(s) + `"`)
 	}
 
 	// Heap is dynamically allocated via mmap at runtime
+
+	// Global variables (from top-level var declarations)
+	for _, global := range g.prog.Globals {
+		g.emit("_sl_global_%s:", global.Name)
+		g.emit("    .quad 0")
+	}
 
 	g.emit("")
 }
@@ -298,20 +307,20 @@ func (g *generator) emitHeapAllocator() {
 	g.emit("    str x10, [x0, #24]")
 	g.emit("    // Store heap_ptr (skip 32-byte header)")
 	g.emit("    add x11, x0, #32")                        // heap_ptr starts after header
-	g.emit("    adrp x9, _heap_ptr@PAGE")
-	g.emit("    add x9, x9, _heap_ptr@PAGEOFF")
+	g.emit("    adrp x9, _sl_heap_ptr@PAGE")
+	g.emit("    add x9, x9, _sl_heap_ptr@PAGEOFF")
 	g.emit("    str x11, [x9]")
 	g.emit("    // Store heap_end")
-	g.emit("    adrp x9, _heap_end@PAGE")
-	g.emit("    add x9, x9, _heap_end@PAGEOFF")
+	g.emit("    adrp x9, _sl_heap_end@PAGE")
+	g.emit("    add x9, x9, _sl_heap_end@PAGEOFF")
 	g.emit("    add x10, x0, x10")                        // x10 = arena_start + 1MB
 	g.emit("    str x10, [x9]")
 	g.emit("    // Store arena_head and current_arena")
-	g.emit("    adrp x9, _arena_head@PAGE")
-	g.emit("    add x9, x9, _arena_head@PAGEOFF")
+	g.emit("    adrp x9, _sl_arena_head@PAGE")
+	g.emit("    add x9, x9, _sl_arena_head@PAGEOFF")
 	g.emit("    str x0, [x9]")
-	g.emit("    adrp x9, _current_arena@PAGE")
-	g.emit("    add x9, x9, _current_arena@PAGEOFF")
+	g.emit("    adrp x9, _sl_current_arena@PAGE")
+	g.emit("    add x9, x9, _sl_current_arena@PAGEOFF")
 	g.emit("    str x0, [x9]")
 	g.emit("    ldp x29, x30, [sp], #16")
 	g.emit("    ret")
@@ -398,8 +407,8 @@ func (g *generator) emitHeapAllocator() {
 	g.emit("    b.eq _sl_heap_grow_fail")
 	g.emit("    mov x20, x0")                             // x20 = new arena start
 	g.emit("    // Link new arena to head of list")
-	g.emit("    adrp x9, _arena_head@PAGE")
-	g.emit("    add x9, x9, _arena_head@PAGEOFF")
+	g.emit("    adrp x9, _sl_arena_head@PAGE")
+	g.emit("    add x9, x9, _sl_arena_head@PAGEOFF")
 	g.emit("    ldr x10, [x9]")                           // x10 = old head
 	g.emit("    str x10, [x20]")                          // new_arena->next = old_head
 	g.emit("    str x20, [x9]")                           // arena_head = new_arena
@@ -410,16 +419,16 @@ func (g *generator) emitHeapAllocator() {
 	g.emit("    str x10, [x20, #24]")                     // arena_size = 1MB
 	g.emit("    // Update heap_ptr and heap_end")
 	g.emit("    add x11, x20, #32")                       // heap_ptr after header
-	g.emit("    adrp x9, _heap_ptr@PAGE")
-	g.emit("    add x9, x9, _heap_ptr@PAGEOFF")
+	g.emit("    adrp x9, _sl_heap_ptr@PAGE")
+	g.emit("    add x9, x9, _sl_heap_ptr@PAGEOFF")
 	g.emit("    str x11, [x9]")
-	g.emit("    adrp x9, _heap_end@PAGE")
-	g.emit("    add x9, x9, _heap_end@PAGEOFF")
+	g.emit("    adrp x9, _sl_heap_end@PAGE")
+	g.emit("    add x9, x9, _sl_heap_end@PAGEOFF")
 	g.emit("    add x10, x20, x10")
 	g.emit("    str x10, [x9]")
 	g.emit("    // Update current_arena")
-	g.emit("    adrp x9, _current_arena@PAGE")
-	g.emit("    add x9, x9, _current_arena@PAGEOFF")
+	g.emit("    adrp x9, _sl_current_arena@PAGE")
+	g.emit("    add x9, x9, _sl_current_arena@PAGEOFF")
 	g.emit("    str x20, [x9]")
 	g.emit("    // Retry bump allocation")
 	g.emit("    mov x0, x19")
@@ -435,19 +444,19 @@ func (g *generator) emitHeapAllocator() {
 	// Bump allocator (internal) - x0 = size (already rounded to size class)
 	g.emit("// Bump allocator: x0 = size")
 	g.emit("_sl_bump_alloc:")
-	g.emit("    adrp x9, _heap_ptr@PAGE")
-	g.emit("    add x9, x9, _heap_ptr@PAGEOFF")
+	g.emit("    adrp x9, _sl_heap_ptr@PAGE")
+	g.emit("    add x9, x9, _sl_heap_ptr@PAGEOFF")
 	g.emit("    ldr x10, [x9]")                           // x10 = heap_ptr
 	g.emit("    add x11, x10, x0")                        // x11 = heap_ptr + size
-	g.emit("    adrp x12, _heap_end@PAGE")
-	g.emit("    add x12, x12, _heap_end@PAGEOFF")
+	g.emit("    adrp x12, _sl_heap_end@PAGE")
+	g.emit("    add x12, x12, _sl_heap_end@PAGEOFF")
 	g.emit("    ldr x13, [x12]")                          // x13 = heap_end
 	g.emit("    cmp x11, x13")
 	g.emit("    b.gt _sl_heap_grow")                      // If new_ptr > end, grow heap
 	g.emit("    str x11, [x9]")                           // heap_ptr = new_ptr
 	g.emit("    // Increment current arena's alloc_count")
-	g.emit("    adrp x12, _current_arena@PAGE")
-	g.emit("    add x12, x12, _current_arena@PAGEOFF")
+	g.emit("    adrp x12, _sl_current_arena@PAGE")
+	g.emit("    add x12, x12, _sl_current_arena@PAGEOFF")
 	g.emit("    ldr x13, [x12]")                          // x13 = current_arena
 	g.emit("    ldr x14, [x13, #8]")                      // x14 = alloc_count
 	g.emit("    add x14, x14, #1")
@@ -466,8 +475,8 @@ func (g *generator) emitHeapAllocator() {
 	g.emit("    cmp x1, #8")
 	g.emit("    b.eq _sl_alloc_bump")                     // Size > 2048, use bump allocator
 	g.emit("    // Check free list for this size class")
-	g.emit("    adrp x9, _free_lists@PAGE")
-	g.emit("    add x9, x9, _free_lists@PAGEOFF")
+	g.emit("    adrp x9, _sl_free_lists@PAGE")
+	g.emit("    add x9, x9, _sl_free_lists@PAGEOFF")
 	g.emit("    lsl x10, x1, #3")                         // x10 = class * 8 (offset into free_lists)
 	g.emit("    add x9, x9, x10")                         // x9 = &free_lists[class]
 	g.emit("    ldr x11, [x9]")                           // x11 = free_lists[class] (head pointer)
@@ -499,8 +508,8 @@ func (g *generator) emitHeapAllocator() {
 	// Find arena for a pointer - walks arena list
 	g.emit("// Find arena containing pointer: x0 = ptr, returns x0 = arena or 0")
 	g.emit("_sl_find_arena:")
-	g.emit("    adrp x9, _arena_head@PAGE")
-	g.emit("    add x9, x9, _arena_head@PAGEOFF")
+	g.emit("    adrp x9, _sl_arena_head@PAGE")
+	g.emit("    add x9, x9, _sl_arena_head@PAGEOFF")
 	g.emit("    ldr x10, [x9]")                           // x10 = arena_head
 	g.emit("_sl_find_arena_loop:")
 	g.emit("    cbz x10, _sl_find_arena_not_found")       // End of list
@@ -543,8 +552,8 @@ func (g *generator) emitHeapAllocator() {
 	g.emit("    // Arena is empty - check if it's the only arena")
 	g.emit("    ldr x9, [x21]")                           // x9 = arena->next
 	g.emit("    cbnz x9, _sl_free_unmap")                 // If has next, safe to unmap
-	g.emit("    adrp x9, _arena_head@PAGE")
-	g.emit("    add x9, x9, _arena_head@PAGEOFF")
+	g.emit("    adrp x9, _sl_arena_head@PAGE")
+	g.emit("    add x9, x9, _sl_arena_head@PAGEOFF")
 	g.emit("    ldr x9, [x9]")                            // x9 = arena_head
 	g.emit("    cmp x9, x21")
 	g.emit("    b.eq _sl_free_add_to_list")               // If this is head and only, keep it
@@ -561,8 +570,8 @@ func (g *generator) emitHeapAllocator() {
 	g.emit("    cmp x1, #8")
 	g.emit("    b.eq _sl_free_done")                      // Size > 2048, can't add to free list
 	g.emit("    // Push onto free list")
-	g.emit("    adrp x9, _free_lists@PAGE")
-	g.emit("    add x9, x9, _free_lists@PAGEOFF")
+	g.emit("    adrp x9, _sl_free_lists@PAGE")
+	g.emit("    add x9, x9, _sl_free_lists@PAGEOFF")
 	g.emit("    lsl x10, x1, #3")                         // x10 = class * 8
 	g.emit("    add x9, x9, x10")                         // x9 = &free_lists[class]
 	g.emit("    ldr x11, [x9]")                           // x11 = current head
@@ -584,8 +593,8 @@ func (g *generator) emitHeapAllocator() {
 	g.emit("    stp x21, x22, [sp, #-16]!")
 	g.emit("    mov x19, x0")                             // x19 = arena to unmap
 	g.emit("    // Remove arena from linked list")
-	g.emit("    adrp x9, _arena_head@PAGE")
-	g.emit("    add x9, x9, _arena_head@PAGEOFF")
+	g.emit("    adrp x9, _sl_arena_head@PAGE")
+	g.emit("    add x9, x9, _sl_arena_head@PAGEOFF")
 	g.emit("    ldr x10, [x9]")                           // x10 = arena_head
 	g.emit("    cmp x10, x19")
 	g.emit("    b.ne _sl_unmap_find_prev")
@@ -616,8 +625,8 @@ func (g *generator) emitHeapAllocator() {
 	g.emit("_sl_unmap_clean_class_loop:")
 	g.emit("    cmp x22, #8")
 	g.emit("    b.ge _sl_unmap_do_munmap")
-	g.emit("    adrp x9, _free_lists@PAGE")
-	g.emit("    add x9, x9, _free_lists@PAGEOFF")
+	g.emit("    adrp x9, _sl_free_lists@PAGE")
+	g.emit("    add x9, x9, _sl_free_lists@PAGEOFF")
 	g.emit("    lsl x10, x22, #3")
 	g.emit("    add x9, x9, x10")                         // x9 = &free_lists[class]
 	g.emit("    // Remove entries from this class that are in the arena")
@@ -626,14 +635,14 @@ func (g *generator) emitHeapAllocator() {
 	g.emit("    b _sl_unmap_clean_class_loop")
 	g.emit("_sl_unmap_do_munmap:")
 	g.emit("    // If this was current_arena, we need to update current_arena")
-	g.emit("    adrp x9, _current_arena@PAGE")
-	g.emit("    add x9, x9, _current_arena@PAGEOFF")
+	g.emit("    adrp x9, _sl_current_arena@PAGE")
+	g.emit("    add x9, x9, _sl_current_arena@PAGEOFF")
 	g.emit("    ldr x10, [x9]")
 	g.emit("    cmp x10, x19")
 	g.emit("    b.ne _sl_unmap_call_munmap")
 	g.emit("    // Current arena is being unmapped - set to head")
-	g.emit("    adrp x10, _arena_head@PAGE")
-	g.emit("    add x10, x10, _arena_head@PAGEOFF")
+	g.emit("    adrp x10, _sl_arena_head@PAGE")
+	g.emit("    add x10, x10, _sl_arena_head@PAGEOFF")
 	g.emit("    ldr x10, [x10]")
 	g.emit("    str x10, [x9]")                           // current_arena = arena_head
 	g.emit("_sl_unmap_call_munmap:")
@@ -723,8 +732,8 @@ func (g *generator) emitPrintHelpers() {
 	g.emit("    svc #0")
 
 	// Print newline
-	g.emit("    adrp x1, _newline@PAGE")
-	g.emit("    add x1, x1, _newline@PAGEOFF")
+	g.emit("    adrp x1, _sl_newline@PAGE")
+	g.emit("    add x1, x1, _sl_newline@PAGEOFF")
 	g.emit("    mov x0, #1")
 	g.emit("    mov x2, #1")
 	g.emit("    mov x16, #4")
@@ -758,8 +767,8 @@ func (g *generator) emitPrintHelpers() {
 	g.emit("    svc #0")
 
 	// Print newline
-	g.emit("    adrp x1, _newline@PAGE")
-	g.emit("    add x1, x1, _newline@PAGEOFF")
+	g.emit("    adrp x1, _sl_newline@PAGE")
+	g.emit("    add x1, x1, _sl_newline@PAGEOFF")
 	g.emit("    mov x0, #1")
 	g.emit("    mov x2, #1")
 	g.emit("    mov x16, #4")
@@ -776,14 +785,14 @@ func (g *generator) emitPrintHelpers() {
 	g.emit("    mov x29, sp")
 	g.emit("    cbz x0, _sl_print_false")
 
-	g.emit("    adrp x0, _true_str@PAGE")
-	g.emit("    add x0, x0, _true_str@PAGEOFF")
+	g.emit("    adrp x0, _sl_true_str@PAGE")
+	g.emit("    add x0, x0, _sl_true_str@PAGEOFF")
 	g.emit("    bl _sl_print_str")
 	g.emit("    b _sl_print_bool_done")
 
 	g.emit("_sl_print_false:")
-	g.emit("    adrp x0, _false_str@PAGE")
-	g.emit("    add x0, x0, _false_str@PAGEOFF")
+	g.emit("    adrp x0, _sl_false_str@PAGE")
+	g.emit("    add x0, x0, _sl_false_str@PAGEOFF")
 	g.emit("    bl _sl_print_str")
 
 	g.emit("_sl_print_bool_done:")
@@ -793,6 +802,32 @@ func (g *generator) emitPrintHelpers() {
 }
 
 // emitPanicHelper emits a helper to print an error message to stderr and exit
+// emitStrEqHelper emits a helper that compares two null-terminated strings.
+// x0 = pointer to string A, x1 = pointer to string B
+// Returns x0 = 1 if equal, 0 if not.
+func (g *generator) emitStrEqHelper() {
+	g.emit("// String equality helper")
+	g.emit("_sl_str_eq:")
+	g.emit("    mov x10, x0")               // copy A ptr
+	g.emit("    mov x11, x1")               // copy B ptr
+	g.emit("_sl_str_eq_loop:")
+	g.emit("    ldrb w12, [x10]")            // load byte from A
+	g.emit("    ldrb w14, [x11]")            // load byte from B
+	g.emit("    cmp x12, x14")              // compare as 64-bit (upper bits are zero)
+	g.emit("    b.ne _sl_str_eq_false")      // bytes differ
+	g.emit("    cbz x12, _sl_str_eq_true")   // both null terminator
+	g.emit("    add x10, x10, #1")
+	g.emit("    add x11, x11, #1")
+	g.emit("    b _sl_str_eq_loop")
+	g.emit("_sl_str_eq_true:")
+	g.emit("    mov x0, #1")
+	g.emit("    ret")
+	g.emit("_sl_str_eq_false:")
+	g.emit("    mov x0, #0")
+	g.emit("    ret")
+	g.emit("")
+}
+
 func (g *generator) emitPanicHelper() {
 	// _sl_panic: x0 = error message ptr, x1 = error msg len, x2 = func name ptr, x3 = func name len
 	g.emit("// Panic helper - prints error to stderr and exits with code 1")
@@ -812,8 +847,8 @@ func (g *generator) emitPanicHelper() {
 	g.emit("    svc #0")
 
 	// Print "at "
-	g.emit("    adrp x1, _panic_at_prefix@PAGE")
-	g.emit("    add x1, x1, _panic_at_prefix@PAGEOFF")
+	g.emit("    adrp x1, _sl_panic_at_prefix@PAGE")
+	g.emit("    add x1, x1, _sl_panic_at_prefix@PAGEOFF")
 	g.emit("    mov x0, #2")         // stderr
 	g.emit("    mov x2, #3")         // length of "at "
 	g.emit("    mov x16, #4")
@@ -827,8 +862,8 @@ func (g *generator) emitPanicHelper() {
 	g.emit("    svc #0")
 
 	// Print "()\n"
-	g.emit("    adrp x1, _panic_at_suffix@PAGE")
-	g.emit("    add x1, x1, _panic_at_suffix@PAGEOFF")
+	g.emit("    adrp x1, _sl_panic_at_suffix@PAGE")
+	g.emit("    add x1, x1, _sl_panic_at_suffix@PAGEOFF")
 	g.emit("    mov x0, #2")         // stderr
 	g.emit("    mov x2, #3")         // length of "()\n"
 	g.emit("    mov x16, #4")
@@ -874,17 +909,23 @@ func (g *generator) emitPrologue() {
 		g.emit("    sub sp, sp, #%d", g.layout.Size)
 	}
 
-	// Store parameters to stack
-	for i, param := range g.fn.Params {
+	// Store parameters to stack. Nullable value-type params use two registers (tag + value).
+	regIdx := 0
+	for _, param := range g.fn.Params {
 		offset := g.stackOffset(param)
-		if i < 8 {
-			// First 8 params are in x0-x7
-			g.emit("    str x%d, [x29, #%d]", i, offset)
+		if nullType, ok := param.Type.(*ir.NullableType); ok && !nullType.IsReferenceNullable() {
+			// Nullable value type: tag in regIdx, value in regIdx+1
+			g.emit("    str x%d, [x29, #%d]", regIdx, offset)   // tag
+			g.emit("    str x%d, [x29, #%d]", regIdx+1, offset+8) // value
+			regIdx += 2
+		} else if regIdx < 8 {
+			g.emit("    str x%d, [x29, #%d]", regIdx, offset)
+			regIdx++
 		} else {
-			// Additional params are on the stack (caller's frame)
-			callerOffset := 16 + (i-8)*8 // After saved x29, x30
+			callerOffset := 16 + (regIdx-8)*8
 			g.emit("    ldr x9, [x29, #%d]", callerOffset)
 			g.storeToStack("x9", offset)
+			regIdx++
 		}
 	}
 }
@@ -947,7 +988,11 @@ func ComputeStackLayout(fn *ir.Function) *StackLayout {
 
 	// Allocate space for parameters
 	for _, param := range fn.Params {
-		offset -= 8
+		size := 8
+		if nullType, ok := param.Type.(*ir.NullableType); ok && !nullType.IsReferenceNullable() {
+			size = 16 // tag + value
+		}
+		offset -= size
 		offsets[param] = offset
 	}
 
@@ -985,7 +1030,7 @@ func (g *generator) stackOffset(v *ir.Value) int {
 func needsStackSlot(v *ir.Value) bool {
 	// Most values need stack slots in this simple register allocator
 	switch v.Op {
-	case ir.OpStore, ir.OpFree, ir.OpReturn, ir.OpExit:
+	case ir.OpStore, ir.OpStoreGlobal, ir.OpFree, ir.OpReturn, ir.OpExit:
 		return false // These don't produce values
 	case ir.OpConst:
 		return false // Constants are materialized inline, no stack needed
@@ -1056,6 +1101,8 @@ func (g *generator) generateValue(v *ir.Value) error {
 		return g.genCmp(v, "gt")
 	case ir.OpGe:
 		return g.genCmp(v, "ge")
+	case ir.OpStrEq:
+		return g.genStrEq(v)
 	case ir.OpAnd:
 		return g.genBinaryOp(v, "and")
 	case ir.OpOr:
@@ -1066,6 +1113,10 @@ func (g *generator) generateValue(v *ir.Value) error {
 		return g.genAlloc(v)
 	case ir.OpLoad:
 		return g.genLoad(v)
+	case ir.OpLoadGlobal:
+		return g.genLoadGlobal(v)
+	case ir.OpStoreGlobal:
+		return g.genStoreGlobal(v)
 	case ir.OpStore:
 		return g.genStore(v)
 	case ir.OpFree:
@@ -1149,8 +1200,8 @@ func (g *generator) genConst(v *ir.Value) error {
 		if !hasSlot {
 			return nil // Will be materialized inline in loadValue
 		}
-		g.emit("    adrp x9, _str%d@PAGE", strIdx)
-		g.emit("    add x9, x9, _str%d@PAGEOFF", strIdx)
+		g.emit("    adrp x9, _sl_str%d@PAGE", strIdx)
+		g.emit("    add x9, x9, _sl_str%d@PAGEOFF", strIdx)
 		g.storeToStack("x9", offset)
 
 	default:
@@ -1190,16 +1241,16 @@ func (g *generator) genAdd(v *ir.Value) error {
 	if isSigned {
 		// Signed addition - check overflow flag
 		g.emit("    adds x9, x10, x11")
-		g.emit("    b.vc _add_ok_%d", label)
+		g.emit("    b.vc _sl_add_ok_%d", label)
 		g.emitPanic(PanicOverflowAdd)
 	} else {
 		// Unsigned addition - check carry flag
 		g.emit("    adds x9, x10, x11")
-		g.emit("    b.cc _add_ok_%d", label)
+		g.emit("    b.cc _sl_add_ok_%d", label)
 		g.emitPanic(PanicUnsignedOverAdd)
 	}
 
-	g.emit("_add_ok_%d:", label)
+	g.emit("_sl_add_ok_%d:", label)
 
 	offset := g.stackOffset(v)
 	g.storeToStack("x9", offset)
@@ -1222,16 +1273,16 @@ func (g *generator) genSub(v *ir.Value) error {
 	if isSigned {
 		// Signed subtraction - check overflow flag
 		g.emit("    subs x9, x10, x11")
-		g.emit("    b.vc _sub_ok_%d", label)
+		g.emit("    b.vc _sl_sub_ok_%d", label)
 		g.emitPanic(PanicOverflowSub)
 	} else {
 		// Unsigned subtraction - check carry flag (carry clear = borrow)
 		g.emit("    subs x9, x10, x11")
-		g.emit("    b.cs _sub_ok_%d", label) // cs = no borrow, cc = borrow
+		g.emit("    b.cs _sl_sub_ok_%d", label) // cs = no borrow, cc = borrow
 		g.emitPanic(PanicUnsignedUnderSub)
 	}
 
-	g.emit("_sub_ok_%d:", label)
+	g.emit("_sl_sub_ok_%d:", label)
 
 	offset := g.stackOffset(v)
 	g.storeToStack("x9", offset)
@@ -1260,16 +1311,16 @@ func (g *generator) genMul(v *ir.Value) error {
 		// Check: high should be sign extension of low (all 0s or all 1s)
 		g.emit("    asr x13, x9, #63") // Arithmetic shift right by 63 = sign extension
 		g.emit("    cmp x12, x13")
-		g.emit("    b.eq _mul_ok_%d", label)
+		g.emit("    b.eq _sl_mul_ok_%d", label)
 		g.emitPanic(PanicOverflowMul)
 	} else {
 		// For unsigned multiplication, high 64 bits should be 0
 		g.emit("    umulh x12, x10, x11")
-		g.emit("    cbz x12, _mul_ok_%d", label)
+		g.emit("    cbz x12, _sl_mul_ok_%d", label)
 		g.emitPanic(PanicUnsignedOverMul)
 	}
 
-	g.emit("_mul_ok_%d:", label)
+	g.emit("_sl_mul_ok_%d:", label)
 
 	offset := g.stackOffset(v)
 	g.storeToStack("x9", offset)
@@ -1283,9 +1334,9 @@ func (g *generator) genDiv(v *ir.Value) error {
 
 	// Check for division by zero
 	label := g.labels.NextLabel()
-	g.emit("    cbnz x11, _div_ok_%d", label)
+	g.emit("    cbnz x11, _sl_div_ok_%d", label)
 	g.emitPanic(PanicDivZero)
-	g.emit("_div_ok_%d:", label)
+	g.emit("_sl_div_ok_%d:", label)
 
 	// Signed division
 	if intType, ok := v.Type.(*ir.IntType); ok && intType.Signed {
@@ -1306,9 +1357,9 @@ func (g *generator) genMod(v *ir.Value) error {
 
 	// Check for modulo by zero
 	label := g.labels.NextLabel()
-	g.emit("    cbnz x11, _mod_ok_%d", label)
+	g.emit("    cbnz x11, _sl_mod_ok_%d", label)
 	g.emitPanic(PanicModZero)
-	g.emit("_mod_ok_%d:", label)
+	g.emit("_sl_mod_ok_%d:", label)
 
 	// Modulo: a % b = a - (a / b) * b
 	if intType, ok := v.Type.(*ir.IntType); ok && intType.Signed {
@@ -1347,6 +1398,17 @@ func (g *generator) genCmp(v *ir.Value, cond string) error {
 	return nil
 }
 
+func (g *generator) genStrEq(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x0")
+	g.loadValue(v.Args[1], "x1")
+	g.emit("    bl _sl_str_eq")
+
+	offset := g.stackOffset(v)
+	g.storeToStack("x0", offset)
+
+	return nil
+}
+
 func (g *generator) genNot(v *ir.Value) error {
 	g.loadValue(v.Args[0], "x10")
 	g.emit("    cmp x10, #0")
@@ -1376,6 +1438,16 @@ func (g *generator) genLoad(v *ir.Value) error {
 	// Load pointer
 	g.loadValue(v.Args[0], "x10")
 
+	// Check if loading a nullable value type (16 bytes: tag + value)
+	if nullType, ok := v.Type.(*ir.NullableType); ok && !nullType.IsReferenceNullable() {
+		offset := g.stackOffset(v)
+		g.emit("    ldr x9, [x10]")     // tag
+		g.storeToStack("x9", offset)
+		g.emit("    ldr x9, [x10, #8]") // value
+		g.storeToStack("x9", offset+8)
+		return nil
+	}
+
 	// Use appropriate load instruction based on type size
 	if v.Type != nil {
 		switch v.Type.Size() {
@@ -1398,13 +1470,48 @@ func (g *generator) genLoad(v *ir.Value) error {
 	return nil
 }
 
+func (g *generator) genLoadGlobal(v *ir.Value) error {
+	label := "_sl_global_" + v.AuxString
+	offset := g.stackOffset(v)
+	g.emit("    adrp x9, %s@PAGE", label)
+	g.emit("    add x9, x9, %s@PAGEOFF", label)
+	g.emit("    ldr x9, [x9]")
+	g.storeToStack("x9", offset)
+	return nil
+}
+
+func (g *generator) genStoreGlobal(v *ir.Value) error {
+	label := "_sl_global_" + v.AuxString
+	g.loadValue(v.Args[0], "x9") // value to store
+	g.emit("    adrp x10, %s@PAGE", label)
+	g.emit("    add x10, x10, %s@PAGEOFF", label)
+	g.emit("    str x9, [x10]")
+	return nil
+}
+
 func (g *generator) genStore(v *ir.Value) error {
-	// Load pointer and value
+	// Load pointer
 	g.loadValue(v.Args[0], "x10") // pointer
-	g.loadValue(v.Args[1], "x9")  // value
+
+	// Check if storing a nullable value type (needs 16 bytes: tag + value)
+	valueType := v.Args[1].Type
+	if nullType, ok := valueType.(*ir.NullableType); ok && !nullType.IsReferenceNullable() {
+		if argOffset, ok := g.layout.Offsets[v.Args[1]]; ok {
+			g.loadFromStack("x9", argOffset)   // tag
+			g.emit("    str x9, [x10]")
+			g.loadFromStack("x9", argOffset+8) // value
+			g.emit("    str x9, [x10, #8]")
+		} else {
+			g.loadValue(v.Args[1], "x9")
+			g.emit("    str x9, [x10]")
+			g.emit("    str xzr, [x10, #8]")
+		}
+		return nil
+	}
+
+	g.loadValue(v.Args[1], "x9") // value
 
 	// Use appropriate store instruction based on type size
-	valueType := v.Args[1].Type
 	if valueType != nil {
 		switch valueType.Size() {
 		case 1:
@@ -1511,7 +1618,7 @@ func (g *generator) emitDeepCopyFields(fields []ir.StructField, destReg, srcReg 
 
 			// Check if null - if so, skip copy (already copied null in shallow copy)
 			label := g.labels.NextLabel()
-			g.emit("    cbz x9, _copy_field_done_%d", label)
+			g.emit("    cbz x9, _sl_copy_field_done_%d", label)
 
 			// Save field pointer value (will be clobbered by heap_alloc)
 			g.emit("    str x9, [sp, #-16]!")
@@ -1546,7 +1653,7 @@ func (g *generator) emitDeepCopyFields(fields []ir.StructField, destReg, srcReg 
 				g.emit("    ldp %s, %s, [sp], #16", destReg, srcReg)
 			}
 
-			g.emit("_copy_field_done_%d:", label)
+			g.emit("_sl_copy_field_done_%d:", label)
 		}
 	}
 }
@@ -1588,18 +1695,18 @@ func (g *generator) genIndexPtr(v *ir.Value) error {
 
 		// Check index < 0
 		g.emit("    cmp x11, #0")
-		g.emit("    blt _bounds_fail_%d", label)
+		g.emit("    blt _sl_bounds_fail_%d", label)
 
 		// Check index >= len
 		g.loadImmediate(arrayLen, "x12")
 		g.emit("    cmp x11, x12")
-		g.emit("    blt _bounds_ok_%d", label)
+		g.emit("    blt _sl_bounds_ok_%d", label)
 
 		// Bounds check failed
-		g.emit("_bounds_fail_%d:", label)
+		g.emit("_sl_bounds_fail_%d:", label)
 		g.emitPanic(PanicBounds)
 
-		g.emit("_bounds_ok_%d:", label)
+		g.emit("_sl_bounds_ok_%d:", label)
 	}
 
 	// Calculate element size from type
@@ -1750,14 +1857,24 @@ func (g *generator) genCall(v *ir.Value) error {
 	}
 
 	// Regular function call
-	// Load arguments into x0-x7
-	for i, arg := range v.Args {
-		if i < 8 {
-			g.loadValue(arg, fmt.Sprintf("x%d", i))
+	// Load arguments into registers. Nullable value-type args use two registers (tag + value).
+	regIdx := 0
+	for _, arg := range v.Args {
+		if nullType, ok := arg.Type.(*ir.NullableType); ok && !nullType.IsReferenceNullable() {
+			// Nullable value type: load tag into regIdx, value into regIdx+1
+			if argOffset, ok := g.layout.Offsets[arg]; ok {
+				g.loadFromStack(fmt.Sprintf("x%d", regIdx), argOffset)   // tag
+				g.loadFromStack(fmt.Sprintf("x%d", regIdx+1), argOffset+8) // value
+			} else {
+				g.emit("    mov x%d, #0", regIdx)
+				g.emit("    mov x%d, #0", regIdx+1)
+			}
+			regIdx += 2
 		} else {
-			// Push extra args to stack
-			g.loadValue(arg, "x9")
-			g.emit("    str x9, [sp, #%d]", (i-8)*8)
+			if regIdx < 8 {
+				g.loadValue(arg, fmt.Sprintf("x%d", regIdx))
+			}
+			regIdx++
 		}
 	}
 
@@ -1878,8 +1995,8 @@ func (g *generator) genAssert(v *ir.Value) error {
 	g.loadValue(v.Args[1], "x10")
 
 	// Print "assertion failed: " prefix to stderr
-	g.emit("    adrp x1, _assert_prefix@PAGE")
-	g.emit("    add x1, x1, _assert_prefix@PAGEOFF")
+	g.emit("    adrp x1, _sl_assert_prefix@PAGE")
+	g.emit("    add x1, x1, _sl_assert_prefix@PAGEOFF")
 	g.emit("    mov x0, #2")  // stderr
 	g.emit("    mov x2, #18") // length of "assertion failed: "
 	g.emit("    mov x16, #4") // write syscall
@@ -1903,8 +2020,8 @@ func (g *generator) genAssert(v *ir.Value) error {
 	g.emit("    svc #0")
 
 	// Print newline
-	g.emit("    adrp x1, _newline@PAGE")
-	g.emit("    add x1, x1, _newline@PAGEOFF")
+	g.emit("    adrp x1, _sl_newline@PAGE")
+	g.emit("    add x1, x1, _sl_newline@PAGEOFF")
 	g.emit("    mov x0, #2")  // stderr
 	g.emit("    mov x2, #1")  // length of newline
 	g.emit("    mov x16, #4") // write syscall
@@ -2055,8 +2172,8 @@ func (g *generator) loadValue(v *ir.Value, reg string) {
 			case *ir.StringType:
 				// String index stored in AuxInt
 				strIdx := v.AuxInt
-				g.emit("    adrp %s, _str%d@PAGE", reg, strIdx)
-				g.emit("    add %s, %s, _str%d@PAGEOFF", reg, reg, strIdx)
+				g.emit("    adrp %s, _sl_str%d@PAGE", reg, strIdx)
+				g.emit("    add %s, %s, _sl_str%d@PAGEOFF", reg, reg, strIdx)
 			default:
 				g.emit("    mov %s, #0", reg) // Fallback
 			}
@@ -2098,7 +2215,7 @@ func (g *generator) emit(format string, args ...any) {
 }
 
 // emitPanicCall emits a call to the panic helper with error message and function name.
-// panicLabel is the data section label for the error message (e.g., "_panic_div_zero")
+// panicLabel is the data section label for the error message (e.g., "_sl_panic_div_zero")
 // msgLen is the length of the error message including newline
 // emitPanic emits a call to the panic handler with the given panic message.
 // The message length is auto-computed from the panicMessage.
@@ -2106,8 +2223,8 @@ func (g *generator) emitPanic(p panicMessage) {
 	g.emit("    adrp x0, %s@PAGE", p.Label)
 	g.emit("    add x0, x0, %s@PAGEOFF", p.Label)
 	g.emit("    mov x1, #%d", p.Len())
-	g.emit("    adrp x2, _fn_name_%s@PAGE", g.fn.Name)
-	g.emit("    add x2, x2, _fn_name_%s@PAGEOFF", g.fn.Name)
+	g.emit("    adrp x2, _sl_fn_name_%s@PAGE", g.fn.Name)
+	g.emit("    add x2, x2, _sl_fn_name_%s@PAGEOFF", g.fn.Name)
 	g.emit("    mov x3, #%d", len(g.fn.Name))
 	g.emit("    bl _sl_panic")
 }

@@ -1401,7 +1401,7 @@ func (g *Generator) generateFieldAccess(fa *semantic.TypedFieldAccessExpr) (*Val
 	}
 }
 
-// generateIndex generates IR for array index access.
+// generateIndex generates IR for array or string index access.
 func (g *Generator) generateIndex(ie *semantic.TypedIndexExpr) (*Value, error) {
 	// Generate array and index
 	arr, err := g.generateExpr(ie.Array)
@@ -1412,6 +1412,14 @@ func (g *Generator) generateIndex(ie *semantic.TypedIndexExpr) (*Value, error) {
 	idx, err := g.generateExpr(ie.Index)
 	if err != nil {
 		return nil, err
+	}
+
+	// String byte index: emit OpStringIndex (handles bounds check + byte load in backend)
+	if _, isString := ie.Array.GetType().(semantic.StringType); isString {
+		v := g.block.NewValue(OpStringIndex, TypeU8)
+		v.AddArg(arr)
+		v.AddArg(idx)
+		return v, nil
 	}
 
 	resultType := g.convertType(ie.Type)
@@ -1430,7 +1438,19 @@ func (g *Generator) generateIndex(ie *semantic.TypedIndexExpr) (*Value, error) {
 
 // generateLen generates IR for len() builtin.
 func (g *Generator) generateLen(le *semantic.TypedLenExpr) (*Value, error) {
-	// Array size is known at compile time
+	// String: runtime length load from the header
+	if le.Array != nil {
+		if _, isString := le.Array.GetType().(semantic.StringType); isString {
+			strVal, err := g.generateExpr(le.Array)
+			if err != nil {
+				return nil, err
+			}
+			v := g.block.NewValue(OpStringLen, TypeS64)
+			v.AddArg(strVal)
+			return v, nil
+		}
+	}
+	// Array: size known at compile time
 	v := g.block.NewValue(OpConst, TypeS64)
 	v.AuxInt = int64(le.ArraySize)
 	return v, nil

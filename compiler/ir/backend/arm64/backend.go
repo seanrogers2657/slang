@@ -213,11 +213,15 @@ func (g *generator) emitDataSection() {
 	g.emit("_sl_newline:")
 	g.emitRaw(`    .asciz "\n"`)
 
-	// Boolean strings
+	// Boolean strings (length-prefixed header: .quad len; .ascii bytes)
+	g.emit("    .align 3")
 	g.emit("_sl_true_str:")
-	g.emitRaw(`    .asciz "true"`)
+	g.emit("    .quad 4")
+	g.emitRaw(`    .ascii "true"`)
+	g.emit("    .align 3")
 	g.emit("_sl_false_str:")
-	g.emitRaw(`    .asciz "false"`)
+	g.emit("    .quad 5")
+	g.emitRaw(`    .ascii "false"`)
 
 	// Assertion prefix
 	g.emit("_sl_assert_prefix:")
@@ -241,10 +245,12 @@ func (g *generator) emitDataSection() {
 		g.emitRaw(`    .asciz "` + fn.Name + `"`)
 	}
 
-	// Emit string constants
+	// Emit string constants (length-prefixed header: .quad len; .ascii bytes)
 	for i, s := range g.strings {
+		g.emit("    .align 3")
 		g.emit("_sl_str%d:", i)
-		g.emitRaw(`    .asciz "` + escapeString(s) + `"`)
+		g.emit("    .quad %d", len(s))
+		g.emitRaw(`    .ascii "` + escapeString(s) + `"`)
 	}
 
 	// Heap is dynamically allocated via mmap at runtime
@@ -745,24 +751,13 @@ func (g *generator) emitPrintHelpers() {
 	g.emit("")
 
 	// Print string helper
-	g.emit("// Print string (x0 = pointer)")
+	g.emit("// Print string (x0 = pointer to header {.quad len; bytes...})")
 	g.emit("_sl_print_str:")
 	g.emit("    stp x29, x30, [sp, #-16]!")
 	g.emit("    mov x29, sp")
-	g.emit("    mov x10, x0")             // String pointer
-
-	// Calculate string length
-	g.emit("    mov x11, x0")
-	g.emit("_sl_strlen_loop:")
-	g.emit("    ldrb w12, [x11]")
-	g.emit("    cbz w12, _sl_strlen_done")
-	g.emit("    add x11, x11, #1")
-	g.emit("    b _sl_strlen_loop")
-	g.emit("_sl_strlen_done:")
-	g.emit("    sub x2, x11, x10")        // Length
-
+	g.emit("    ldr x2, [x0]")            // length from header
+	g.emit("    add x1, x0, #8")          // buffer = header + 8
 	g.emit("    mov x0, #1")              // stdout
-	g.emit("    mov x1, x10")             // buffer
 	g.emit("    mov x16, #4")             // write syscall
 	g.emit("    svc #0")
 
@@ -802,23 +797,29 @@ func (g *generator) emitPrintHelpers() {
 }
 
 // emitPanicHelper emits a helper to print an error message to stderr and exit
-// emitStrEqHelper emits a helper that compares two null-terminated strings.
-// x0 = pointer to string A, x1 = pointer to string B
+// emitStrEqHelper emits a helper that compares two length-prefixed strings.
+// x0 = pointer to string A header, x1 = pointer to string B header.
+// Each header is {.quad len; bytes...}.
 // Returns x0 = 1 if equal, 0 if not.
 func (g *generator) emitStrEqHelper() {
 	g.emit("// String equality helper")
 	g.emit("_sl_str_eq:")
-	g.emit("    mov x10, x0")               // copy A ptr
-	g.emit("    mov x11, x1")               // copy B ptr
+	g.emit("    ldr x10, [x0]")             // len A
+	g.emit("    ldr x11, [x1]")             // len B
+	g.emit("    cmp x10, x11")
+	g.emit("    b.ne _sl_str_eq_false")     // different lengths => not equal
+	g.emit("    cbz x10, _sl_str_eq_true")  // both empty => equal
+	g.emit("    add x12, x0, #8")           // A bytes
+	g.emit("    add x13, x1, #8")           // B bytes
 	g.emit("_sl_str_eq_loop:")
-	g.emit("    ldrb w12, [x10]")            // load byte from A
-	g.emit("    ldrb w14, [x11]")            // load byte from B
-	g.emit("    cmp x12, x14")              // compare as 64-bit (upper bits are zero)
-	g.emit("    b.ne _sl_str_eq_false")      // bytes differ
-	g.emit("    cbz x12, _sl_str_eq_true")   // both null terminator
-	g.emit("    add x10, x10, #1")
-	g.emit("    add x11, x11, #1")
-	g.emit("    b _sl_str_eq_loop")
+	g.emit("    ldrb w14, [x12]")
+	g.emit("    ldrb w15, [x13]")
+	g.emit("    cmp w14, w15")
+	g.emit("    b.ne _sl_str_eq_false")
+	g.emit("    add x12, x12, #1")
+	g.emit("    add x13, x13, #1")
+	g.emit("    subs x10, x10, #1")
+	g.emit("    b.ne _sl_str_eq_loop")
 	g.emit("_sl_str_eq_true:")
 	g.emit("    mov x0, #1")
 	g.emit("    ret")
@@ -1129,6 +1130,10 @@ func (g *generator) generateValue(v *ir.Value) error {
 		return g.genIndexPtr(v)
 	case ir.OpArrayLen:
 		return g.genArrayLen(v)
+	case ir.OpStringLen:
+		return g.genStringLen(v)
+	case ir.OpStringIndex:
+		return g.genStringIndex(v)
 	case ir.OpIsNull:
 		return g.genIsNull(v)
 	case ir.OpUnwrap:
@@ -1758,6 +1763,45 @@ func (g *generator) genArrayLen(v *ir.Value) error {
 	return nil
 }
 
+// genStringLen loads the length field from a string header: ldr x9, [str_ptr, #0]
+func (g *generator) genStringLen(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x10")
+	g.emit("    ldr x9, [x10]") // length from header
+	offset := g.stackOffset(v)
+	g.storeToStack("x9", offset)
+	return nil
+}
+
+// genStringIndex loads a byte from a string at the given index, with runtime bounds check.
+// Header layout: [ptr+0]=length (8 bytes), [ptr+8..]=bytes.
+func (g *generator) genStringIndex(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x10") // string ptr
+	g.loadValue(v.Args[1], "x11") // index (s64)
+
+	label := g.labels.NextLabel()
+
+	// Load length from header into x12 for bounds check
+	g.emit("    ldr x12, [x10]")
+	// Check index < 0 (signed)
+	g.emit("    cmp x11, #0")
+	g.emit("    blt _sl_bounds_fail_%d", label)
+	// Check index >= length (unsigned OK since we've rejected negatives)
+	g.emit("    cmp x11, x12")
+	g.emit("    blt _sl_bounds_ok_%d", label)
+
+	g.emit("_sl_bounds_fail_%d:", label)
+	g.emitPanic(PanicBounds)
+
+	g.emit("_sl_bounds_ok_%d:", label)
+	// Byte address = ptr + 8 + index (slasm ldrb only supports [reg, #imm])
+	g.emit("    add x9, x10, x11")
+	g.emit("    ldrb w9, [x9, #8]")
+
+	offset := g.stackOffset(v)
+	g.storeToStack("x9", offset)
+	return nil
+}
+
 func (g *generator) genIsNull(v *ir.Value) error {
 	g.loadValue(v.Args[0], "x10")
 	g.emit("    cmp x10, #0")
@@ -1981,8 +2025,6 @@ func (g *generator) genAssert(v *ir.Value) error {
 	// Generate unique labels for this assertion
 	labelNum := g.labels.NextLabel()
 	passLabel := fmt.Sprintf("_assert_pass_%d", labelNum)
-	strlenLabel := fmt.Sprintf("_assert_strlen_%d", labelNum)
-	strlenDoneLabel := fmt.Sprintf("_assert_strlen_done_%d", labelNum)
 
 	// Load condition (first arg)
 	g.loadValue(v.Args[0], "x10")
@@ -2002,20 +2044,12 @@ func (g *generator) genAssert(v *ir.Value) error {
 	g.emit("    mov x16, #4") // write syscall
 	g.emit("    svc #0")
 
-	// Calculate message length and print it
-	g.emit("    mov x19, x10") // Save string pointer
-	g.emit("    mov x11, x10")
-	g.emit("%s:", strlenLabel)
-	g.emit("    ldrb w12, [x11]")
-	g.emit("    cbz w12, %s", strlenDoneLabel)
-	g.emit("    add x11, x11, #1")
-	g.emit("    b %s", strlenLabel)
-	g.emit("%s:", strlenDoneLabel)
-	g.emit("    sub x2, x11, x19") // length = end - start
+	// Load length and bytes pointer from string header
+	g.emit("    ldr x2, [x10]") // length from header
+	g.emit("    add x1, x10, #8") // bytes = header + 8
 
 	// Write message to stderr
 	g.emit("    mov x0, #2")   // stderr
-	g.emit("    mov x1, x19")  // message pointer
 	g.emit("    mov x16, #4")  // write syscall
 	g.emit("    svc #0")
 

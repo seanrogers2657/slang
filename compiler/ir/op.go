@@ -35,7 +35,9 @@ const (
 	OpNot // logical not (unary)
 
 	// String operations
-	OpStrEq // string equality (Args[0], Args[1] -> bool)
+	OpStrEq       // string equality (Args[0], Args[1] -> bool)
+	OpStringLen   // string length (Args[0] = string) -> s64
+	OpStringIndex // string byte index (Args[0] = string, Args[1] = index) -> u8
 
 	// Memory operations
 	OpAlloc    // allocate memory (AuxInt = size), returns pointer
@@ -116,6 +118,10 @@ func (op Op) String() string {
 		return "Not"
 	case OpStrEq:
 		return "StrEq"
+	case OpStringLen:
+		return "StringLen"
+	case OpStringIndex:
+		return "StringIndex"
 	case OpAlloc:
 		return "Alloc"
 	case OpFree:

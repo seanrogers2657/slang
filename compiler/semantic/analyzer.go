@@ -2024,6 +2024,26 @@ func (a *Analyzer) analyzeIndexExpr(expr *ast.IndexExpr) TypedExpression {
 		arrayType = mutRef.ElementType
 	}
 
+	// String indexing: s[i] returns a u8 byte, bounds checked at runtime.
+	if _, isString := arrayType.(StringType); isString {
+		if !IsIntegerType(indexType) {
+			if _, isErr := indexType.(ErrorType); !isErr {
+				a.addError(
+					fmt.Sprintf("string index must be integer, got '%s'", indexType.String()),
+					expr.Index.Pos(), expr.Index.End(),
+				)
+			}
+		}
+		return &TypedIndexExpr{
+			Type:         TypeU8,
+			Array:        typedArray,
+			LeftBracket:  expr.LeftBracket,
+			Index:        typedIndex,
+			RightBracket: expr.RightBracket,
+			ArraySize:    ArraySizeUnknown,
+		}
+	}
+
 	// Check that the expression is an array type
 	arrType, isArray := arrayType.(ArrayType)
 	if !isArray {
@@ -2700,7 +2720,7 @@ func (a *Analyzer) analyzeBuiltinCall(call *ast.CallExpr, builtin BuiltinFunc) T
 	}
 }
 
-// analyzeLenBuiltin analyzes a len() call on an array
+// analyzeLenBuiltin analyzes a len() call on an array or string
 func (a *Analyzer) analyzeLenBuiltin(call *ast.CallExpr) TypedExpression {
 	// Check argument count
 	if len(call.Arguments) != 1 {
@@ -2723,15 +2743,18 @@ func (a *Analyzer) analyzeLenBuiltin(call *ast.CallExpr) TypedExpression {
 	typedArg := a.analyzeExpression(call.Arguments[0])
 	argType := typedArg.GetType()
 
-	// Check that argument is an array type
-	arrayType, isArray := argType.(ArrayType)
-	if !isArray {
-		if _, isErr := argType.(ErrorType); !isErr {
-			a.addError(
-				fmt.Sprintf("len() argument must be an array, got '%s'", argType.String()),
-				call.Arguments[0].Pos(), call.Arguments[0].End(),
-			)
+	// Accept array types (compile-time size) or string types (runtime length from header)
+	if arrayType, isArray := argType.(ArrayType); isArray {
+		return &TypedLenExpr{
+			Type:       TypeS64,
+			Array:      typedArg,
+			ArraySize:  arrayType.Size,
+			NamePos:    call.NamePos,
+			LeftParen:  call.LeftParen,
+			RightParen: call.RightParen,
 		}
+	}
+	if _, isString := argType.(StringType); isString {
 		return &TypedLenExpr{
 			Type:       TypeS64,
 			Array:      typedArg,
@@ -2742,10 +2765,16 @@ func (a *Analyzer) analyzeLenBuiltin(call *ast.CallExpr) TypedExpression {
 		}
 	}
 
+	if _, isErr := argType.(ErrorType); !isErr {
+		a.addError(
+			fmt.Sprintf("len() argument must be an array or string, got '%s'", argType.String()),
+			call.Arguments[0].Pos(), call.Arguments[0].End(),
+		)
+	}
 	return &TypedLenExpr{
 		Type:       TypeS64,
 		Array:      typedArg,
-		ArraySize:  arrayType.Size,
+		ArraySize:  ArraySizeUnknown,
 		NamePos:    call.NamePos,
 		LeftParen:  call.LeftParen,
 		RightParen: call.RightParen,

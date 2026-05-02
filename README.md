@@ -1,18 +1,17 @@
 # Slang
-A compiled programming language targeting ARM64 macOS (and others soon).
-Slang compiles to native ARM64 assembly and produces standalone executables with no 
-runtime dependencies. It features a lightweight ownership model, rich type system, 
+A compiled programming language targeting ARM64 macOS, with more platforms coming soon.
+Slang compiles to native ARM64 assembly and produces standalone executables with no
+runtime dependencies. It features a lightweight ownership model, a rich type system,
 and helpful compiler errors.
 
-S-lang, stands for simple language, super language, stupid language or shit language, depending
-on what mood you're in when you're using it and if it does what you want. My goal was to 
-make a language that would fit somewhere in the realm between these lower level 
-languages like c, c++, rust and higher level languages like kotlin and java. Its goal is
-to ergonomic to use, capture those higher level concepts, while still being performant if 
-you need to worry about the bits. 
+S-lang stands for simple language, super language, stupid language, or shit language,
+depending on your mood and whether it's doing what you want. My goal was to build a
+language that sits between lower-level languages like C, C++, and Rust and higher-level
+languages like Kotlin and Java — ergonomic to use and capable of expressing high-level
+concepts, while still being performant when you need to worry about the bits.
 
-> **Note:** Slang is in early alpha. The language, APIs, and tooling are under 
-active development and may change without notice. Not recommended for production use.
+> **Note:** Slang is in early alpha. The language, APIs, and tooling are under
+> active development and may change without notice. Not recommended for production use.
 
 ## Hello World
 [`_programs/hello/main.sl`](_programs/hello/main.sl)
@@ -66,8 +65,8 @@ main = () {
 }
 ```
 
-Explore the _examples/slang/ folder for more information about how the language works. 
-There are also some more advanced examples in _programs/
+Explore the `_examples/slang/` folder to learn more about how the language works.
+You'll find additional advanced examples in `_programs/`.
 
 ## Getting Started
 

@@ -227,6 +227,11 @@ func (g *generator) emitDataSection() {
 	g.emit("_sl_assert_prefix:")
 	g.emitRaw(`    .asciz "assertion failed: "`)
 
+	// Heap-balance assertion prefix (no trailing newline; the count and a
+	// newline are written separately).
+	g.emit("_sl_heap_leak_prefix:")
+	g.emitRaw(`    .ascii "heap leak: "`)
+
 	// Runtime error messages (from registry)
 	for _, p := range allPanicMessages {
 		g.emit("%s:", p.Label)
@@ -272,6 +277,7 @@ func (g *generator) emitStartEntry() {
 	g.emit("    // Initialize heap with first arena via mmap")
 	g.emit("    bl _sl_heap_init")
 	g.emit("    bl _main")
+	g.emit("    bl _sl_heap_assert_balanced")
 	// Default exit with code 0 if main returns
 	g.emit("    mov x0, #0")
 	g.emit("    mov x16, #1")
@@ -687,6 +693,80 @@ func (g *generator) emitHeapAllocator() {
 	g.emit("_sl_clean_freelist_done:")
 	g.emit("    ret")
 	g.emit("")
+
+	// Heap balance assertion: walks the arena list, sums alloc_count, and
+	// if any allocations remain live, writes "heap leak: N\n" to stderr and
+	// exits with code 134. Inserted into _start and into genExit so the
+	// language guarantee — owned heap is released by scope exit — is
+	// enforced at runtime for every program.
+	g.emit("// Sum alloc_count across all arenas. Returns sum in x0.")
+	g.emit("_sl_heap_balance:")
+	g.emit("    mov x0, #0")
+	g.emit("    adrp x9, _sl_arena_head@PAGE")
+	g.emit("    add x9, x9, _sl_arena_head@PAGEOFF")
+	g.emit("    ldr x10, [x9]")
+	g.emit("_sl_heap_balance_loop:")
+	g.emit("    cbz x10, _sl_heap_balance_done")
+	g.emit("    ldr x11, [x10, #8]")
+	g.emit("    add x0, x0, x11")
+	g.emit("    ldr x10, [x10]")
+	g.emit("    b _sl_heap_balance_loop")
+	g.emit("_sl_heap_balance_done:")
+	g.emit("    ret")
+	g.emit("")
+
+	g.emit("// Assert heap is balanced. Exits 134 with stderr message on imbalance.")
+	g.emit("_sl_heap_assert_balanced:")
+	g.emit("    stp x29, x30, [sp, #-16]!")
+	g.emit("    mov x29, sp")
+	g.emit("    bl _sl_heap_balance")
+	g.emit("    cbz x0, _sl_heap_assert_ok")
+	g.emit("    // Imbalance — write 'heap leak: ' to stderr.")
+	g.emit("    mov x10, x0")                             // save count
+	g.emit("    sub sp, sp, #32")                         // digit buffer (max ~20 digits)
+	g.emit("    mov x11, sp")
+	g.emit("    add x11, x11, #30")                       // end-of-buffer pointer
+	g.emit("    mov x12, #0")                             // digit count
+	g.emit("    mov x14, #10")
+	g.emit("_sl_heap_assert_digit_loop:")
+	g.emit("    udiv x13, x10, x14")                      // x13 = x10 / 10
+	g.emit("    msub x15, x13, x14, x10")                 // x15 = x10 % 10
+	g.emit("    add x15, x15, #48")                       // ASCII digit
+	g.emit("    strb w15, [x11]")
+	g.emit("    sub x11, x11, #1")
+	g.emit("    add x12, x12, #1")
+	g.emit("    mov x10, x13")
+	g.emit("    cbnz x10, _sl_heap_assert_digit_loop")
+	g.emit("    add x11, x11, #1")                        // first digit
+	g.emit("    // write(2, _sl_heap_leak_prefix, 11)")
+	g.emit("    mov x0, #2")                              // stderr
+	g.emit("    adrp x1, _sl_heap_leak_prefix@PAGE")
+	g.emit("    add x1, x1, _sl_heap_leak_prefix@PAGEOFF")
+	g.emit("    mov x2, #11")                             // length of "heap leak: "
+	g.emit("    mov x16, #4")
+	g.emit("    svc #0")
+	g.emit("    // write(2, digits, x12)")
+	g.emit("    mov x0, #2")
+	g.emit("    mov x1, x11")
+	g.emit("    mov x2, x12")
+	g.emit("    mov x16, #4")
+	g.emit("    svc #0")
+	g.emit("    // write(2, _sl_newline, 1)")
+	g.emit("    mov x0, #2")
+	g.emit("    adrp x1, _sl_newline@PAGE")
+	g.emit("    add x1, x1, _sl_newline@PAGEOFF")
+	g.emit("    mov x2, #1")
+	g.emit("    mov x16, #4")
+	g.emit("    svc #0")
+	g.emit("    add sp, sp, #32")
+	g.emit("    // exit(134)")
+	g.emit("    mov x0, #134")
+	g.emit("    mov x16, #1")
+	g.emit("    svc #0")
+	g.emit("_sl_heap_assert_ok:")
+	g.emit("    ldp x29, x30, [sp], #16")
+	g.emit("    ret")
+	g.emit("")
 }
 
 // emitPrintHelpers emits helper functions for printing
@@ -910,24 +990,18 @@ func (g *generator) emitPrologue() {
 		g.emit("    sub sp, sp, #%d", g.layout.Size)
 	}
 
-	// Store parameters to stack. Nullable value-type params use two registers (tag + value).
+	// Store parameters to stack. All values, including nullables, are 8 bytes.
 	regIdx := 0
 	for _, param := range g.fn.Params {
 		offset := g.stackOffset(param)
-		if nullType, ok := param.Type.(*ir.NullableType); ok && !nullType.IsReferenceNullable() {
-			// Nullable value type: tag in regIdx, value in regIdx+1
-			g.emit("    str x%d, [x29, #%d]", regIdx, offset)   // tag
-			g.emit("    str x%d, [x29, #%d]", regIdx+1, offset+8) // value
-			regIdx += 2
-		} else if regIdx < 8 {
+		if regIdx < 8 {
 			g.emit("    str x%d, [x29, #%d]", regIdx, offset)
-			regIdx++
 		} else {
 			callerOffset := 16 + (regIdx-8)*8
 			g.emit("    ldr x9, [x29, #%d]", callerOffset)
 			g.storeToStack("x9", offset)
-			regIdx++
 		}
+		regIdx++
 	}
 }
 
@@ -956,20 +1030,7 @@ func (g *generator) emitReturnValue(block *ir.Block) {
 		return
 	}
 
-	arg := retVal.Args[0]
-	// Check if returning a value-type nullable (needs x0 + x1)
-	if nullType, ok := arg.Type.(*ir.NullableType); ok && !nullType.IsReferenceNullable() {
-		// Load tag into x0, value into x1
-		if argOffset, ok := g.layout.Offsets[arg]; ok {
-			g.loadFromStack("x0", argOffset)   // tag
-			g.loadFromStack("x1", argOffset+8) // value
-		} else {
-			g.loadValue(arg, "x0")
-			g.emit("    mov x1, #0")
-		}
-	} else {
-		g.loadValue(arg, "x0")
-	}
+	g.loadValue(retVal.Args[0], "x0")
 }
 
 // emitEpilogue emits the function exit sequence: restore stack and return.
@@ -987,13 +1048,9 @@ func ComputeStackLayout(fn *ir.Function) *StackLayout {
 	offsets := make(map[*ir.Value]int)
 	offset := -16 // Start below saved x29, x30
 
-	// Allocate space for parameters
+	// Allocate space for parameters (every value is 8 bytes wide, including nullables).
 	for _, param := range fn.Params {
-		size := 8
-		if nullType, ok := param.Type.(*ir.NullableType); ok && !nullType.IsReferenceNullable() {
-			size = 16 // tag + value
-		}
-		offset -= size
+		offset -= 8
 		offsets[param] = offset
 	}
 
@@ -1443,16 +1500,6 @@ func (g *generator) genLoad(v *ir.Value) error {
 	// Load pointer
 	g.loadValue(v.Args[0], "x10")
 
-	// Check if loading a nullable value type (16 bytes: tag + value)
-	if nullType, ok := v.Type.(*ir.NullableType); ok && !nullType.IsReferenceNullable() {
-		offset := g.stackOffset(v)
-		g.emit("    ldr x9, [x10]")     // tag
-		g.storeToStack("x9", offset)
-		g.emit("    ldr x9, [x10, #8]") // value
-		g.storeToStack("x9", offset+8)
-		return nil
-	}
-
 	// Use appropriate load instruction based on type size
 	if v.Type != nil {
 		switch v.Type.Size() {
@@ -1498,22 +1545,7 @@ func (g *generator) genStore(v *ir.Value) error {
 	// Load pointer
 	g.loadValue(v.Args[0], "x10") // pointer
 
-	// Check if storing a nullable value type (needs 16 bytes: tag + value)
 	valueType := v.Args[1].Type
-	if nullType, ok := valueType.(*ir.NullableType); ok && !nullType.IsReferenceNullable() {
-		if argOffset, ok := g.layout.Offsets[v.Args[1]]; ok {
-			g.loadFromStack("x9", argOffset)   // tag
-			g.emit("    str x9, [x10]")
-			g.loadFromStack("x9", argOffset+8) // value
-			g.emit("    str x9, [x10, #8]")
-		} else {
-			g.loadValue(v.Args[1], "x9")
-			g.emit("    str x9, [x10]")
-			g.emit("    str xzr, [x10, #8]")
-		}
-		return nil
-	}
-
 	g.loadValue(v.Args[1], "x9") // value
 
 	// Use appropriate store instruction based on type size
@@ -1814,71 +1846,81 @@ func (g *generator) genIsNull(v *ir.Value) error {
 }
 
 func (g *generator) genUnwrap(v *ir.Value) error {
-	// For reference nullables, just load the pointer
-	// For value nullables, load the value part (skip the tag)
-	if nullType, ok := v.Args[0].Type.(*ir.NullableType); ok {
-		if nullType.IsReferenceNullable() {
-			// Pointer is the value - just load it
-			g.loadValue(v.Args[0], "x9")
-		} else {
-			// Value type nullable - need to load from offset+8
-			// Get the address of the nullable storage, then load value from offset+8
-			if argOffset, ok := g.layout.Offsets[v.Args[0]]; ok {
-				g.loadFromStack("x9", argOffset+8)
-			} else {
-				// Shouldn't happen - nullable values should always be on stack
-				g.loadValue(v.Args[0], "x9")
-			}
-		}
-	} else {
+	// All nullables are pointers. For reference nullables, the unwrapped
+	// value is the pointer itself. For value-type nullables, dereference
+	// the pointer to load the underlying value.
+	nullType, isNullable := v.Args[0].Type.(*ir.NullableType)
+	if !isNullable || nullType.IsReferenceNullable() {
 		g.loadValue(v.Args[0], "x9")
+		g.storeToStack("x9", g.stackOffset(v))
+		return nil
 	}
 
-	offset := g.stackOffset(v)
-	g.storeToStack("x9", offset)
-
+	g.loadValue(v.Args[0], "x10")
+	switch nullType.Elem.Size() {
+	case 1:
+		g.emit("    ldrb w9, [x10]")
+	case 2:
+		g.emit("    ldrh w9, [x10]")
+	case 4:
+		g.emit("    ldr w9, [x10]")
+	default:
+		g.emit("    ldr x9, [x10]")
+	}
+	g.storeToStack("x9", g.stackOffset(v))
 	return nil
 }
 
 func (g *generator) genWrap(v *ir.Value) error {
-	// Wrap a value as nullable (set tag to 1 = not null)
-	g.loadValue(v.Args[0], "x10")
-
-	if nullType, ok := v.Type.(*ir.NullableType); ok {
-		if nullType.IsReferenceNullable() {
-			// Pointer value - just use the pointer
-			g.emit("    mov x9, x10")
-			offset := g.stackOffset(v)
-			g.storeToStack("x9", offset)
-		} else {
-			// Value type - store tag (1) and value
-			offset := g.stackOffset(v)
-			g.emit("    mov x9, #1")
-			g.storeToStack("x9", offset)
-			g.storeToStack("x10", offset+8)
-		}
-	} else {
-		g.emit("    mov x9, x10")
-		offset := g.stackOffset(v)
-		g.storeToStack("x9", offset)
+	// All nullables are 8-byte pointers. For reference nullables, the
+	// underlying value is already a pointer; just copy it. For value-type
+	// nullables, allocate a heap slot, store the value, and use the pointer.
+	nullType, ok := v.Type.(*ir.NullableType)
+	if !ok {
+		g.loadValue(v.Args[0], "x9")
+		g.storeToStack("x9", g.stackOffset(v))
+		return nil
 	}
 
+	if nullType.IsReferenceNullable() {
+		g.loadValue(v.Args[0], "x9")
+		g.storeToStack("x9", g.stackOffset(v))
+		return nil
+	}
+
+	// Value-type nullable: allocate a heap slot for the wrapped value.
+	allocSize := nullType.Elem.Size()
+	if allocSize < 8 {
+		allocSize = 8
+	}
+
+	// Spill source value across the allocator call (matches genCopy convention).
+	g.loadValue(v.Args[0], "x11")
+	g.emit("    str x11, [sp, #-16]!")
+	g.emit("    mov x0, #%d", allocSize)
+	g.emit("    bl _sl_heap_alloc")
+	g.emit("    ldr x11, [sp], #16")
+
+	// Store the value through the freshly allocated pointer using elem size.
+	switch nullType.Elem.Size() {
+	case 1:
+		g.emit("    strb w11, [x0]")
+	case 2:
+		g.emit("    strh w11, [x0]")
+	case 4:
+		g.emit("    str w11, [x0]")
+	default:
+		g.emit("    str x11, [x0]")
+	}
+
+	g.storeToStack("x0", g.stackOffset(v))
 	return nil
 }
 
 func (g *generator) genWrapNull(v *ir.Value) error {
-	// Create a null value (tag = 0 or pointer = 0)
-	offset := g.stackOffset(v)
+	// Null is a zero pointer for every nullable type.
 	g.emit("    mov x9, xzr")
-	g.storeToStack("x9", offset)
-
-	if nullType, ok := v.Type.(*ir.NullableType); ok {
-		if !nullType.IsReferenceNullable() {
-			// Also zero the value part
-			g.storeToStack("x9", offset+8)
-		}
-	}
-
+	g.storeToStack("x9", g.stackOffset(v))
 	return nil
 }
 
@@ -1900,41 +1942,19 @@ func (g *generator) genCall(v *ir.Value) error {
 		return g.genAssert(v)
 	}
 
-	// Regular function call
-	// Load arguments into registers. Nullable value-type args use two registers (tag + value).
-	regIdx := 0
-	for _, arg := range v.Args {
-		if nullType, ok := arg.Type.(*ir.NullableType); ok && !nullType.IsReferenceNullable() {
-			// Nullable value type: load tag into regIdx, value into regIdx+1
-			if argOffset, ok := g.layout.Offsets[arg]; ok {
-				g.loadFromStack(fmt.Sprintf("x%d", regIdx), argOffset)   // tag
-				g.loadFromStack(fmt.Sprintf("x%d", regIdx+1), argOffset+8) // value
-			} else {
-				g.emit("    mov x%d, #0", regIdx)
-				g.emit("    mov x%d, #0", regIdx+1)
-			}
-			regIdx += 2
-		} else {
-			if regIdx < 8 {
-				g.loadValue(arg, fmt.Sprintf("x%d", regIdx))
-			}
-			regIdx++
+	// Regular function call. Every argument, including nullables, occupies one register.
+	for regIdx, arg := range v.Args {
+		if regIdx < 8 {
+			g.loadValue(arg, fmt.Sprintf("x%d", regIdx))
 		}
 	}
 
 	// Call function
 	g.emit("    bl _%s", funcName)
 
-	// Store return value if any
+	// Store return value if any.
 	if v.Type != nil && !v.Type.Equal(ir.TypeVoid) {
-		offset := g.stackOffset(v)
-		// Check if returning a value-type nullable (uses x0 + x1)
-		if nullType, ok := v.Type.(*ir.NullableType); ok && !nullType.IsReferenceNullable() {
-			g.storeToStack("x0", offset)   // tag
-			g.storeToStack("x1", offset+8) // value
-		} else {
-			g.storeToStack("x0", offset)
-		}
+		g.storeToStack("x0", g.stackOffset(v))
 	}
 
 	return nil
@@ -1970,7 +1990,11 @@ func (g *generator) genExit(v *ir.Value) error {
 	} else {
 		g.emit("    mov x0, #0")
 	}
-	// Direct exit syscall
+	// Spill the user-supplied exit code across the heap-balance assertion,
+	// which clobbers x0. If the assertion fires it exits 134 instead.
+	g.emit("    str x0, [sp, #-16]!")
+	g.emit("    bl _sl_heap_assert_balanced")
+	g.emit("    ldr x0, [sp], #16")
 	g.emit("    mov x16, #1")
 	g.emit("    svc #0")
 
@@ -2145,29 +2169,13 @@ func (g *generator) emitPhiCopies(from *ir.Block, to *ir.Block) {
 			break
 		}
 
-		// Find the value from this predecessor
+		// Find the value from this predecessor. All values, including
+		// nullables, are 8-byte copies.
 		for _, phiArg := range v.PhiArgs {
 			if phiArg.From == from {
 				if phiArg.Value != nil {
-					offset := g.stackOffset(v)
-					// Check if this is a value-type nullable that needs 16-byte copy
-					if nullType, ok := v.Type.(*ir.NullableType); ok && !nullType.IsReferenceNullable() {
-						// Copy both tag and value (16 bytes total)
-						if srcOffset, ok := g.layout.Offsets[phiArg.Value]; ok {
-							g.loadFromStack("x9", srcOffset)
-							g.storeToStack("x9", offset)
-							g.loadFromStack("x9", srcOffset+8)
-							g.storeToStack("x9", offset+8)
-						} else {
-							// Source not on stack - shouldn't happen for nullable values
-							g.loadValue(phiArg.Value, "x9")
-							g.storeToStack("x9", offset)
-						}
-					} else {
-						// Regular 8-byte value
-						g.loadValue(phiArg.Value, "x9")
-						g.storeToStack("x9", offset)
-					}
+					g.loadValue(phiArg.Value, "x9")
+					g.storeToStack("x9", g.stackOffset(v))
 				}
 				break
 			}

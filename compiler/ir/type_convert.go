@@ -193,6 +193,18 @@ func asSemanticClassType(t semantic.Type) *semantic.ClassType {
 	}
 }
 
+// asSemanticArrayType returns the array type if t is one, handling both value and pointer forms.
+func asSemanticArrayType(t semantic.Type) (*semantic.ArrayType, bool) {
+	switch ty := t.(type) {
+	case *semantic.ArrayType:
+		return ty, true
+	case semantic.ArrayType:
+		return &ty, true
+	default:
+		return nil, false
+	}
+}
+
 // asSemanticNullableType converts to *semantic.NullableType, handling both value and pointer forms.
 func asSemanticNullableType(t semantic.Type) *semantic.NullableType {
 	switch ty := t.(type) {
@@ -255,6 +267,34 @@ func (tc *TypeConverter) FieldOffset(t semantic.Type, fieldName string) int {
 	}
 
 	return 0
+}
+
+// FieldSemanticType returns the declared semantic type of a field. Returns
+// nil if the type is not a struct or class, or the field does not exist.
+func (tc *TypeConverter) FieldSemanticType(t semantic.Type, fieldName string) semantic.Type {
+	if elem := pointerElementType(t); elem != nil {
+		return tc.FieldSemanticType(elem, fieldName)
+	}
+	if st := asSemanticStructType(t); st != nil {
+		if f, ok := semanticFieldByName(st.Fields, fieldName); ok {
+			return f.Type
+		}
+	}
+	if ct := asSemanticClassType(t); ct != nil {
+		if f, ok := semanticFieldByName(ct.Fields, fieldName); ok {
+			return f.Type
+		}
+	}
+	return nil
+}
+
+func semanticFieldByName(fields []semantic.StructFieldInfo, name string) (semantic.StructFieldInfo, bool) {
+	for _, f := range fields {
+		if f.Name == name {
+			return f, true
+		}
+	}
+	return semantic.StructFieldInfo{}, false
 }
 
 // TypeName returns the name of a type for method mangling.

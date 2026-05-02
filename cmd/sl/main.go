@@ -484,7 +484,7 @@ func compileSourceWithIR(filename string, verbose bool, timer *timing.Timer) (st
 // assemblerType specifies which assembler to use: "system" or "native"
 // verbose enables debug output for all compilation stages and the native assembler
 // Returns the assembly timing summary (empty string for system assembler)
-func buildExecutable(filename string, assemblerType string, verbose bool, timer *timing.Timer) (string, error) {
+func buildExecutable(filename, assemblerType string, verbose bool, timer *timing.Timer) (string, error) {
 	// Compile the source using IR-based pipeline
 	assemblyOutput, err := compileSourceWithIR(filename, verbose, timer)
 	if err != nil {

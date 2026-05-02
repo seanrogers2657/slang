@@ -239,15 +239,7 @@ func (t *NullableType) String() string {
 }
 
 func (t *NullableType) Size() int {
-	// Nullable pointers are just 8 bytes (null = 0)
-	if _, isPtr := t.Elem.(*PtrType); isPtr {
-		return 8
-	}
-	if _, isStruct := t.Elem.(*StructType); isStruct {
-		return 8 // struct references are pointers
-	}
-	// Nullable primitives are tagged unions: 8-byte tag + value
-	return 8 + t.Elem.Size()
+	return 8
 }
 
 func (t *NullableType) Align() int {
@@ -263,8 +255,11 @@ func (t *NullableType) Equal(other Type) bool {
 
 func (t *NullableType) irType() {}
 
-// IsReferenceNullable returns true if this nullable uses pointer representation
-// (null = 0) rather than tagged union representation.
+// IsReferenceNullable reports whether the wrapped element is itself a pointer
+// or struct reference. All nullables share an 8-byte pointer representation,
+// but reference-element nullables carry the pointer through directly while
+// value-element nullables (s64?, bool?, ...) require a heap slot at wrap time
+// and a load at unwrap time.
 func (t *NullableType) IsReferenceNullable() bool {
 	switch t.Elem.(type) {
 	case *PtrType, *StructType:

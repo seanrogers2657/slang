@@ -140,7 +140,7 @@ func TestAsNullableType(t *testing.T) {
 func TestIsReferenceNullable(t *testing.T) {
 	t.Run("nullable_ptr_is_reference", func(t *testing.T) {
 		nt := &NullableType{Elem: &PtrType{Elem: TypeS64}}
-		if !isReferenceNullable(nt) {
+		if !nt.IsReferenceNullable() {
 			t.Error("expected true for nullable ptr")
 		}
 	})
@@ -148,30 +148,231 @@ func TestIsReferenceNullable(t *testing.T) {
 	t.Run("nullable_struct_is_reference", func(t *testing.T) {
 		st := &StructType{Name: "Point"}
 		nt := &NullableType{Elem: st}
-		if !isReferenceNullable(nt) {
+		if !nt.IsReferenceNullable() {
 			t.Error("expected true for nullable struct")
 		}
 	})
 
 	t.Run("nullable_int_is_not_reference", func(t *testing.T) {
 		nt := &NullableType{Elem: TypeS64}
-		if isReferenceNullable(nt) {
+		if nt.IsReferenceNullable() {
 			t.Error("expected false for nullable int")
 		}
 	})
 
 	t.Run("nullable_bool_is_not_reference", func(t *testing.T) {
 		nt := &NullableType{Elem: TypeBool}
-		if isReferenceNullable(nt) {
+		if nt.IsReferenceNullable() {
 			t.Error("expected false for nullable bool")
 		}
 	})
+}
 
-	t.Run("non_nullable_returns_false", func(t *testing.T) {
-		if isReferenceNullable(TypeS64) {
-			t.Error("expected false for non-nullable type")
+// TestNullableTypeSize pins the post-refactor invariant that every nullable
+// is an 8-byte pointer regardless of its element type. The whole memory-
+// model rests on this.
+func TestNullableTypeSize(t *testing.T) {
+	cases := []struct {
+		name string
+		nt   *NullableType
+	}{
+		{"s64?", &NullableType{Elem: TypeS64}},
+		{"bool?", &NullableType{Elem: TypeBool}},
+		{"s128?", &NullableType{Elem: TypeS128}},
+		{"*Point?", &NullableType{Elem: &PtrType{Elem: &StructType{Name: "Point"}}}},
+		{"Point?", &NullableType{Elem: &StructType{Name: "Point"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.nt.Size(); got != 8 {
+				t.Errorf("Size() = %d, want 8", got)
+			}
+		})
+	}
+}
+
+// TestNullableValueInner separates nullables of value-type elements (s64?,
+// bool?) from nullables wrapping pointers/structs. The value-element case
+// requires heap allocation at wrap time; the pointer-element case carries
+// the pointer through directly.
+func TestNullableValueInner(t *testing.T) {
+	t.Run("value_nullable_returns_inner", func(t *testing.T) {
+		got := nullableValueInner(semantic.NullableType{InnerType: semantic.S64Type{}})
+		if got == nil {
+			t.Fatal("expected inner type, got nil")
+		}
+		if _, ok := got.(semantic.S64Type); !ok {
+			t.Errorf("expected S64Type, got %T", got)
 		}
 	})
+	t.Run("owned_pointer_nullable_returns_nil", func(t *testing.T) {
+		nt := semantic.NullableType{InnerType: &semantic.OwnedPointerType{ElementType: semantic.S64Type{}}}
+		if got := nullableValueInner(nt); got != nil {
+			t.Errorf("expected nil for owned-pointer nullable, got %v", got)
+		}
+	})
+	t.Run("struct_nullable_returns_nil", func(t *testing.T) {
+		nt := semantic.NullableType{InnerType: semantic.StructType{Name: "Point"}}
+		if got := nullableValueInner(nt); got != nil {
+			t.Errorf("expected nil for struct nullable, got %v", got)
+		}
+	})
+	t.Run("non_nullable_returns_nil", func(t *testing.T) {
+		if got := nullableValueInner(semantic.S64Type{}); got != nil {
+			t.Errorf("expected nil for non-nullable, got %v", got)
+		}
+	})
+}
+
+// TestVarOwnsHeapVsFieldOwnsHeap pins the distinction between variable-
+// binding ownership and struct-field embedding. Struct/class/array types
+// own heap when bound to a variable (their literal allocates) but are
+// embedded inline as struct fields, so reassigning a field doesn't need
+// a free of the old value.
+func TestVarOwnsHeapVsFieldOwnsHeap(t *testing.T) {
+	cases := []struct {
+		name        string
+		semType     semantic.Type
+		fieldOwns   bool
+		varOwns     bool
+		isHeapValue bool
+	}{
+		{
+			name:      "owned_pointer",
+			semType:   &semantic.OwnedPointerType{ElementType: semantic.S64Type{}},
+			fieldOwns: true,
+			varOwns:   true,
+		},
+		{
+			name:      "value_nullable",
+			semType:   semantic.NullableType{InnerType: semantic.S64Type{}},
+			fieldOwns: true,
+			varOwns:   true,
+		},
+		{
+			name:      "owned_pointer_nullable",
+			semType:   semantic.NullableType{InnerType: &semantic.OwnedPointerType{ElementType: semantic.S64Type{}}},
+			fieldOwns: true,
+			varOwns:   true,
+		},
+		{
+			name:        "struct_value",
+			semType:     semantic.StructType{Name: "Point"},
+			fieldOwns:   false,
+			varOwns:     true,
+			isHeapValue: true,
+		},
+		{
+			name:        "class_value",
+			semType:     semantic.ClassType{Name: "Counter"},
+			fieldOwns:   false,
+			varOwns:     true,
+			isHeapValue: true,
+		},
+		{
+			name:        "array_value",
+			semType:     &semantic.ArrayType{ElementType: semantic.S64Type{}, Size: 3},
+			fieldOwns:   false,
+			varOwns:     true,
+			isHeapValue: true,
+		},
+		{
+			name:    "primitive_int",
+			semType: semantic.S64Type{},
+		},
+		{
+			name:    "primitive_bool",
+			semType: semantic.BooleanType{},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := fieldOwnsHeap(c.semType); got != c.fieldOwns {
+				t.Errorf("fieldOwnsHeap = %v, want %v", got, c.fieldOwns)
+			}
+			if got := varOwnsHeap(c.semType); got != c.varOwns {
+				t.Errorf("varOwnsHeap = %v, want %v", got, c.varOwns)
+			}
+			if got := isHeapValueType(c.semType); got != c.isHeapValue {
+				t.Errorf("isHeapValueType = %v, want %v", got, c.isHeapValue)
+			}
+		})
+	}
+}
+
+// TestArgTransfersOwnership pins the move-vs-borrow rule at call sites.
+// Owned-pointer args going to owned-pointer params transfer; everything
+// else borrows. Value-type nullables always borrow — they have copy-style
+// semantics across function boundaries.
+func TestArgTransfersOwnership(t *testing.T) {
+	ownedS64 := &semantic.OwnedPointerType{ElementType: semantic.S64Type{}}
+	refS64 := &semantic.RefPointerType{ElementType: semantic.S64Type{}}
+	mutRefS64 := &semantic.MutRefPointerType{ElementType: semantic.S64Type{}}
+	nullableValueS64 := semantic.NullableType{InnerType: semantic.S64Type{}}
+	nullableOwnedS64 := semantic.NullableType{InnerType: ownedS64}
+
+	cases := []struct {
+		name      string
+		argType   semantic.Type
+		paramType semantic.Type
+		want      bool
+	}{
+		{"owned_to_owned_moves", ownedS64, ownedS64, true},
+		{"owned_to_immutable_borrow_does_not_move", ownedS64, refS64, false},
+		{"owned_to_mutable_borrow_does_not_move", ownedS64, mutRefS64, false},
+		{"owned_to_nullable_owned_moves", ownedS64, nullableOwnedS64, true},
+		{"value_nullable_to_value_nullable_borrows", nullableValueS64, nullableValueS64, false},
+		{"primitive_does_not_move", semantic.S64Type{}, semantic.S64Type{}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := argTransfersOwnership(c.argType, c.paramType); got != c.want {
+				t.Errorf("argTransfersOwnership = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestShouldCopyOnReturn pins the copy-on-extract rule. Container reads
+// (arr[i], obj.field) of value-type nullables must be copied; everything
+// else either transfers via markMoved or doesn't own heap to begin with.
+func TestShouldCopyOnReturn(t *testing.T) {
+	pos := ast.Position{Line: 1, Column: 1}
+	nullableS64 := semantic.NullableType{InnerType: semantic.S64Type{}}
+
+	cases := []struct {
+		name string
+		expr semantic.TypedExpression
+		want bool
+	}{
+		{
+			name: "index_of_nullable_copies",
+			expr: &semantic.TypedIndexExpr{Type: nullableS64},
+			want: true,
+		},
+		{
+			name: "field_of_nullable_copies",
+			expr: &semantic.TypedFieldAccessExpr{Type: nullableS64},
+			want: true,
+		},
+		{
+			name: "identifier_of_nullable_does_not_copy",
+			expr: &semantic.TypedIdentifierExpr{Type: nullableS64, StartPos: pos, EndPos: pos},
+			want: false,
+		},
+		{
+			name: "index_of_primitive_does_not_copy",
+			expr: &semantic.TypedIndexExpr{Type: semantic.S64Type{}},
+			want: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := shouldCopyOnReturn(c.expr); got != c.want {
+				t.Errorf("shouldCopyOnReturn = %v, want %v", got, c.want)
+			}
+		})
+	}
 }
 
 func TestGenerateTypedValue(t *testing.T) {

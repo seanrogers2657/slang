@@ -64,11 +64,3 @@ func asNullableType(t Type) *NullableType {
 	return nil
 }
 
-// isReferenceNullable returns true if the type is a nullable that uses pointer
-// representation (null = 0) rather than tagged union.
-func isReferenceNullable(t Type) bool {
-	if nt := asNullableType(t); nt != nil {
-		return nt.IsReferenceNullable()
-	}
-	return false
-}

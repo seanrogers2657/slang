@@ -411,8 +411,16 @@ func (g *Generator) generateBlock(bs *semantic.TypedBlockStmt) error {
 func (g *Generator) generateStatement(stmt semantic.TypedStatement) error {
 	switch s := stmt.(type) {
 	case *semantic.TypedExprStmt:
-		_, err := g.generateExpr(s.Expr)
-		return err
+		v, err := g.generateExpr(s.Expr)
+		if err != nil {
+			return err
+		}
+		// A bare string temporary (e.g. an interpolated string used as a
+		// statement) is discarded; free it so its heap buffer isn't leaked.
+		if isOwnedStringTemp(s.Expr) {
+			g.builder().StrFree(v)
+		}
+		return nil
 
 	case *semantic.TypedVarDeclStmt:
 		return g.generateVarDecl(s)
@@ -483,6 +491,10 @@ func (g *Generator) generateVarDecl(vd *semantic.TypedVarDeclStmt) error {
 	if shouldCopyOnReturn(vd.Initializer) {
 		val = g.copyNullableValue(val, vd.Initializer.GetType())
 	}
+
+	// A bound string takes value semantics: copy if it borrows storage owned
+	// elsewhere so the binding owns an independent buffer.
+	val = g.maybeCopyString(val, vd.Initializer)
 
 	g.writeVariable(vd.Name, g.block, g.wrapIfNeeded(val, declType))
 	g.trackOwnedVar(vd.Name, vd.DeclaredType)
@@ -577,7 +589,9 @@ func (g *Generator) generateAssign(as *semantic.TypedAssignStmt) error {
 	// to as.Name. Mark the source as moved so its scope exit doesn't double-
 	// free what the destination now owns.
 	if ident, ok := as.Value.(*semantic.TypedIdentifierExpr); ok {
-		if ident.Name != as.Name && varOwnsHeap(ident.Type) {
+		// Strings use copy semantics (not move), so the source remains valid
+		// and must not be marked moved.
+		if ident.Name != as.Name && varOwnsHeap(ident.Type) && !isStringType(ident.Type) {
 			g.markMoved(ident.Name)
 		}
 	}
@@ -596,6 +610,10 @@ func (g *Generator) generateAssign(as *semantic.TypedAssignStmt) error {
 	if shouldCopyOnReturn(as.Value) {
 		val = g.copyNullableValue(val, as.Value.GetType())
 	}
+
+	// Strings take value semantics: copy a borrowed source so the destination
+	// owns an independent buffer.
+	val = g.maybeCopyString(val, as.Value)
 
 	// Free whatever the variable currently owns before overwriting. The new
 	// value gives the variable fresh ownership, so clear any moved flag too.
@@ -624,6 +642,8 @@ func (g *Generator) generateFieldAssign(fa *semantic.TypedFieldAssignStmt) error
 		if err != nil {
 			return err
 		}
+		// Borrowed string values are copied so the field owns its own buffer.
+		val = g.maybeCopyString(val, fa.Value)
 		val = g.wrapIfNeeded(val, fieldIRType)
 	}
 
@@ -632,8 +652,9 @@ func (g *Generator) generateFieldAssign(fa *semantic.TypedFieldAssignStmt) error
 	fieldPtr.AuxInt = int64(offset)
 
 	// Free whatever the field currently owns before overwriting. Skips when
-	// the field type does not own heap storage.
-	if fieldSemType != nil && fieldOwnsHeap(fieldSemType) {
+	// the field type does not own heap storage. String fields own a heap
+	// buffer separate from the struct, so free them here too.
+	if fieldSemType != nil && (fieldOwnsHeap(fieldSemType) || isStringType(fieldSemType)) {
 		oldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
 		g.emitFreeOwnedValue(oldVal, fieldSemType)
 	}
@@ -679,8 +700,68 @@ func varOwnsHeap(t semantic.Type) bool {
 		return true
 	case *semantic.ArrayType, semantic.ArrayType:
 		return true
+	case semantic.StringType, *semantic.StringType:
+		// Strings are heap-owned value types: a binding owns its heap buffer
+		// (interpolation results, copies) and frees it at scope exit. Constant
+		// strings live in .data and free as a no-op (see _sl_str_free).
+		return true
 	}
 	return false
+}
+
+// isStringType reports whether t is the string type.
+func isStringType(t semantic.Type) bool {
+	switch t.(type) {
+	case semantic.StringType, *semantic.StringType:
+		return true
+	}
+	return false
+}
+
+// stringIsBorrow reports whether a string-typed expression refers to storage
+// owned elsewhere (a variable, field, or array element). Storing such a value
+// requires a deep copy so the destination owns an independent buffer and the
+// two owners don't double-free. Fresh strings (interpolation) and ownership-
+// transferring results (call/method returns) are NOT borrows.
+func stringIsBorrow(expr semantic.TypedExpression) bool {
+	if !isStringType(expr.GetType()) {
+		return false
+	}
+	switch expr.(type) {
+	case *semantic.TypedIdentifierExpr,
+		*semantic.TypedFieldAccessExpr,
+		*semantic.TypedIndexExpr:
+		return true
+	}
+	return false
+}
+
+// isOwnedStringTemp reports whether a string-typed expression produces a fresh
+// heap string that no binding owns, so it must be freed after being consumed as
+// a temporary (e.g. a print argument or a bare expression statement). Calls that
+// return a constant string are still safe to "free" — _sl_str_free no-ops on
+// non-heap pointers.
+func isOwnedStringTemp(expr semantic.TypedExpression) bool {
+	if !isStringType(expr.GetType()) {
+		return false
+	}
+	switch expr.(type) {
+	case *semantic.TypedInterpolatedStringExpr,
+		*semantic.TypedCallExpr,
+		*semantic.TypedMethodCallExpr:
+		return true
+	}
+	return false
+}
+
+// maybeCopyString returns a deep copy of val when expr is a borrowed string,
+// otherwise val unchanged. Used wherever a string is stored into a binding,
+// field, element, or returned, to preserve value (copy) semantics.
+func (g *Generator) maybeCopyString(val *Value, expr semantic.TypedExpression) *Value {
+	if stringIsBorrow(expr) {
+		return g.builder().StrCopy(val)
+	}
+	return val
 }
 
 // generateIndexAssign generates IR for an array index assignment.
@@ -709,6 +790,8 @@ func (g *Generator) generateIndexAssign(ia *semantic.TypedIndexAssignStmt) error
 		if err != nil {
 			return err
 		}
+		// Borrowed string values are copied so the element owns its own buffer.
+		val = g.maybeCopyString(val, ia.Value)
 		if elemIRType != nil {
 			val = g.wrapIfNeeded(val, elemIRType)
 		}
@@ -722,7 +805,9 @@ func (g *Generator) generateIndexAssign(ia *semantic.TypedIndexAssignStmt) error
 	elemPtr.AddArg(arr)
 	elemPtr.AddArg(idx)
 
-	if elemSemType != nil && fieldOwnsHeap(elemSemType) {
+	// Free whatever the element currently owns before overwriting. String
+	// elements own a heap buffer, so free them here too.
+	if elemSemType != nil && (fieldOwnsHeap(elemSemType) || isStringType(elemSemType)) {
 		oldVal := g.block.NewValue(OpLoad, elemIRType, elemPtr)
 		g.emitFreeOwnedValue(oldVal, elemSemType)
 	}
@@ -772,6 +857,12 @@ func (g *Generator) generateReturn(rs *semantic.TypedReturnStmt) error {
 			if err != nil {
 				return err
 			}
+
+			// A returned borrowed string must be copied so the caller receives
+			// an owned buffer and the local/parameter isn't double-freed by
+			// scope cleanup. Done before wrapping so the copy is the raw string.
+			retVal = g.maybeCopyString(retVal, rs.Value)
+
 			retVal = g.wrapIfNeeded(retVal, retType)
 
 			// Value-type nullables have copy semantics: aliasing the caller's
@@ -1166,6 +1257,9 @@ func (g *Generator) generateExpr(expr semantic.TypedExpression) (*Value, error) 
 	case *semantic.TypedLiteralExpr:
 		return g.generateLiteral(e)
 
+	case *semantic.TypedInterpolatedStringExpr:
+		return g.generateInterpolatedString(e)
+
 	case *semantic.TypedIdentifierExpr:
 		return g.generateIdentifier(e)
 
@@ -1287,6 +1381,159 @@ func (g *Generator) generateLiteral(le *semantic.TypedLiteralExpr) (*Value, erro
 	default:
 		return nil, fmt.Errorf("unknown literal type: %d", le.LitType)
 	}
+}
+
+// generateInterpolatedString generates IR for an interpolated string. Each part
+// is converted to a string value and the parts are concatenated left-to-right
+// with OpStrConcat. Intermediate results (per-part conversions and intermediate
+// concatenations) that this code owns are freed as soon as their bytes have
+// been copied, so the only surviving allocation is the final result. The result
+// is always a fresh heap string the caller owns (and must free).
+func (g *Generator) generateInterpolatedString(e *semantic.TypedInterpolatedStringExpr) (*Value, error) {
+	var result *Value
+	resultOwned := false // whether `result` is a heap temp this code owns
+
+	for _, part := range e.Parts {
+		// Skip empty literal chunks — they contribute nothing.
+		if lit, ok := part.(*semantic.TypedLiteralExpr); ok && lit.LitType == ast.LiteralTypeString && lit.Value == "" {
+			continue
+		}
+		partVal, partOwned, err := g.generateStringPart(part)
+		if err != nil {
+			return nil, err
+		}
+		if result == nil {
+			result, resultOwned = partVal, partOwned
+			continue
+		}
+		concat := g.builder().StrConcat(result, partVal)
+		// Both inputs have been copied into `concat`; free the ones we own.
+		if resultOwned {
+			g.builder().StrFree(result)
+		}
+		if partOwned {
+			g.builder().StrFree(partVal)
+		}
+		result, resultOwned = concat, true
+	}
+
+	if result == nil {
+		// Pathological all-empty case — return a fresh empty string.
+		return g.builder().StrCopy(g.builder().ConstString(g.prog, "")), nil
+	}
+	// Guarantee the caller receives an owned heap string: a lone constant chunk
+	// or borrowed string must be copied so the caller can free it safely.
+	if !resultOwned {
+		result = g.builder().StrCopy(result)
+	}
+	return result, nil
+}
+
+// generateStringPart converts a single interpolation part to a string value,
+// reporting whether the returned value is a heap temporary owned by the caller
+// (true) or a borrowed/constant/static pointer that must not be freed (false).
+func (g *Generator) generateStringPart(part semantic.TypedExpression) (*Value, bool, error) {
+	switch part.GetType().(type) {
+	case semantic.StringType:
+		v, err := g.generateExpr(part)
+		if err != nil {
+			return nil, false, err
+		}
+		// Fresh strings (interpolation, call results) are owned; identifiers,
+		// fields, and constants are borrowed/static.
+		return v, isOwnedStringTemp(part), nil
+	case semantic.S64Type:
+		v, err := g.generateExpr(part)
+		if err != nil {
+			return nil, false, err
+		}
+		return g.builder().IntToStr(v), true, nil
+	case semantic.BooleanType:
+		v, err := g.generateExpr(part)
+		if err != nil {
+			return nil, false, err
+		}
+		// Returns a pointer to a static "true"/"false" constant — not owned.
+		return g.builder().BoolToStr(v), false, nil
+	case semantic.NullableType:
+		v, err := g.generateNullableToStr(part)
+		return v, true, err
+	default:
+		return nil, false, fmt.Errorf("cannot interpolate value of type %s", part.GetType().String())
+	}
+}
+
+// convertScalarToStr converts an already-unwrapped (non-nullable) value of the
+// given element type to a freshly allocated, caller-owned heap string. Borrowed
+// strings and static bool strings are copied so the result is uniformly owned.
+func (g *Generator) convertScalarToStr(val *Value, elem semantic.Type) (*Value, error) {
+	switch elem.(type) {
+	case semantic.StringType:
+		return g.builder().StrCopy(val), nil
+	case semantic.S64Type:
+		return g.builder().IntToStr(val), nil
+	case semantic.BooleanType:
+		return g.builder().StrCopy(g.builder().BoolToStr(val)), nil
+	default:
+		return nil, fmt.Errorf("cannot interpolate value of type %s", elem.String())
+	}
+}
+
+// generateNullableToStr renders a nullable interpolation part: it emits a branch
+// that yields the literal "null" when the value is null, otherwise unwraps and
+// converts the inner value. Modeled on generateElvis.
+func (g *Generator) generateNullableToStr(part semantic.TypedExpression) (*Value, error) {
+	nt := part.GetType().(semantic.NullableType)
+
+	val, err := g.generateExpr(part)
+	if err != nil {
+		return nil, err
+	}
+
+	nullBlock := g.fn.NewBlock(BlockPlain)
+	valBlock := g.fn.NewBlock(BlockPlain)
+	mergeBlock := g.fn.NewBlock(BlockPlain)
+
+	isNull := g.block.NewValue(OpIsNull, TypeBool)
+	isNull.AddArg(val)
+	g.block.Kind = BlockIf
+	g.block.Control = isNull
+	g.block.AddSucc(nullBlock)
+	g.block.AddSucc(valBlock)
+	g.sealBlock(nullBlock)
+	g.sealBlock(valBlock)
+
+	// null edge -> owned heap copy of "null" (so both phi inputs are owned heap)
+	g.block = nullBlock
+	nullStr := g.builder().StrCopy(g.builder().ConstString(g.prog, "null"))
+	nullEnd := g.block
+	nullEnd.AddSucc(mergeBlock)
+
+	// not-null edge -> unwrap and convert
+	g.block = valBlock
+	innerIR := g.convertType(nt.InnerType)
+	unwrapped := g.block.NewValue(OpUnwrap, innerIR)
+	unwrapped.AddArg(val)
+	// Free a temporary heap slot if the nullable came from an owning temporary
+	// (e.g. a function returning T?), mirroring generateElvis.
+	if isOwningTemp(part) {
+		freeOwningTemp(g, val, part.GetType())
+	}
+	converted, err := g.convertScalarToStr(unwrapped, nt.InnerType)
+	if err != nil {
+		return nil, err
+	}
+	valEnd := g.block
+	valEnd.AddSucc(mergeBlock)
+
+	g.sealBlock(mergeBlock)
+	g.block = mergeBlock
+	phi := g.block.NewPhiValue(TypeString)
+	phi.PhiArgs = []*PhiArg{
+		{From: nullEnd, Value: nullStr},
+		{From: valEnd, Value: converted},
+	}
+	return phi, nil
 }
 
 // generateIdentifier generates IR for an identifier expression.
@@ -1556,6 +1803,7 @@ func (g *Generator) generateCall(ce *semantic.TypedCallExpr) (*Value, error) {
 
 	// Generate arguments
 	var args []*Value
+	var strTempFrees []*Value // fresh string temps to free after the call
 	for i, arg := range ce.Arguments {
 		// If this argument is an identifier of an owned-heap type AND the
 		// callee declares the corresponding parameter as an owned pointer,
@@ -1572,6 +1820,13 @@ func (g *Generator) generateCall(ce *semantic.TypedCallExpr) (*Value, error) {
 			return nil, err
 		}
 		args = append(args, v)
+
+		// Strings are borrowed by callees, so a fresh string temporary passed
+		// as an argument (interpolation result, string-returning call) is no
+		// longer referenced after the call and must be freed.
+		if isOwnedStringTemp(arg) {
+			strTempFrees = append(strTempFrees, v)
+		}
 	}
 
 	resultType := g.convertType(ce.Type)
@@ -1625,6 +1880,11 @@ func (g *Generator) generateCall(ce *semantic.TypedCallExpr) (*Value, error) {
 			size = elemSize
 		}
 		g.emitNullCheckedFree(wrap, size)
+	}
+
+	// Free fresh string-temp arguments now that the callee has used them.
+	for _, sv := range strTempFrees {
+		g.builder().StrFree(sv)
 	}
 
 	return callVal, nil
@@ -1729,9 +1989,10 @@ func (g *Generator) generateArrayLiteral(al *semantic.TypedArrayLiteralExpr) (*V
 
 	// Store each element
 	for i, elemExpr := range al.Elements {
-		// Identifier elements transfer ownership to the array.
+		// Identifier elements transfer ownership to the array. Strings use
+		// copy semantics (handled below), so they are not moved.
 		if ident, ok := elemExpr.(*semantic.TypedIdentifierExpr); ok {
-			if varOwnsHeap(ident.Type) {
+			if varOwnsHeap(ident.Type) && !isStringType(ident.Type) {
 				g.markMoved(ident.Name)
 			}
 		}
@@ -1748,6 +2009,10 @@ func (g *Generator) generateArrayLiteral(al *semantic.TypedArrayLiteralExpr) (*V
 			elem = g.copyNullableValue(elem, elemExpr.GetType())
 			b = g.builder()
 		}
+
+		// Borrowed string elements must be copied so the array owns its own
+		// buffer (value semantics).
+		elem = g.maybeCopyString(elem, elemExpr)
 
 		idx := b.ConstInt(TypeS64, int64(i))
 		elemPtr := b.IndexPtr(alloc, idx, elemType)
@@ -1796,6 +2061,9 @@ func (g *Generator) generateStructLiteral(sl *semantic.TypedStructLiteralExpr) (
 				freeVal.AuxInt = int64(fieldType.Size())
 			}
 		} else {
+			// Borrowed string fields must be copied so the struct owns its own
+			// buffer (value semantics); fresh strings transfer ownership.
+			arg = g.maybeCopyString(arg, argExpr)
 			b.Store(fieldPtr, arg)
 		}
 	}
@@ -1866,6 +2134,9 @@ func (g *Generator) generateClassLiteral(cl *semantic.TypedClassLiteralExpr) (*V
 		}
 
 		fieldPtr := b.FieldPtr(alloc, fieldType, fieldOffset)
+		// Borrowed string fields must be copied so the class owns its own
+		// buffer (value semantics); fresh strings transfer ownership.
+		arg = g.maybeCopyString(arg, argExpr)
 		b.Store(fieldPtr, arg)
 	}
 
@@ -2412,6 +2683,17 @@ func (g *Generator) emitFreeIfOwned(name string, semType semantic.Type) {
 		return
 	}
 
+	// Strings: free the heap buffer (no-op for constant pointers).
+	if isStringType(semType) {
+		if !g.ssa.IsVariableDefinedOnAllPaths(name, g.block) {
+			return
+		}
+		if oldVal := g.readVariable(name, g.block); oldVal != nil {
+			g.builder().StrFree(oldVal)
+		}
+		return
+	}
+
 	if inner := nullableValueInner(semType); inner != nil {
 		g.emitFreeNullableValue(name, inner)
 		return
@@ -2524,6 +2806,11 @@ func (g *Generator) emitNullCheckedFree(ptr *Value, size int) {
 // before overwriting. Mirrors the dispatch in emitFreeIfOwned but operates
 // on a value rather than a tracked variable.
 func (g *Generator) emitFreeOwnedValue(val *Value, semType semantic.Type) {
+	if isStringType(semType) {
+		g.builder().StrFree(val)
+		return
+	}
+
 	if inner := nullableValueInner(semType); inner != nil {
 		g.emitNullCheckedFree(val, g.nullableValueAllocSize(inner))
 		return
@@ -2567,6 +2854,13 @@ func (g *Generator) emitRecursiveFree(ptr *Value, elemType semantic.Type, size i
 }
 
 func (g *Generator) emitRecursiveFreeWithVisited(ptr *Value, elemType semantic.Type, size int, visiting map[string]bool) {
+	// String: ptr is the string buffer itself. Free it directly (no-op for
+	// constant pointers). Strings have no nested owned storage.
+	if isStringType(elemType) {
+		g.builder().StrFree(ptr)
+		return
+	}
+
 	// Array: walk elements, recursively free those whose type owns heap, then
 	// free the array's own allocation. Length is known at compile time, so
 	// the walk is a compile-time unroll. Nullable elements are null-checked.
@@ -2627,6 +2921,18 @@ func (g *Generator) emitRecursiveFreeWithVisited(ptr *Value, elemType semantic.T
 		defer func() { delete(visiting, typeName) }()
 
 		for _, field := range st.Fields {
+			// String field: load the buffer pointer and free it (no-op for
+			// constant pointers).
+			if isStringType(field.Type) {
+				offset := st.FieldOffset(field.Name)
+				fieldIRType := g.convertType(field.Type)
+				fieldPtr := g.block.NewValue(OpFieldPtr, &PtrType{Elem: fieldIRType}, ptr)
+				fieldPtr.AuxInt = int64(offset)
+				fieldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
+				g.builder().StrFree(fieldVal)
+				continue
+			}
+
 			// Value-type nullable field: load the pointer, null-check, free.
 			if inner := nullableValueInner(field.Type); inner != nil {
 				offset := st.FieldOffset(field.Name)

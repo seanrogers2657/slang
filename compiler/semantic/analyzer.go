@@ -414,6 +414,10 @@ func collectIdentifierRefs(expr ast.Expression) []string {
 		refs = append(refs, collectIdentifierRefs(e.Index)...)
 	case *ast.NewExpr:
 		refs = append(refs, collectIdentifierRefs(e.Operand)...)
+	case *ast.InterpolatedStringExpr:
+		for _, part := range e.Parts {
+			refs = append(refs, collectIdentifierRefs(part)...)
+		}
 	}
 	return refs
 }
@@ -2459,6 +2463,8 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) TypedExpression {
 	switch e := expr.(type) {
 	case *ast.LiteralExpr:
 		return a.analyzeLiteral(e)
+	case *ast.InterpolatedStringExpr:
+		return a.analyzeInterpolatedString(e)
 	case *ast.BinaryExpr:
 		return a.analyzeBinaryExpression(e)
 	case *ast.UnaryExpr:
@@ -4340,6 +4346,41 @@ func (a *Analyzer) analyzeLiteral(lit *ast.LiteralExpr) TypedExpression {
 		Value:    lit.Value,
 		StartPos: lit.StartPos,
 		EndPos:   lit.EndPos,
+	}
+}
+
+// isInterpolatable reports whether a value of type t can be rendered into a
+// string interpolation: s64, string, bool, or a nullable form of those.
+func isInterpolatable(t Type) bool {
+	switch tt := t.(type) {
+	case S64Type, StringType, BooleanType:
+		return true
+	case NullableType:
+		return isInterpolatable(tt.InnerType)
+	}
+	return false
+}
+
+// analyzeInterpolatedString analyzes an interpolated string. Every part is
+// analyzed; literal chunks are strings, and each interpolation expression must
+// have an interpolatable type. The whole expression has type string.
+func (a *Analyzer) analyzeInterpolatedString(e *ast.InterpolatedStringExpr) TypedExpression {
+	parts := make([]TypedExpression, 0, len(e.Parts))
+	for _, part := range e.Parts {
+		tp := a.analyzeExpression(part)
+		t := tp.GetType()
+		if _, isErr := t.(ErrorType); !isErr && !isInterpolatable(t) {
+			a.addError(
+				fmt.Sprintf("cannot interpolate value of type '%s' (only s64, string, bool, and their nullable forms are supported)", t.String()),
+				part.Pos(), part.End())
+		}
+		parts = append(parts, tp)
+	}
+	return &TypedInterpolatedStringExpr{
+		Type:     TypeString,
+		Parts:    parts,
+		StartPos: e.StartPos,
+		EndPos:   e.EndPos,
 	}
 }
 

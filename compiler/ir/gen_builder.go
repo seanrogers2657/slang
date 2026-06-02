@@ -213,6 +213,46 @@ func (vb *ValueBuilder) WrapNull(nullableType Type) *Value {
 }
 
 // =============================================================================
+// String Operations
+// =============================================================================
+
+// StrConcat concatenates two strings, returning a newly allocated string.
+func (vb *ValueBuilder) StrConcat(a, b *Value) *Value {
+	v := vb.block.NewValue(OpStrConcat, TypeString)
+	v.AddArg(a)
+	v.AddArg(b)
+	return v
+}
+
+// IntToStr converts an s64 value to its decimal string representation.
+func (vb *ValueBuilder) IntToStr(val *Value) *Value {
+	v := vb.block.NewValue(OpIntToStr, TypeString)
+	v.AddArg(val)
+	return v
+}
+
+// BoolToStr converts a bool value to "true" or "false".
+func (vb *ValueBuilder) BoolToStr(val *Value) *Value {
+	v := vb.block.NewValue(OpBoolToStr, TypeString)
+	v.AddArg(val)
+	return v
+}
+
+// StrCopy deep-copies a string into a fresh heap allocation owned by the result.
+func (vb *ValueBuilder) StrCopy(val *Value) *Value {
+	v := vb.block.NewValue(OpStrCopy, TypeString)
+	v.AddArg(val)
+	return v
+}
+
+// StrFree frees a heap string (no-op for constant/.data pointers).
+func (vb *ValueBuilder) StrFree(val *Value) *Value {
+	v := vb.block.NewValue(OpStrFree, nil)
+	v.AddArg(val)
+	return v
+}
+
+// =============================================================================
 // Control Flow
 // =============================================================================
 

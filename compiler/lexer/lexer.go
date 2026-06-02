@@ -90,6 +90,14 @@ const (
 	TokenTypeObject   // 'object' keyword
 	TokenTypeNew      // 'new' keyword
 	TokenTypeImport   // 'import' keyword
+
+	// Interpolated string tokens. A plain string is still a single
+	// TokenTypeString; these are only emitted when a string contains a
+	// $-interpolation. The stream shape is:
+	//   StrChunk (InterpStart <expr tokens> InterpEnd StrChunk)+
+	TokenTypeStrChunk    // literal text segment of an interpolated string
+	TokenTypeInterpStart // '${' or '$' beginning an interpolation
+	TokenTypeInterpEnd   // end of an interpolation
 )
 
 // String returns a human-readable name for the token type
@@ -205,6 +213,12 @@ func (t TokenType) String() string {
 		return "NEW"
 	case TokenTypeImport:
 		return "IMPORT"
+	case TokenTypeStrChunk:
+		return "STR_CHUNK"
+	case TokenTypeInterpStart:
+		return "INTERP_START"
+	case TokenTypeInterpEnd:
+		return "INTERP_END"
 	default:
 		return "UNKNOWN"
 	}
@@ -227,6 +241,19 @@ type lexer struct {
 
 	Errors []*errors.CompilerError
 	Tokens []Token
+
+	// interpStack tracks suspended interpolated-string scans. Each frame is
+	// pushed when a "${" is opened (ParseString hands control back to the main
+	// loop to tokenize the embedded expression) and popped when the matching
+	// "}" is seen, at which point string scanning resumes. braceDepth tracks
+	// nested "{...}" within the interpolation so the correct "}" closes it.
+	interpStack []interpFrame
+}
+
+// interpFrame is one level of suspended interpolated-string scanning.
+type interpFrame struct {
+	braceDepth int          // nested brace depth inside the interpolation
+	startPos   ast.Position // start position of the enclosing string literal
 }
 
 func NewLexer(source []byte) *lexer {
@@ -363,24 +390,74 @@ func (p *lexer) ParseNumber() {
 	})
 }
 
+// ParseString scans a string literal beginning at the opening quote. A string
+// with no $-interpolation produces a single TokenTypeString (unchanged
+// behavior). A string containing "${expr}" or "$name" produces an interpolation
+// token stream: StrChunk (InterpStart <expr tokens> InterpEnd StrChunk)+.
 func (p *lexer) ParseString() {
 	startPos := p.currentPos()
 	// Skip opening quote
 	p.advance()
+	p.scanStringChunk(startPos, false)
+}
 
+// scanStringChunk scans literal text of a string from the current position
+// (just past the opening quote, or just past a closing "}" when resuming after
+// an interpolation) up to the closing quote or the next interpolation.
+//
+// interpolated reports whether an interpolation has already been emitted for
+// this string. When true, the closing quote emits a final StrChunk so the
+// stream is well-formed; when false and no interpolation is found, a single
+// TokenTypeString is emitted to preserve the plain-string fast path.
+//
+// On encountering "${" it emits StrChunk + InterpStart, pushes an interpFrame,
+// and returns so the main Parse loop tokenizes the embedded expression; the
+// matching "}" resumes scanning by calling this method again.
+func (p *lexer) scanStringChunk(startPos ast.Position, interpolated bool) {
+	chunkPos := p.currentPos()
 	var str strings.Builder
+
+	emitChunk := func() {
+		p.Tokens = append(p.Tokens, Token{Type: TokenTypeStrChunk, Value: str.String(), Pos: chunkPos})
+	}
+
 	for p.Index < len(p.Source) {
 		currentChar := p.Source[p.Index]
 
-		// Check for closing quote
+		// Closing quote ends the string.
 		if currentChar == '"' {
-			p.advance() // Skip closing quote
-			p.Tokens = append(p.Tokens, Token{
-				Type:  TokenTypeString,
-				Value: str.String(),
-				Pos:   startPos,
-			})
+			p.advance()
+			if interpolated {
+				emitChunk()
+			} else {
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeString, Value: str.String(), Pos: startPos})
+			}
 			return
+		}
+
+		// Interpolation: "${" (expression) or "$name" (bare identifier).
+		if currentChar == '$' && p.Index+1 < len(p.Source) {
+			next := p.Source[p.Index+1]
+			if next == '{' {
+				emitChunk()
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeInterpStart, Value: "${", Pos: p.currentPos()})
+				p.advance() // skip '$'
+				p.advance() // skip '{'
+				p.interpStack = append(p.interpStack, interpFrame{braceDepth: 0, startPos: startPos})
+				return
+			}
+			if unicode.IsLetter(rune(next)) {
+				emitChunk()
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeInterpStart, Value: "$", Pos: p.currentPos()})
+				p.advance() // skip '$'
+				p.scanInterpIdentifier()
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeInterpEnd, Value: "", Pos: p.currentPos()})
+				// Continue scanning the rest of this string in-place.
+				interpolated = true
+				chunkPos = p.currentPos()
+				str.Reset()
+				continue
+			}
 		}
 
 		// Handle escape sequences
@@ -403,6 +480,8 @@ func (p *lexer) ParseString() {
 				str.WriteByte('\\')
 			case '"':
 				str.WriteByte('"')
+			case '$':
+				str.WriteByte('$')
 			default:
 				// Unknown escape sequence, just include the backslash
 				str.WriteByte('\\')
@@ -417,6 +496,22 @@ func (p *lexer) ParseString() {
 
 	// If we reach here, the string wasn't closed
 	p.addErrorAt("unterminated string literal", startPos)
+}
+
+// scanInterpIdentifier emits a single identifier token for a "$name" shorthand
+// interpolation. The leading '$' has already been consumed.
+func (p *lexer) scanInterpIdentifier() {
+	startPos := p.currentPos()
+	var ident strings.Builder
+	for p.Index < len(p.Source) {
+		c := p.Source[p.Index]
+		if !unicode.IsLetter(rune(c)) && !unicode.IsDigit(rune(c)) && c != '_' {
+			break
+		}
+		ident.WriteByte(c)
+		p.advance()
+	}
+	p.Tokens = append(p.Tokens, Token{Type: TokenTypeIdentifier, Value: ident.String(), Pos: startPos})
 }
 
 // skipLineComment skips a // comment until end of line
@@ -498,12 +593,28 @@ func (p *lexer) Parse() {
 			p.advance()
 		} else if b == '{' {
 			pos := p.currentPos()
+			if n := len(p.interpStack); n > 0 {
+				p.interpStack[n-1].braceDepth++
+			}
 			p.Tokens = append(p.Tokens, Token{Type: TokenTypeLBrace, Value: "{", Pos: pos})
 			p.advance()
 		} else if b == '}' {
 			pos := p.currentPos()
-			p.Tokens = append(p.Tokens, Token{Type: TokenTypeRBrace, Value: "}", Pos: pos})
-			p.advance()
+			if n := len(p.interpStack); n > 0 && p.interpStack[n-1].braceDepth == 0 {
+				// This "}" closes the active interpolation: emit InterpEnd and
+				// resume scanning the enclosing string literal.
+				frame := p.interpStack[n-1]
+				p.interpStack = p.interpStack[:n-1]
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeInterpEnd, Value: "}", Pos: pos})
+				p.advance() // skip '}'
+				p.scanStringChunk(frame.startPos, true)
+			} else {
+				if n > 0 {
+					p.interpStack[n-1].braceDepth--
+				}
+				p.Tokens = append(p.Tokens, Token{Type: TokenTypeRBrace, Value: "}", Pos: pos})
+				p.advance()
+			}
 		} else if b == '[' {
 			pos := p.currentPos()
 			p.Tokens = append(p.Tokens, Token{Type: TokenTypeLBracket, Value: "[", Pos: pos})

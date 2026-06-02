@@ -23,6 +23,52 @@ func TestAnalyzeLiteral(t *testing.T) {
 	})
 }
 
+func TestAnalyzeInterpolatedString(t *testing.T) {
+	interp := func(parts ...ast.Expression) *ast.InterpolatedStringExpr {
+		return &ast.InterpolatedStringExpr{Parts: parts}
+	}
+
+	t.Run("string and int parts", func(t *testing.T) {
+		test := newTest(t).withScope()
+		test.declare("name", TypeString, false)
+		test.declare("n", TypeS64, false)
+		result := test.analyzer.analyzeInterpolatedString(
+			interp(strLit("hi "), ident("name"), strLit(" #"), ident("n"), strLit("")))
+		test.expectType(result, TypeString)
+		test.expectNoErrors()
+	})
+
+	t.Run("bool part", func(t *testing.T) {
+		test := newTest(t).withScope()
+		test.declare("flag", TypeBoolean, false)
+		result := test.analyzer.analyzeInterpolatedString(interp(strLit(""), ident("flag"), strLit("")))
+		test.expectType(result, TypeString)
+		test.expectNoErrors()
+	})
+
+	t.Run("nullable part is allowed", func(t *testing.T) {
+		test := newTest(t).withScope()
+		test.declare("maybe", NullableType{InnerType: TypeS64}, false)
+		result := test.analyzer.analyzeInterpolatedString(interp(strLit(""), ident("maybe"), strLit("")))
+		test.expectType(result, TypeString)
+		test.expectNoErrors()
+	})
+
+	t.Run("float part is an error", func(t *testing.T) {
+		test := newTest(t).withScope()
+		test.declare("f", TypeFloat64, false)
+		test.analyzer.analyzeInterpolatedString(interp(strLit(""), ident("f"), strLit("")))
+		test.expectErrorContaining("cannot interpolate value of type")
+	})
+
+	t.Run("nullable float part is an error", func(t *testing.T) {
+		test := newTest(t).withScope()
+		test.declare("g", NullableType{InnerType: TypeFloat64}, false)
+		test.analyzer.analyzeInterpolatedString(interp(strLit(""), ident("g"), strLit("")))
+		test.expectErrorContaining("cannot interpolate value of type")
+	})
+}
+
 func TestAnalyzeBinaryExpression_Arithmetic(t *testing.T) {
 	for _, op := range []string{"+", "-", "*", "/", "%"} {
 		t.Run(op, func(t *testing.T) {

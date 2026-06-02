@@ -38,6 +38,11 @@ const (
 	OpStrEq       // string equality (Args[0], Args[1] -> bool)
 	OpStringLen   // string length (Args[0] = string) -> s64
 	OpStringIndex // string byte index (Args[0] = string, Args[1] = index) -> u8
+	OpStrConcat   // concatenate two strings (Args[0], Args[1] = string) -> string
+	OpIntToStr    // convert s64 to string (Args[0] = int) -> string
+	OpBoolToStr   // convert bool to string (Args[0] = bool) -> string
+	OpStrCopy     // deep-copy a string to a fresh heap allocation (Args[0] = string) -> string
+	OpStrFree     // free a heap string (Args[0] = string); no-op for non-heap (constant) pointers
 
 	// Memory operations
 	OpAlloc    // allocate memory (AuxInt = size), returns pointer
@@ -122,6 +127,16 @@ func (op Op) String() string {
 		return "StringLen"
 	case OpStringIndex:
 		return "StringIndex"
+	case OpStrConcat:
+		return "StrConcat"
+	case OpIntToStr:
+		return "IntToStr"
+	case OpBoolToStr:
+		return "BoolToStr"
+	case OpStrCopy:
+		return "StrCopy"
+	case OpStrFree:
+		return "StrFree"
 	case OpAlloc:
 		return "Alloc"
 	case OpFree:
@@ -191,7 +206,7 @@ func (op Op) IsTerminator() bool {
 // and cannot be eliminated even if its result is unused.
 func (op Op) HasSideEffects() bool {
 	switch op {
-	case OpStore, OpFree, OpCall, OpReturn, OpExit:
+	case OpStore, OpFree, OpStrFree, OpCall, OpReturn, OpExit:
 		return true
 	default:
 		return false

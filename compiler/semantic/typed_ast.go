@@ -63,6 +63,23 @@ func (e *TypedLiteralExpr) End() ast.Position { return e.EndPos }
 func (e *TypedLiteralExpr) GetType() Type     { return e.Type }
 func (e *TypedLiteralExpr) typedExprNode()    {}
 
+// TypedInterpolatedStringExpr represents a typed interpolated string. Parts is
+// the ordered list of pieces to stringify and concatenate; literal text
+// segments are *TypedLiteralExpr of string type, and interpolations are
+// arbitrary typed expressions (restricted to s64/string/bool and their nullable
+// forms by the analyzer). The whole expression has type string.
+type TypedInterpolatedStringExpr struct {
+	Type     Type
+	Parts    []TypedExpression
+	StartPos ast.Position
+	EndPos   ast.Position
+}
+
+func (e *TypedInterpolatedStringExpr) Pos() ast.Position { return e.StartPos }
+func (e *TypedInterpolatedStringExpr) End() ast.Position { return e.EndPos }
+func (e *TypedInterpolatedStringExpr) GetType() Type     { return e.Type }
+func (e *TypedInterpolatedStringExpr) typedExprNode()    {}
+
 // TypedIdentifierExpr represents a typed identifier (variable reference)
 type TypedIdentifierExpr struct {
 	Type     Type

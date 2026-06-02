@@ -101,6 +101,7 @@ The compiler currently supports:
   - Index access: `[]` for arrays
   - Safe navigation: `?.` for nullable field access
 - **Boolean literals**: `true`, `false`
+- **String interpolation**: `$name` and `${expr}` (Kotlin-style; see String Interpolation)
 - **Statements**: Expression statements, variable declarations, assignments
 - **Control Flow**:
   - `if`/`else` statements and expressions
@@ -914,6 +915,51 @@ main = () {
 - Cannot assign `null` to non-nullable type
 - Nested nullables (`T??`) are not allowed
 - Use null comparison (`x == null`, `x != null`) for null checks
+
+### String Interpolation
+
+Strings support Kotlin-style interpolation with `$name` (bare identifier) and
+`${expr}` (any expression):
+
+```slang
+main = () {
+    val name = "World"
+    val n = 42
+    print("Hello, ${name}!")        // Hello, World!
+    print("n=$n, sum=${n + 8}")     // n=42, sum=50
+    print("ok=${n > 0}")            // ok=true
+
+    val maybe: s64? = null
+    print("maybe is ${maybe}")      // maybe is null
+
+    print("cost is \$5")            // \$ is a literal dollar; a $ not followed
+                                    // by { or a letter is also literal
+}
+```
+
+**Interpolation rules:**
+- `$name` interpolates a bare identifier; `${...}` interpolates any expression
+- Only `s64`, `string`, `bool`, and their nullable forms (`T?`) may be
+  interpolated; a `T?` renders as `"null"` when null, otherwise its value.
+  Interpolating any other type is a compile error.
+- `\$` is a literal `$`; a `$` not followed by `{` or a letter is also literal
+- Interpolated strings may nest (`"${ "inner ${x}" }"`)
+
+**String memory model (important for compiler work):** `string` is a **copyable
+value type** (`IsCopyable(StringType)` is true — same bucket as primitives and
+copyable structs), **not** a move-only owned pointer like `*T`. Interpolation
+allocates heap strings, so `string` is also `varOwnsHeap`: a binding owns its
+heap buffer and frees it at scope exit, with **copy-on-store** semantics for
+borrowed strings (so `val b = a` gives `b` an independent buffer rather than
+aliasing). Constant string literals live in `.data`; the `_sl_str_free` runtime
+helper no-ops on non-heap pointers, so freeing any string is uniformly safe.
+This is the same dual nature as a copyable struct — value semantics at the type
+level, heap-backed and scope-freed at the IR level — and is intentionally *not*
+the move-only enforcement applied to `*T`. The runtime asserts a balanced heap
+at exit, so any new code path that produces strings must respect these rules.
+Relevant ops/helpers: `OpStrConcat`, `OpIntToStr`, `OpBoolToStr`, `OpStrCopy`,
+`OpStrFree` and the `_sl_int_to_str` / `_sl_bool_to_str` / `_sl_str_concat` /
+`_sl_str_copy` / `_sl_str_free` assembly helpers.
 
 ## Module System (SEP 10)
 

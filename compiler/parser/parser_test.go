@@ -669,6 +669,92 @@ func TestParserOperatorPrecedence(t *testing.T) {
 	}
 }
 
+func TestParserInterpolatedString(t *testing.T) {
+	// describePart renders a part as a compact string for comparison:
+	// "lit:<value>" for string-literal chunks, "<NodeType>" otherwise.
+	describePart := func(e ast.Expression) string {
+		if lit, ok := e.(*ast.LiteralExpr); ok && lit.Kind == ast.LiteralTypeString {
+			return "lit:" + lit.Value
+		}
+		switch e.(type) {
+		case *ast.IdentifierExpr:
+			return "ident"
+		case *ast.BinaryExpr:
+			return "binary"
+		case *ast.InterpolatedStringExpr:
+			return "interp"
+		default:
+			return "other"
+		}
+	}
+
+	tests := []struct {
+		name   string
+		source string
+		parts  []string
+	}{
+		{
+			name:   "brace identifier",
+			source: `val s = "hi ${name}!"`,
+			parts:  []string{"lit:hi ", "ident", "lit:!"},
+		},
+		{
+			name:   "bare identifier",
+			source: `val s = "hi $name"`,
+			parts:  []string{"lit:hi ", "ident", "lit:"},
+		},
+		{
+			name:   "expression",
+			source: `val s = "${a + b}"`,
+			parts:  []string{"lit:", "binary", "lit:"},
+		},
+		{
+			name:   "adjacent interpolations",
+			source: `val s = "${a}${b}"`,
+			parts:  []string{"lit:", "ident", "lit:", "ident", "lit:"},
+		},
+		{
+			name:   "nested interpolation",
+			source: `val s = "${ "in ${x}" }"`,
+			parts:  []string{"lit:", "interp", "lit:"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+			if len(l.Errors) > 0 {
+				t.Fatalf("lexer errors: %v", l.Errors)
+			}
+
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+			if len(p.Errors) > 0 {
+				t.Fatalf("parser errors: %v", p.Errors)
+			}
+
+			vd, ok := program.Statements[0].(*ast.VarDeclStmt)
+			if !ok {
+				t.Fatalf("expected VarDeclStmt, got %T", program.Statements[0])
+			}
+			interp, ok := vd.Initializer.(*ast.InterpolatedStringExpr)
+			if !ok {
+				t.Fatalf("expected InterpolatedStringExpr, got %T", vd.Initializer)
+			}
+
+			if len(interp.Parts) != len(tt.parts) {
+				t.Fatalf("expected %d parts, got %d", len(tt.parts), len(interp.Parts))
+			}
+			for i, want := range tt.parts {
+				if got := describePart(interp.Parts[i]); got != want {
+					t.Errorf("part %d: expected %q, got %q", i, want, got)
+				}
+			}
+		})
+	}
+}
+
 func TestParserIntegrationWithLexer(t *testing.T) {
 	tests := []struct {
 		name     string

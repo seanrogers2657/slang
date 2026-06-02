@@ -1054,6 +1054,58 @@ func (p *parser) ParseLiteral() ast.Expression {
 	return nil
 }
 
+// strChunkLiteral builds a string LiteralExpr from a StrChunk token.
+func (p *parser) strChunkLiteral(tok lexer.Token) *ast.LiteralExpr {
+	return &ast.LiteralExpr{
+		Kind:     ast.LiteralTypeString,
+		Value:    tok.Value,
+		StartPos: tok.Pos,
+		EndPos:   ast.Position{Line: tok.Pos.Line, Column: tok.Pos.Column + len(tok.Value), Offset: tok.Pos.Offset + len(tok.Value)},
+	}
+}
+
+// parseInterpolatedString parses the token stream produced for a string with
+// $-interpolations: StrChunk (InterpStart <expr> InterpEnd StrChunk)+.
+func (p *parser) parseInterpolatedString() ast.Expression {
+	startTok := p.CurrentToken() // first StrChunk
+	parts := []ast.Expression{p.strChunkLiteral(startTok)}
+	endPos := startTok.Pos
+	p.advance() // consume first StrChunk
+
+	for !p.isAtEnd() && p.CurrentToken().Type == lexer.TokenTypeInterpStart {
+		p.advance() // consume InterpStart
+
+		expr := p.parseExpression(precedenceLowest)
+		if expr == nil {
+			p.addError("expected expression in string interpolation", p.CurrentToken().Pos)
+			return nil
+		}
+		parts = append(parts, expr)
+
+		if p.isAtEnd() || p.CurrentToken().Type != lexer.TokenTypeInterpEnd {
+			p.addError("expected '}' to close string interpolation", p.CurrentToken().Pos)
+			return nil
+		}
+		p.advance() // consume InterpEnd
+
+		// A trailing StrChunk always follows an interpolation (it may be empty).
+		if p.isAtEnd() || p.CurrentToken().Type != lexer.TokenTypeStrChunk {
+			p.addError("expected string text after interpolation", p.CurrentToken().Pos)
+			return nil
+		}
+		chunkTok := p.CurrentToken()
+		parts = append(parts, p.strChunkLiteral(chunkTok))
+		endPos = chunkTok.Pos
+		p.advance() // consume trailing StrChunk
+	}
+
+	return &ast.InterpolatedStringExpr{
+		Parts:    parts,
+		StartPos: startTok.Pos,
+		EndPos:   endPos,
+	}
+}
+
 // parseExpression implements Pratt parsing with operator precedence
 func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 	// Parse prefix (primary expression)
@@ -1228,6 +1280,11 @@ func (p *parser) parseExpression(minPrec precedence) ast.Expression {
 
 // parsePrimary parses primary expressions (literals, identifiers, grouping, etc.)
 func (p *parser) parsePrimary() ast.Expression {
+	// Check for interpolated string (begins with a StrChunk token)
+	if p.CurrentToken().Type == lexer.TokenTypeStrChunk {
+		return p.parseInterpolatedString()
+	}
+
 	// Check for array literal
 	if p.CurrentToken().Type == lexer.TokenTypeLBracket {
 		return p.parseArrayLiteral()

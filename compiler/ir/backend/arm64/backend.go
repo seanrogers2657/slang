@@ -165,6 +165,9 @@ func (g *generator) generate() (string, error) {
 	// Emit string comparison helper
 	g.emitStrEqHelper()
 
+	// Emit string conversion/concatenation helpers (for interpolation)
+	g.emitStringConvHelpers()
+
 	// Emit panic helper
 	g.emitPanicHelper()
 
@@ -909,6 +912,176 @@ func (g *generator) emitStrEqHelper() {
 	g.emit("")
 }
 
+// emitStringConvHelpers emits runtime helpers used by string interpolation:
+// _sl_int_to_str (x0 = s64 -> x0 = heap string), _sl_bool_to_str (x0 = 0/1 ->
+// x0 = static "false"/"true"), and _sl_str_concat (x0,x1 = strings -> x0 = heap
+// string). All produced strings use the length-prefixed header {.quad len; bytes}.
+func (g *generator) emitStringConvHelpers() {
+	// ---- _sl_int_to_str ----
+	g.emit("// Int-to-string (x0 = value) -> x0 = ptr to {len; bytes}")
+	g.emit("_sl_int_to_str:")
+	g.emit("    stp x29, x30, [sp, #-16]!")
+	g.emit("    mov x29, sp")
+	g.emit("    stp x19, x20, [sp, #-16]!") // callee-saved across alloc
+	g.emit("    sub sp, sp, #32")           // digit scratch buffer
+	g.emit("    mov x10, x0")               // value
+	g.emit("    mov x11, sp")
+	g.emit("    add x11, x11, #30")         // write digits backward from here
+	g.emit("    mov x12, #0")               // digit count
+	g.emit("    mov x13, #0")               // negative flag
+	g.emit("    cmp x10, #0")
+	g.emit("    bge _sl_int_to_str_positive")
+	g.emit("    mov x13, #1")
+	g.emit("    neg x10, x10")
+	g.emit("_sl_int_to_str_positive:")
+	g.emit("    mov x14, #10")
+	g.emit("_sl_int_to_str_loop:")
+	g.emit("    udiv x15, x10, x14")
+	g.emit("    msub x16, x15, x14, x10")   // x16 = x10 % 10
+	g.emit("    add x16, x16, #48")         // to ASCII
+	g.emit("    strb w16, [x11]")
+	g.emit("    sub x11, x11, #1")
+	g.emit("    add x12, x12, #1")
+	g.emit("    mov x10, x15")
+	g.emit("    cbnz x10, _sl_int_to_str_loop")
+	g.emit("    cbz x13, _sl_int_to_str_alloc")
+	g.emit("    mov x16, #45")              // '-'
+	g.emit("    strb w16, [x11]")
+	g.emit("    sub x11, x11, #1")
+	g.emit("    add x12, x12, #1")
+	g.emit("_sl_int_to_str_alloc:")
+	g.emit("    add x11, x11, #1")          // x11 -> first char
+	g.emit("    mov x19, x11")              // save src ptr
+	g.emit("    mov x20, x12")              // save length
+	g.emit("    add x0, x12, #8")           // alloc len + header
+	g.emit("    bl _sl_heap_alloc")         // x0 = dest
+	g.emit("    str x20, [x0]")             // length header
+	g.emit("    add x9, x0, #8")            // dest bytes cursor
+	g.emit("    mov x10, x19")              // src cursor
+	g.emit("    mov x11, x20")              // remaining
+	g.emit("_sl_int_to_str_copy:")
+	g.emit("    cbz x11, _sl_int_to_str_done")
+	g.emit("    ldrb w12, [x10]")
+	g.emit("    strb w12, [x9]")
+	g.emit("    add x10, x10, #1")
+	g.emit("    add x9, x9, #1")
+	g.emit("    sub x11, x11, #1")
+	g.emit("    b _sl_int_to_str_copy")
+	g.emit("_sl_int_to_str_done:")
+	g.emit("    add sp, sp, #32")           // x0 still = dest ptr
+	g.emit("    ldp x19, x20, [sp], #16")
+	g.emit("    ldp x29, x30, [sp], #16")
+	g.emit("    ret")
+	g.emit("")
+
+	// ---- _sl_bool_to_str ----
+	g.emit("// Bool-to-string (x0 = 0/1) -> x0 = static string ptr")
+	g.emit("_sl_bool_to_str:")
+	g.emit("    cbz x0, _sl_bool_to_str_false")
+	g.emit("    adrp x0, _sl_true_str@PAGE")
+	g.emit("    add x0, x0, _sl_true_str@PAGEOFF")
+	g.emit("    ret")
+	g.emit("_sl_bool_to_str_false:")
+	g.emit("    adrp x0, _sl_false_str@PAGE")
+	g.emit("    add x0, x0, _sl_false_str@PAGEOFF")
+	g.emit("    ret")
+	g.emit("")
+
+	// ---- _sl_str_concat ----
+	g.emit("// String concat (x0 = a, x1 = b) -> x0 = ptr to {len; bytes}")
+	g.emit("_sl_str_concat:")
+	g.emit("    stp x29, x30, [sp, #-16]!")
+	g.emit("    mov x29, sp")
+	g.emit("    stp x19, x20, [sp, #-16]!")
+	g.emit("    stp x21, x22, [sp, #-16]!")
+	g.emit("    mov x19, x0")               // a ptr
+	g.emit("    mov x20, x1")               // b ptr
+	g.emit("    ldr x21, [x19]")            // len a
+	g.emit("    ldr x22, [x20]")            // len b
+	g.emit("    add x0, x21, x22")          // total content len
+	g.emit("    add x0, x0, #8")            // + header
+	g.emit("    bl _sl_heap_alloc")         // x0 = dest
+	g.emit("    add x9, x21, x22")
+	g.emit("    str x9, [x0]")              // length header
+	g.emit("    add x10, x0, #8")           // dest cursor
+	g.emit("    add x11, x19, #8")          // src a bytes
+	g.emit("    mov x12, x21")              // count a
+	g.emit("_sl_str_concat_a:")
+	g.emit("    cbz x12, _sl_str_concat_b")
+	g.emit("    ldrb w13, [x11]")
+	g.emit("    strb w13, [x10]")
+	g.emit("    add x11, x11, #1")
+	g.emit("    add x10, x10, #1")
+	g.emit("    sub x12, x12, #1")
+	g.emit("    b _sl_str_concat_a")
+	g.emit("_sl_str_concat_b:")
+	g.emit("    add x11, x20, #8")          // src b bytes
+	g.emit("    mov x12, x22")              // count b
+	g.emit("_sl_str_concat_b_loop:")
+	g.emit("    cbz x12, _sl_str_concat_done")
+	g.emit("    ldrb w13, [x11]")
+	g.emit("    strb w13, [x10]")
+	g.emit("    add x11, x11, #1")
+	g.emit("    add x10, x10, #1")
+	g.emit("    sub x12, x12, #1")
+	g.emit("    b _sl_str_concat_b_loop")
+	g.emit("_sl_str_concat_done:")
+	g.emit("    ldp x21, x22, [sp], #16")   // x0 still = dest ptr
+	g.emit("    ldp x19, x20, [sp], #16")
+	g.emit("    ldp x29, x30, [sp], #16")
+	g.emit("    ret")
+	g.emit("")
+
+	// ---- _sl_str_copy ----
+	g.emit("// String copy (x0 = src) -> x0 = fresh heap {len; bytes}")
+	g.emit("_sl_str_copy:")
+	g.emit("    stp x29, x30, [sp, #-16]!")
+	g.emit("    mov x29, sp")
+	g.emit("    stp x19, x20, [sp, #-16]!")
+	g.emit("    mov x19, x0")               // src ptr
+	g.emit("    ldr x20, [x19]")            // len
+	g.emit("    add x0, x20, #8")           // alloc len + header
+	g.emit("    bl _sl_heap_alloc")         // x0 = dest
+	g.emit("    str x20, [x0]")             // length header
+	g.emit("    add x9, x0, #8")            // dest bytes
+	g.emit("    add x10, x19, #8")          // src bytes
+	g.emit("    mov x11, x20")              // count
+	g.emit("_sl_str_copy_loop:")
+	g.emit("    cbz x11, _sl_str_copy_done")
+	g.emit("    ldrb w12, [x10]")
+	g.emit("    strb w12, [x9]")
+	g.emit("    add x10, x10, #1")
+	g.emit("    add x9, x9, #1")
+	g.emit("    sub x11, x11, #1")
+	g.emit("    b _sl_str_copy_loop")
+	g.emit("_sl_str_copy_done:")
+	g.emit("    ldp x19, x20, [sp], #16")   // x0 still = dest ptr
+	g.emit("    ldp x29, x30, [sp], #16")
+	g.emit("    ret")
+	g.emit("")
+
+	// ---- _sl_str_free ----
+	// Frees a heap string. Constant strings live in .data (not in any arena),
+	// so _sl_find_arena returns 0 and we no-op — this is what makes it safe to
+	// free any string uniformly without tracking heap-vs-constant origin.
+	g.emit("// String free (x0 = ptr); no-op if pointer is not heap-allocated")
+	g.emit("_sl_str_free:")
+	g.emit("    stp x29, x30, [sp, #-16]!")
+	g.emit("    mov x29, sp")
+	g.emit("    mov x1, x0")                // x1 = ptr (preserved across find_arena)
+	g.emit("    bl _sl_find_arena")         // x0 = arena or 0 (reads x0=ptr, clobbers x9-x12)
+	g.emit("    cbz x0, _sl_str_free_done") // not heap -> no-op
+	g.emit("    ldr x9, [x1]")              // len
+	g.emit("    add x9, x9, #8")            // size = len + header
+	g.emit("    mov x0, x1")                // ptr
+	g.emit("    mov x1, x9")                // size
+	g.emit("    bl _sl_heap_free")
+	g.emit("_sl_str_free_done:")
+	g.emit("    ldp x29, x30, [sp], #16")
+	g.emit("    ret")
+	g.emit("")
+}
+
 func (g *generator) emitPanicHelper() {
 	// _sl_panic: x0 = error message ptr, x1 = error msg len, x2 = func name ptr, x3 = func name len
 	g.emit("// Panic helper - prints error to stderr and exits with code 1")
@@ -1191,6 +1364,16 @@ func (g *generator) generateValue(v *ir.Value) error {
 		return g.genStringLen(v)
 	case ir.OpStringIndex:
 		return g.genStringIndex(v)
+	case ir.OpStrConcat:
+		return g.genStrConcat(v)
+	case ir.OpIntToStr:
+		return g.genIntToStr(v)
+	case ir.OpBoolToStr:
+		return g.genBoolToStr(v)
+	case ir.OpStrCopy:
+		return g.genStrCopy(v)
+	case ir.OpStrFree:
+		return g.genStrFree(v)
 	case ir.OpIsNull:
 		return g.genIsNull(v)
 	case ir.OpUnwrap:
@@ -1468,6 +1651,46 @@ func (g *generator) genStrEq(v *ir.Value) error {
 	offset := g.stackOffset(v)
 	g.storeToStack("x0", offset)
 
+	return nil
+}
+
+// genStrConcat concatenates two strings via the runtime helper.
+func (g *generator) genStrConcat(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x0")
+	g.loadValue(v.Args[1], "x1")
+	g.emit("    bl _sl_str_concat")
+	g.storeToStack("x0", g.stackOffset(v))
+	return nil
+}
+
+// genIntToStr converts an s64 to its decimal string via the runtime helper.
+func (g *generator) genIntToStr(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x0")
+	g.emit("    bl _sl_int_to_str")
+	g.storeToStack("x0", g.stackOffset(v))
+	return nil
+}
+
+// genBoolToStr converts a bool to "true"/"false" via the runtime helper.
+func (g *generator) genBoolToStr(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x0")
+	g.emit("    bl _sl_bool_to_str")
+	g.storeToStack("x0", g.stackOffset(v))
+	return nil
+}
+
+// genStrCopy deep-copies a string into a fresh heap allocation.
+func (g *generator) genStrCopy(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x0")
+	g.emit("    bl _sl_str_copy")
+	g.storeToStack("x0", g.stackOffset(v))
+	return nil
+}
+
+// genStrFree frees a heap string (no-op for constant/.data pointers).
+func (g *generator) genStrFree(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x0")
+	g.emit("    bl _sl_str_free")
 	return nil
 }
 

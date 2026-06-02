@@ -570,6 +570,139 @@ func TestLexerStringLiterals(t *testing.T) {
 	}
 }
 
+func TestLexerStringInterpolation(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []Token
+	}{
+		{
+			name:  "plain string stays single token",
+			input: "\"hello world\"",
+			expected: []Token{
+				{Type: TokenTypeString, Value: "hello world"},
+			},
+		},
+		{
+			name:  "bare identifier interpolation",
+			input: "\"hi $name\"",
+			expected: []Token{
+				{Type: TokenTypeStrChunk, Value: "hi "},
+				{Type: TokenTypeInterpStart, Value: "$"},
+				{Type: TokenTypeIdentifier, Value: "name"},
+				{Type: TokenTypeInterpEnd, Value: ""},
+				{Type: TokenTypeStrChunk, Value: ""},
+			},
+		},
+		{
+			name:  "brace identifier interpolation",
+			input: "\"hi ${name}!\"",
+			expected: []Token{
+				{Type: TokenTypeStrChunk, Value: "hi "},
+				{Type: TokenTypeInterpStart, Value: "${"},
+				{Type: TokenTypeIdentifier, Value: "name"},
+				{Type: TokenTypeInterpEnd, Value: "}"},
+				{Type: TokenTypeStrChunk, Value: "!"},
+			},
+		},
+		{
+			name:  "expression interpolation",
+			input: "\"${a + b}\"",
+			expected: []Token{
+				{Type: TokenTypeStrChunk, Value: ""},
+				{Type: TokenTypeInterpStart, Value: "${"},
+				{Type: TokenTypeIdentifier, Value: "a"},
+				{Type: TokenTypePlus, Value: "+"},
+				{Type: TokenTypeIdentifier, Value: "b"},
+				{Type: TokenTypeInterpEnd, Value: "}"},
+				{Type: TokenTypeStrChunk, Value: ""},
+			},
+		},
+		{
+			name:  "adjacent interpolations",
+			input: "\"a${x}b${y}c\"",
+			expected: []Token{
+				{Type: TokenTypeStrChunk, Value: "a"},
+				{Type: TokenTypeInterpStart, Value: "${"},
+				{Type: TokenTypeIdentifier, Value: "x"},
+				{Type: TokenTypeInterpEnd, Value: "}"},
+				{Type: TokenTypeStrChunk, Value: "b"},
+				{Type: TokenTypeInterpStart, Value: "${"},
+				{Type: TokenTypeIdentifier, Value: "y"},
+				{Type: TokenTypeInterpEnd, Value: "}"},
+				{Type: TokenTypeStrChunk, Value: "c"},
+			},
+		},
+		{
+			name:  "escaped dollar is literal",
+			input: "\"\\$5.00\"",
+			expected: []Token{
+				{Type: TokenTypeString, Value: "$5.00"},
+			},
+		},
+		{
+			name:  "lone dollar is literal",
+			input: "\"cost $ now\"",
+			expected: []Token{
+				{Type: TokenTypeString, Value: "cost $ now"},
+			},
+		},
+		{
+			name:  "nested string literal inside interpolation",
+			input: "\"${f(\"x\")}\"",
+			expected: []Token{
+				{Type: TokenTypeStrChunk, Value: ""},
+				{Type: TokenTypeInterpStart, Value: "${"},
+				{Type: TokenTypeIdentifier, Value: "f"},
+				{Type: TokenTypeLParen, Value: "("},
+				{Type: TokenTypeString, Value: "x"},
+				{Type: TokenTypeRParen, Value: ")"},
+				{Type: TokenTypeInterpEnd, Value: "}"},
+				{Type: TokenTypeStrChunk, Value: ""},
+			},
+		},
+		{
+			name:  "nested interpolation inside interpolation",
+			input: "\"${\"a${b}\"}\"",
+			expected: []Token{
+				{Type: TokenTypeStrChunk, Value: ""},  // outer leading chunk
+				{Type: TokenTypeInterpStart, Value: "${"},
+				{Type: TokenTypeStrChunk, Value: "a"}, // inner leading chunk
+				{Type: TokenTypeInterpStart, Value: "${"},
+				{Type: TokenTypeIdentifier, Value: "b"},
+				{Type: TokenTypeInterpEnd, Value: "}"},
+				{Type: TokenTypeStrChunk, Value: ""}, // inner trailing chunk
+				{Type: TokenTypeInterpEnd, Value: "}"},
+				{Type: TokenTypeStrChunk, Value: ""}, // outer trailing chunk
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("unexpected errors: %v", l.Errors)
+			}
+
+			if len(l.Tokens) != len(tt.expected) {
+				t.Fatalf("expected %d tokens, got %d: %+v", len(tt.expected), len(l.Tokens), l.Tokens)
+			}
+
+			for i, token := range l.Tokens {
+				if token.Type != tt.expected[i].Type {
+					t.Errorf("token %d: expected type %s, got %s", i, tt.expected[i].Type, token.Type)
+				}
+				if token.Value != tt.expected[i].Value {
+					t.Errorf("token %d: expected value %q, got %q", i, tt.expected[i].Value, token.Value)
+				}
+			}
+		})
+	}
+}
+
 func TestLexerStringErrors(t *testing.T) {
 	tests := []struct {
 		name          string

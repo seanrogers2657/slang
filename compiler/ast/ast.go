@@ -61,6 +61,21 @@ const (
 	LiteralTypeNull // null literal
 )
 
+// InterpolatedStringExpr represents a string literal containing one or more
+// $-interpolations (e.g., "hello ${name}" or "count = $n"). Parts is an ordered
+// list of the pieces to stringify and concatenate: literal text segments are
+// stored as *LiteralExpr with Kind == LiteralTypeString, and interpolations are
+// arbitrary expressions to be converted to strings.
+type InterpolatedStringExpr struct {
+	Parts    []Expression
+	StartPos Position
+	EndPos   Position
+}
+
+func (i *InterpolatedStringExpr) Pos() Position { return i.StartPos }
+func (i *InterpolatedStringExpr) End() Position { return i.EndPos }
+func (i *InterpolatedStringExpr) exprNode()     {}
+
 // UnaryExpr represents a unary operation (e.g., -5, !true)
 type UnaryExpr struct {
 	Op         string

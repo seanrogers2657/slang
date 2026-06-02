@@ -375,7 +375,7 @@ func (v *Validator) validateCFG(fn *Function) {
 func (v *Validator) canBeTypeless(val *Value) bool {
 	// Some operations don't produce values
 	switch val.Op {
-	case OpStore, OpFree, OpReturn, OpExit, OpMemCopy:
+	case OpStore, OpFree, OpStrFree, OpReturn, OpExit, OpMemCopy:
 		return true
 	default:
 		return false

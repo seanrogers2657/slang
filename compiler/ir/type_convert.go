@@ -27,6 +27,18 @@ func (tc *TypeConverter) Convert(t semantic.Type) Type {
 	return tc.convertComposite(t)
 }
 
+// ConvertSSA converts a semantic type to the IR type of an SSA value of that
+// type. Struct and class values live in memory and are carried in SSA form as
+// pointers to their allocation, so they convert to *StructType rather than
+// the bare aggregate. All other types convert as Convert does.
+func (tc *TypeConverter) ConvertSSA(t semantic.Type) Type {
+	irType := tc.Convert(t)
+	if st, ok := irType.(*StructType); ok {
+		return &PtrType{Elem: st}
+	}
+	return irType
+}
+
 // convertPrimitive converts primitive semantic types to IR types.
 // Returns nil if t is not a primitive type.
 func (tc *TypeConverter) convertPrimitive(t semantic.Type) Type {
@@ -90,9 +102,11 @@ func (tc *TypeConverter) convertComposite(t semantic.Type) Type {
 		return &NullableType{Elem: tc.Convert(nt.InnerType)}
 	}
 
-	// Handle array (only pointer form exists in practice)
-	if at, ok := t.(*semantic.ArrayType); ok {
-		return &ArrayType{Elem: tc.Convert(at.ElementType), Len: at.Size}
+	// Handle array (only pointer form exists in practice). Struct/class
+	// elements are separately allocated and the array stores pointers to
+	// them, so element types convert at SSA (pointer) representation.
+	if at, ok := asSemanticArrayType(t); ok {
+		return &ArrayType{Elem: tc.ConvertSSA(at.ElementType), Len: at.Size}
 	}
 
 	// Handle function type

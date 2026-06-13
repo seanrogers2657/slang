@@ -748,9 +748,12 @@ func (p *parser) ParseIfStatement() ast.Statement {
 
 	// Parse the condition expression.
 	// Suppress struct literals so '{' is interpreted as the block start, not a struct literal.
+	// Save and restore the flag rather than clearing it, so a nested if/while
+	// condition doesn't defeat an enclosing suppression.
+	savedNoStruct := p.noStructLiterals
 	p.noStructLiterals = true
 	condition := p.parseExpression(precedenceLowest)
-	p.noStructLiterals = false
+	p.noStructLiterals = savedNoStruct
 	if condition == nil {
 		p.addError("expected condition after 'if'", ifKeyword)
 		return nil
@@ -906,11 +909,14 @@ func (p *parser) ParseWhileStatement() ast.Statement {
 
 	// Parse condition (required)
 	// Suppress struct literals when no parens, so '{' starts the block.
+	// Save and restore the flag so a nested construct doesn't defeat an
+	// enclosing suppression.
+	savedNoStruct := p.noStructLiterals
 	if !hasParens {
 		p.noStructLiterals = true
 	}
 	condition := p.parseExpression(precedenceLowest)
-	p.noStructLiterals = false
+	p.noStructLiterals = savedNoStruct
 	if condition == nil {
 		p.addError("expected condition in while statement", p.CurrentToken().Pos)
 		return nil
@@ -1301,8 +1307,14 @@ func (p *parser) parsePrimary() ast.Expression {
 		leftParen := p.CurrentToken().Pos
 		p.advance() // consume '('
 
+		// Inside parentheses, '{' is unambiguous, so struct literals are
+		// allowed again even within an if/while condition.
+		savedNoStruct := p.noStructLiterals
+		p.noStructLiterals = false
+
 		// Parse the inner expression with lowest precedence
 		expr := p.parseExpression(precedenceLowest)
+		p.noStructLiterals = savedNoStruct
 		if expr == nil {
 			p.addError("expected expression after '('", leftParen)
 			return nil
@@ -1441,6 +1453,12 @@ func (p *parser) parseCallExpr(name string, namePos ast.Position) ast.Expression
 	leftParen := p.CurrentToken().Pos
 	p.advance() // consume '('
 
+	// Inside an argument list, '{' is unambiguous, so struct literals are
+	// allowed again even within an enclosing if/while condition.
+	savedNoStruct := p.noStructLiterals
+	p.noStructLiterals = false
+	defer func() { p.noStructLiterals = savedNoStruct }()
+
 	// Skip newlines after '(' for multi-line argument lists
 	p.skipNewlines()
 
@@ -1530,6 +1548,12 @@ func (p *parser) parseCallExpr(name string, namePos ast.Position) ast.Expression
 func (p *parser) parseMethodCall(object ast.Expression, dotPos ast.Position, methodName string, methodPos ast.Position, safeNavigation bool) ast.Expression {
 	leftParen := p.CurrentToken().Pos
 	p.advance() // consume '('
+
+	// Inside an argument list, '{' is unambiguous, so struct literals are
+	// allowed again even within an enclosing if/while condition.
+	savedNoStruct := p.noStructLiterals
+	p.noStructLiterals = false
+	defer func() { p.noStructLiterals = savedNoStruct }()
 
 	// Skip newlines after '(' for multi-line argument lists
 	p.skipNewlines()
@@ -2316,23 +2340,46 @@ func (p *parser) ParseStructDecl() *ast.StructDecl {
 func (p *parser) parseStructFields() []ast.StructField {
 	fields := []ast.StructField{}
 
-	// Check if there are no fields
+	// Skip any leading separators, then check for an empty body.
+	p.skipFieldSeparators()
 	if p.CurrentToken().Type == lexer.TokenTypeRBrace {
 		return fields
 	}
 
-	// Parse fields (newline-separated)
+	// Parse fields separated by newlines and/or semicolons.
 	for p.CurrentToken().Type != lexer.TokenTypeRBrace && !p.isAtEnd() {
+		startIndex := p.Index
+
 		field := p.parseStructField()
 		if field != nil {
 			fields = append(fields, *field)
 		}
 
-		// Skip newlines between fields
-		p.skipNewlines()
+		// Guard against non-progress: a parse error that consumes no tokens
+		// (e.g. an unexpected separator or stray token) would otherwise spin
+		// the loop forever. Advance past the offending token to recover.
+		if p.Index == startIndex {
+			p.advance()
+		}
+
+		// Skip separators (newlines and/or semicolons) between fields.
+		p.skipFieldSeparators()
 	}
 
 	return fields
+}
+
+// skipFieldSeparators skips any run of newlines and semicolons. Both separate
+// fields in a struct body, so either (or a mix) is accepted between fields.
+func (p *parser) skipFieldSeparators() {
+	for !p.isAtEnd() {
+		switch p.CurrentToken().Type {
+		case lexer.TokenTypeNewline, lexer.TokenTypeSemicolon:
+			p.Index++
+		default:
+			return
+		}
+	}
 }
 
 // parseStructField parses a single struct field: val name: type or var name: type

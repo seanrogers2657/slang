@@ -14,6 +14,7 @@ import (
 
 	"github.com/seanrogers2657/slang/assembler"
 	"github.com/seanrogers2657/slang/assembler/slasm"
+	"github.com/seanrogers2657/slang/compiler/ir"
 	"github.com/seanrogers2657/slang/compiler/ir/backend"
 	"github.com/seanrogers2657/slang/compiler/ir/backend/arm64"
 	"github.com/seanrogers2657/slang/compiler/slpackage"
@@ -145,6 +146,14 @@ func compileAndRun(t *testing.T, tc *testutil.TestExpectation, rootDir string, r
 			return
 		}
 		t.Fatalf("IR generation error: %v", irErr)
+	}
+
+	// Validate IR well-formedness (same check `sl build` runs)
+	if validationErrs := ir.Validate(irProg); len(validationErrs) > 0 {
+		for _, e := range validationErrs {
+			t.Errorf("IR validation: %s", e.Error())
+		}
+		t.Fatalf("IR validation failed with %d error(s)", len(validationErrs))
 	}
 
 	// Phase 4: ARM64 Backend

@@ -135,6 +135,28 @@ func (a *Analyzer) snapshotOwnershipState() map[string]OwnershipInfo {
 	return snapshot
 }
 
+// restoreOwnershipState resets tracked variables back to a previously captured
+// snapshot. This is used between mutually-exclusive branches (if/else, when
+// cases) so that a move performed in one branch does not leak into the analysis
+// of a sibling branch and cause a spurious use-after-move error. The union of
+// moves across branches is re-applied afterward via mergeConditionalMoves.
+func (a *Analyzer) restoreOwnershipState(snapshot map[string]OwnershipInfo) {
+	seen := make(map[string]bool)
+	for scope := a.ownershipScope; scope != nil; scope = scope.parent {
+		for name := range scope.ownership {
+			// Restore only the innermost occurrence of each name, matching
+			// how snapshotOwnershipState captured it.
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			if info, ok := snapshot[name]; ok {
+				scope.ownership[name] = info
+			}
+		}
+	}
+}
+
 // collectBranchMoves returns variables that were moved since the snapshot was taken
 func (a *Analyzer) collectBranchMoves(beforeSnapshot map[string]OwnershipInfo) []moveRecord {
 	var moves []moveRecord
@@ -1407,6 +1429,16 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 						}
 					}
 				}
+				// Coerce a numeric literal initializer to its declared type so
+				// downstream stages see the correct width and signedness, e.g.
+				// `val a: u64 = 1` types the literal u64 rather than the default
+				// s64 (otherwise codegen would emit signed operations for it).
+				if litExpr, ok := typedInit.(*TypedLiteralExpr); ok {
+					if (litExpr.LitType == ast.LiteralTypeInteger && IsIntegerType(declaredType)) ||
+						(litExpr.LitType == ast.LiteralTypeFloat && IsFloatType(declaredType)) {
+						litExpr.Type = declaredType
+					}
+				}
 			}
 		} else {
 			// Infer type from initializer
@@ -2189,6 +2221,12 @@ func (a *Analyzer) analyzeIfStatement(stmt *ast.IfStmt) TypedStatement {
 	typedThenBranch := a.analyzeBlockStmt(stmt.ThenBranch)
 	thenMoves := a.collectBranchMoves(beforeSnapshot)
 	a.exitScope()
+
+	// Restore ownership to the pre-branch state so the else branch is analyzed
+	// independently. The then and else branches are mutually exclusive, so a
+	// move in the then branch must not make a use in the else branch look like
+	// a use-after-move. The union of moves is re-applied below.
+	a.restoreOwnershipState(beforeSnapshot)
 
 	// Collect moves from else branch
 	var elseMoves []moveRecord
@@ -3686,6 +3724,13 @@ func (a *Analyzer) tryAnalyzeInstanceMethodCall(typedObject TypedExpression, obj
 		// Error already reported by checkReceiverCompatibility
 	}
 
+	// If the method consumes its receiver by value (self: *T), calling it moves
+	// the receiver, exactly like passing an owned pointer to a free function.
+	// Record the move so a subsequent use is reported as use-after-move.
+	if IsOwnedPointer(selfType) {
+		a.checkAndRecordMove(expr.Object, "<method receiver>", expr.Object.Pos())
+	}
+
 	// Determine result type: for safe navigation, wrap non-void return types in nullable
 	resultType := methodInfo.ReturnType
 	if expr.SafeNavigation {
@@ -4508,6 +4553,28 @@ func (a *Analyzer) analyzeUnaryExpression(expr *ast.UnaryExpr) TypedExpression {
 			}
 		}
 
+		// Fold a unary minus applied to an integer literal into a negative
+		// integer literal. Otherwise `-5` is a TypedUnaryExpr of type s64 that
+		// bypasses the literal-bounds machinery, so in-range negative values
+		// for narrow signed types (e.g. `val a: s8 = -5`) are wrongly rejected.
+		// Folding also makes negative literals work uniformly as function
+		// arguments and if-expression branches.
+		if lit, ok := operand.(*TypedLiteralExpr); ok && lit.LitType == ast.LiteralTypeInteger {
+			value := lit.Value
+			if strings.HasPrefix(value, "-") {
+				value = value[1:] // double negation cancels out
+			} else {
+				value = "-" + value
+			}
+			return &TypedLiteralExpr{
+				Type:     operandType,
+				LitType:  ast.LiteralTypeInteger,
+				Value:    value,
+				StartPos: expr.OpPos,
+				EndPos:   expr.OperandEnd,
+			}
+		}
+
 		return &TypedUnaryExpr{
 			Type:       operandType,
 			Op:         expr.Op,
@@ -4877,9 +4944,12 @@ func (a *Analyzer) analyzeWhen(when *ast.WhenExpr, isExpression bool) *TypedWhen
 		typedCase := a.analyzeWhenCase(wcase, isExpression)
 		typedCases[i] = typedCase
 
-		// Collect moves from this case
+		// Collect moves from this case, then restore the pre-case ownership
+		// state so the next case is analyzed independently (cases are mutually
+		// exclusive). The union of moves is re-applied after the loop.
 		caseMoves := a.collectBranchMoves(beforeSnapshot)
 		allMoves = append(allMoves, caseMoves...)
+		a.restoreOwnershipState(beforeSnapshot)
 
 		if wcase.IsElse {
 			hasElse = true

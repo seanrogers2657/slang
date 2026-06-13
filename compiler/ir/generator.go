@@ -246,7 +246,7 @@ func (g *Generator) registerStruct(sd *semantic.TypedStructDecl) {
 // generateFunction generates IR for a function declaration.
 func (g *Generator) generateFunction(fd *semantic.TypedFunctionDecl) error {
 	// Convert return type
-	retType := g.convertType(fd.ReturnType)
+	retType := g.convertSSAType(fd.ReturnType)
 
 	// Create function
 	g.fn = g.prog.NewFunction(fd.Name, retType)
@@ -266,7 +266,7 @@ func (g *Generator) generateFunction(fd *semantic.TypedFunctionDecl) error {
 	// Generate parameters
 	semParams := make([]semantic.Type, 0, len(fd.Parameters))
 	for _, param := range fd.Parameters {
-		paramType := g.convertType(param.Type)
+		paramType := g.convertSSAType(param.Type)
 		paramVal := g.fn.NewParam(paramType)
 
 		// Record parameter as initial definition of the variable
@@ -354,7 +354,7 @@ func (g *Generator) generateMethod(className string, md *semantic.TypedMethodDec
 	mangledName := fmt.Sprintf("%s_%s_%d", className, md.Name, len(md.Parameters))
 
 	// Convert return type
-	retType := g.convertType(md.ReturnType)
+	retType := g.convertSSAType(md.ReturnType)
 
 	// Create function
 	g.fn = g.prog.NewFunction(mangledName, retType)
@@ -368,7 +368,7 @@ func (g *Generator) generateMethod(className string, md *semantic.TypedMethodDec
 
 	// Generate parameters (including self for instance methods)
 	for _, param := range md.Parameters {
-		paramType := g.convertType(param.Type)
+		paramType := g.convertSSAType(param.Type)
 		paramVal := g.fn.NewParam(paramType)
 		g.writeVariable(param.Name, g.block, paramVal)
 	}
@@ -471,7 +471,7 @@ func (g *Generator) generateStatement(stmt semantic.TypedStatement) error {
 
 // generateVarDecl generates IR for a variable declaration.
 func (g *Generator) generateVarDecl(vd *semantic.TypedVarDeclStmt) error {
-	declType := g.convertType(vd.DeclaredType)
+	declType := g.convertSSAType(vd.DeclaredType)
 
 	// Handle null literal specially
 	if isNullLiteral(vd.Initializer) {
@@ -495,6 +495,10 @@ func (g *Generator) generateVarDecl(vd *semantic.TypedVarDeclStmt) error {
 	// A bound string takes value semantics: copy if it borrows storage owned
 	// elsewhere so the binding owns an independent buffer.
 	val = g.maybeCopyString(val, vd.Initializer)
+
+	// Aggregates take value semantics too: deep-copy a copyable aggregate
+	// read from an existing binding; move ownership out of a move-only one.
+	val = g.bindAggregateValue(val, vd.Initializer)
 
 	g.writeVariable(vd.Name, g.block, g.wrapIfNeeded(val, declType))
 	g.trackOwnedVar(vd.Name, vd.DeclaredType)
@@ -576,7 +580,7 @@ func (g *Generator) copyNullableValue(src *Value, semType semantic.Type) *Value 
 
 // generateAssign generates IR for a variable assignment.
 func (g *Generator) generateAssign(as *semantic.TypedAssignStmt) error {
-	varType := g.convertType(as.VarType)
+	varType := g.convertSSAType(as.VarType)
 
 	if isNullLiteral(as.Value) {
 		g.emitFreeIfOwned(as.Name, as.VarType)
@@ -589,9 +593,10 @@ func (g *Generator) generateAssign(as *semantic.TypedAssignStmt) error {
 	// to as.Name. Mark the source as moved so its scope exit doesn't double-
 	// free what the destination now owns.
 	if ident, ok := as.Value.(*semantic.TypedIdentifierExpr); ok {
-		// Strings use copy semantics (not move), so the source remains valid
-		// and must not be marked moved.
-		if ident.Name != as.Name && varOwnsHeap(ident.Type) && !isStringType(ident.Type) {
+		// Strings and copyable aggregates use copy semantics (not move), so
+		// the source remains valid and must not be marked moved.
+		if ident.Name != as.Name && varOwnsHeap(ident.Type) && !isStringType(ident.Type) &&
+			!g.aggregateIsCopyable(ident.Type) {
 			g.markMoved(ident.Name)
 		}
 	}
@@ -614,6 +619,10 @@ func (g *Generator) generateAssign(as *semantic.TypedAssignStmt) error {
 	// Strings take value semantics: copy a borrowed source so the destination
 	// owns an independent buffer.
 	val = g.maybeCopyString(val, as.Value)
+
+	// Aggregates take value semantics too: deep-copy a copyable aggregate
+	// read from an existing binding; move ownership out of a move-only one.
+	val = g.bindAggregateValue(val, as.Value)
 
 	// Free whatever the variable currently owns before overwriting. The new
 	// value gives the variable fresh ownership, so clear any moved flag too.
@@ -848,6 +857,13 @@ func (g *Generator) generateReturn(rs *semantic.TypedReturnStmt) error {
 			// so the caller gets a live pointer.
 			if ident, ok := rs.Value.(*semantic.TypedIdentifierExpr); ok {
 				if elemType, _ := g.getOwnedPointerInfo(ident.Type); elemType != nil {
+					excludeVar = ident.Name
+				} else if varOwnsHeap(ident.Type) && !isStringType(ident.Type) &&
+					nullableValueInner(ident.Type) == nil {
+					// Struct/class/array locals transfer their backing
+					// allocation to the caller on return. Strings are copied
+					// (below) and value-type nullables get a fresh slot, so
+					// both still need their scope-exit free.
 					excludeVar = ident.Name
 				}
 			}
@@ -1134,7 +1150,15 @@ func (g *Generator) generateContinue(_ *semantic.TypedContinueStmt) error {
 
 // generateWhen generates IR for a when expression.
 func (g *Generator) generateWhen(we *semantic.TypedWhenExpr) (*Value, error) {
-	resultType := g.convertType(we.ResultType)
+	// Statement-position when has no result type; only build a result phi
+	// for expression-position when. convertSSAType maps nil to TypeVoid, so
+	// check the semantic type before converting.
+	var resultType Type
+	if we.ResultType != nil {
+		if _, isVoid := we.ResultType.(semantic.VoidType); !isVoid {
+			resultType = g.convertSSAType(we.ResultType)
+		}
+	}
 	mergeBlock := g.fn.NewBlock(BlockPlain)
 
 	// Track phi arguments if this is an expression (has result type)
@@ -1181,8 +1205,12 @@ func (g *Generator) generateWhen(we *semantic.TypedWhenExpr) (*Value, error) {
 			// Seal then block (its only predecessor is the current conditional block)
 			g.sealBlock(thenBlock)
 
-			// Seal next block (its only predecessor is the current conditional block)
-			g.sealBlock(nextBlock)
+			// Seal next block (its only predecessor is the current conditional
+			// block) — unless it is the merge block, which gains more
+			// predecessors from case bodies and is sealed after the loop.
+			if nextBlock != mergeBlock {
+				g.sealBlock(nextBlock)
+			}
 
 			// Generate then block
 			g.block = thenBlock
@@ -1682,9 +1710,13 @@ func (g *Generator) generateShortCircuit(be *semantic.TypedBinaryExpr) (*Value, 
 	g.block = mergeBlock
 
 	phi := g.block.NewPhiValue(TypeBool)
+	// The short-circuit constant flows in from leftBlock, so materialize it
+	// there rather than in the merge block. Emitting it in the merge block
+	// would leave a trailing OpConst as the block's last value, which
+	// generateIfExpr's getLastValue() would mistake for the if-branch result.
 	if be.Op == "&&" {
 		// AND: false from left, right's value from right
-		falseVal := g.block.NewValue(OpConst, TypeBool)
+		falseVal := leftBlock.NewValue(OpConst, TypeBool)
 		falseVal.AuxInt = 0
 		phi.PhiArgs = []*PhiArg{
 			{From: leftBlock, Value: falseVal},
@@ -1692,7 +1724,7 @@ func (g *Generator) generateShortCircuit(be *semantic.TypedBinaryExpr) (*Value, 
 		}
 	} else {
 		// OR: true from left, right's value from right
-		trueVal := g.block.NewValue(OpConst, TypeBool)
+		trueVal := leftBlock.NewValue(OpConst, TypeBool)
 		trueVal.AuxInt = 1
 		phi.PhiArgs = []*PhiArg{
 			{From: leftBlock, Value: trueVal},
@@ -1804,6 +1836,13 @@ func (g *Generator) generateCall(ce *semantic.TypedCallExpr) (*Value, error) {
 	// Generate arguments
 	var args []*Value
 	var strTempFrees []*Value // fresh string temps to free after the call
+	// Aggregate (struct/class/array) temporaries the callee only borrows;
+	// the caller must free them after the call or they leak.
+	type aggTemp struct {
+		val *Value
+		sem semantic.Type
+	}
+	var aggTempFrees []aggTemp
 	for i, arg := range ce.Arguments {
 		// If this argument is an identifier of an owned-heap type AND the
 		// callee declares the corresponding parameter as an owned pointer,
@@ -1826,10 +1865,18 @@ func (g *Generator) generateCall(ce *semantic.TypedCallExpr) (*Value, error) {
 		// longer referenced after the call and must be freed.
 		if isOwnedStringTemp(arg) {
 			strTempFrees = append(strTempFrees, v)
+		} else if isOwningTemp(arg) && isHeapValueType(arg.GetType()) {
+			// Struct/class/array values are borrowed by callees (only *T
+			// params consume). A temp produced by a literal or call result
+			// has no owner to free it at scope exit — free it here.
+			transfers := i < len(calleeParams) && argTransfersOwnership(arg.GetType(), calleeParams[i])
+			if !transfers {
+				aggTempFrees = append(aggTempFrees, aggTemp{val: v, sem: arg.GetType()})
+			}
 		}
 	}
 
-	resultType := g.convertType(ce.Type)
+	resultType := g.convertSSAType(ce.Type)
 
 	callName := calleeName
 
@@ -1885,6 +1932,11 @@ func (g *Generator) generateCall(ce *semantic.TypedCallExpr) (*Value, error) {
 	// Free fresh string-temp arguments now that the callee has used them.
 	for _, sv := range strTempFrees {
 		g.builder().StrFree(sv)
+	}
+
+	// Free borrowed aggregate temporaries now that the callee has used them.
+	for _, at := range aggTempFrees {
+		freeOwningTemp(g, at.val, at.sem)
 	}
 
 	return callVal, nil
@@ -1944,7 +1996,9 @@ func (g *Generator) generateIndex(ie *semantic.TypedIndexExpr) (*Value, error) {
 		return v, nil
 	}
 
-	resultType := g.convertType(ie.Type)
+	// Array slots hold struct/class elements as pointers, so elements read
+	// at SSA (pointer) representation.
+	resultType := g.convertSSAType(ie.Type)
 
 	// Create index pointer
 	elemPtr := g.block.NewValue(OpIndexPtr, &PtrType{Elem: resultType})
@@ -1980,7 +2034,7 @@ func (g *Generator) generateLen(le *semantic.TypedLenExpr) (*Value, error) {
 
 // generateArrayLiteral generates IR for an array literal.
 func (g *Generator) generateArrayLiteral(al *semantic.TypedArrayLiteralExpr) (*Value, error) {
-	elemType := g.convertType(al.Type.ElementType)
+	elemType := g.convertSSAType(al.Type.ElementType)
 	arrayType := &ArrayType{Elem: elemType, Len: al.Type.Size}
 	b := g.builder()
 
@@ -2177,7 +2231,7 @@ func (g *Generator) generateMethodCall(mc *semantic.TypedMethodCallExpr) (*Value
 	// Determine mangled function name (include param count for overloading)
 	mangledName := g.mangleMethodName(mc.Object.GetType(), mc)
 
-	resultType := g.convertType(mc.Type)
+	resultType := g.convertSSAType(mc.Type)
 
 	call := g.block.NewValue(OpCall, resultType)
 	call.AuxString = mangledName
@@ -2253,7 +2307,7 @@ func (g *Generator) generateSafeMethodCall(mc *semantic.TypedMethodCallExpr) (*V
 		return nil, err
 	}
 
-	resultType := g.convertType(mc.Type)
+	resultType := g.convertSSAType(mc.Type)
 	blocks := g.createNullCheckBlocks()
 
 	// Branch on null check
@@ -2463,6 +2517,116 @@ func (g *Generator) generateNewExpr(expr *semantic.TypedNewExpr) (*Value, error)
 	return alloc, nil
 }
 
+// aggregateIsCopyable reports whether an aggregate (struct/class/array) type
+// has copy semantics. Normalizes pointer/value forms before consulting
+// semantic.IsCopyable (which only matches value forms). Classes are move-only.
+func (g *Generator) aggregateIsCopyable(t semantic.Type) bool {
+	if st := g.getSemanticStructType(t); st != nil {
+		return semantic.IsCopyable(*st)
+	}
+	if at, ok := asSemanticArrayType(t); ok {
+		return semantic.IsCopyable(*at)
+	}
+	return false
+}
+
+// bindAggregateValue implements value semantics when binding an aggregate
+// (struct/class/array) read to a variable. Fresh temporaries (literals, call
+// results) already belong to the new binding. Aliasing reads of a copyable
+// aggregate are deep-copied so each binding owns independent storage.
+// Move-only aggregates transfer ownership out of their source binding.
+func (g *Generator) bindAggregateValue(val *Value, expr semantic.TypedExpression) *Value {
+	t := expr.GetType()
+	if !isHeapValueType(t) {
+		return val
+	}
+	if isOwningTemp(expr) {
+		return val
+	}
+	if g.aggregateIsCopyable(t) {
+		return g.emitDeepCopyAggregate(val, t)
+	}
+	if ident, ok := expr.(*semantic.TypedIdentifierExpr); ok {
+		g.markMoved(ident.Name)
+	}
+	return val
+}
+
+// emitDeepCopyAggregate returns a pointer to a fresh deep copy of the
+// copyable aggregate (struct or array) at src. Move-only aggregates never
+// reach here, so owned-pointer fields cannot appear at any depth and the
+// recursion terminates.
+func (g *Generator) emitDeepCopyAggregate(src *Value, semType semantic.Type) *Value {
+	b := g.builder()
+	size := g.getElementTypeSize(semType)
+	alloc := b.Alloc(g.convertType(semType), int64(size))
+	b.MemCopy(alloc, src, int64(size))
+	g.emitDeepCopyFixups(alloc, semType)
+	return alloc
+}
+
+// emitDeepCopyFixups walks a freshly shallow-copied aggregate at dst and
+// replaces fields/elements that reference heap storage owned by the source
+// with independent copies.
+func (g *Generator) emitDeepCopyFixups(dst *Value, semType semantic.Type) {
+	b := g.builder()
+
+	if at, ok := asSemanticArrayType(semType); ok {
+		elemSem := at.ElementType
+		if !isStringType(elemSem) && !isHeapValueType(elemSem) && nullableValueInner(elemSem) == nil {
+			return
+		}
+		elemIRType := g.convertSSAType(elemSem)
+		for i := 0; i < at.Size; i++ {
+			idx := g.block.NewValue(OpConst, TypeS64)
+			idx.AuxInt = int64(i)
+			elemPtr := g.block.NewValue(OpIndexPtr, &PtrType{Elem: elemIRType}, dst, idx)
+			elemVal := g.block.NewValue(OpLoad, elemIRType, elemPtr)
+			b.Store(elemPtr, g.deepCopiedValue(elemVal, elemSem))
+		}
+		return
+	}
+
+	if st := g.getSemanticStructType(semType); st != nil {
+		for _, field := range st.Fields {
+			offset := int64(st.FieldOffset(field.Name))
+			fieldIRType := g.convertType(field.Type)
+
+			// Embedded struct field: its bytes were already copied in place;
+			// fix up its heap-referencing fields through the embedded region.
+			if g.getSemanticStructType(field.Type) != nil {
+				fieldPtr := b.FieldPtr(dst, fieldIRType, offset)
+				g.emitDeepCopyFixups(fieldPtr, field.Type)
+				continue
+			}
+
+			if isStringType(field.Type) || nullableValueInner(field.Type) != nil ||
+				isHeapValueType(field.Type) {
+				fieldPtr := b.FieldPtr(dst, fieldIRType, offset)
+				fieldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
+				b.Store(fieldPtr, g.deepCopiedValue(fieldVal, field.Type))
+			}
+		}
+	}
+}
+
+// deepCopiedValue returns an independently owned copy of val, dispatching on
+// the semantic type: strings copy their buffer, value-type nullables copy
+// their heap slot (preserving null), and nested aggregates copy recursively.
+// Plain values are returned unchanged.
+func (g *Generator) deepCopiedValue(val *Value, semType semantic.Type) *Value {
+	if isStringType(semType) {
+		return g.builder().StrCopy(val)
+	}
+	if nullableValueInner(semType) != nil {
+		return g.copyNullableValue(val, semType)
+	}
+	if isHeapValueType(semType) {
+		return g.emitDeepCopyAggregate(val, semType)
+	}
+	return val
+}
+
 // generateCopy generates IR for .copy() method.
 func (g *Generator) generateCopy(mc *semantic.TypedMethodCallExpr) (*Value, error) {
 	// Generate object to copy
@@ -2486,7 +2650,7 @@ func (g *Generator) generateSafeCall(sc *semantic.TypedSafeCallExpr) (*Value, er
 		return nil, err
 	}
 
-	resultType := g.convertType(sc.Type)
+	resultType := g.convertSSAType(sc.Type)
 
 	// Check if null
 	isNull := g.block.NewValue(OpIsNull, TypeBool)
@@ -2867,7 +3031,7 @@ func (g *Generator) emitRecursiveFreeWithVisited(ptr *Value, elemType semantic.T
 	if at, ok := asSemanticArrayType(elemType); ok {
 		if varOwnsHeap(at.ElementType) {
 			elemSize := g.getElementTypeSize(at.ElementType)
-			elemIRType := g.convertType(at.ElementType)
+			elemIRType := g.convertSSAType(at.ElementType)
 			needsNullCheck := nullableValueInner(at.ElementType) != nil ||
 				isNullableOwnedType(at.ElementType)
 			for i := 0; i < at.Size; i++ {
@@ -3242,6 +3406,14 @@ func (g *Generator) nullableValueAllocSize(inner semantic.Type) int {
 // This is a convenience wrapper around TypeConverter.Convert.
 func (g *Generator) convertType(t semantic.Type) Type {
 	return g.types().Convert(t)
+}
+
+// convertSSAType converts a semantic type to the IR type carried by an SSA
+// value of that type: struct/class values are represented as pointers to
+// their allocation. Use this for parameter, return, call-result, and
+// variable types; use convertType for layout positions (fields, elements).
+func (g *Generator) convertSSAType(t semantic.Type) Type {
+	return g.types().ConvertSSA(t)
 }
 
 // convertStructType converts a semantic struct type to IR.

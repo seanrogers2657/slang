@@ -996,16 +996,19 @@ func (e *Encoder) encodeCset(inst *Instruction) ([]byte, error) {
 		return nil, fmt.Errorf("line %d:%d: cset destination: %w", inst.Line, inst.Column, err)
 	}
 
-	// Map condition codes
+	// Map condition codes (signed and unsigned relations plus carry aliases)
 	condMap := map[string]uint32{
 		"eq": 0b0000, "ne": 0b0001,
 		"lt": 0b1011, "le": 0b1101,
 		"gt": 0b1100, "ge": 0b1010,
+		"hi": 0b1000, "ls": 0b1001, // unsigned higher / lower-or-same
+		"hs": 0b0010, "lo": 0b0011, // unsigned higher-or-same / lower (cs/cc aliases)
+		"cs": 0b0010, "cc": 0b0011,
 	}
 
 	cond, ok := condMap[inst.Operands[1].Value]
 	if !ok {
-		return nil, fmt.Errorf("line %d:%d: unknown condition '%s' (valid: eq, ne, lt, le, gt, ge)",
+		return nil, fmt.Errorf("line %d:%d: unknown condition '%s' (valid: eq, ne, lt, le, gt, ge, hi, ls, hs, lo, cs, cc)",
 			inst.Line, inst.Column, inst.Operands[1].Value)
 	}
 

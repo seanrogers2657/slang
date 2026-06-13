@@ -833,6 +833,49 @@ func (g *generator) emitPrintHelpers() {
 	g.emit("    ret")
 	g.emit("")
 
+	// Print unsigned integer helper. Identical to _sl_print_int but with no
+	// sign handling, so the full 64-bit value is treated as unsigned.
+	g.emit("// Print unsigned integer (x0 = value)")
+	g.emit("_sl_print_uint:")
+	g.emit("    stp x29, x30, [sp, #-16]!")
+	g.emit("    mov x29, sp")
+	g.emit("    sub sp, sp, #32")         // Buffer for digits
+	g.emit("    mov x10, x0")             // Value to print
+	g.emit("    mov x11, sp")             // Buffer pointer (end)
+	g.emit("    add x11, x11, #30")
+	g.emit("    mov x12, #0")             // Digit count
+	g.emit("    mov x14, #10")
+
+	g.emit("_sl_print_uint_loop:")
+	g.emit("    udiv x15, x10, x14")      // x15 = x10 / 10 (unsigned)
+	g.emit("    msub x16, x15, x14, x10") // x16 = x10 % 10
+	g.emit("    add x16, x16, #48")       // Convert to ASCII
+	g.emit("    strb w16, [x11]")
+	g.emit("    sub x11, x11, #1")
+	g.emit("    add x12, x12, #1")
+	g.emit("    mov x10, x15")
+	g.emit("    cbnz x10, _sl_print_uint_loop")
+
+	g.emit("    add x11, x11, #1")        // Point to first digit
+	g.emit("    mov x0, #1")              // stdout
+	g.emit("    mov x1, x11")             // buffer
+	g.emit("    mov x2, x12")             // length
+	g.emit("    mov x16, #4")             // write syscall
+	g.emit("    svc #0")
+
+	// Print newline
+	g.emit("    adrp x1, _sl_newline@PAGE")
+	g.emit("    add x1, x1, _sl_newline@PAGEOFF")
+	g.emit("    mov x0, #1")
+	g.emit("    mov x2, #1")
+	g.emit("    mov x16, #4")
+	g.emit("    svc #0")
+
+	g.emit("    add sp, sp, #32")
+	g.emit("    ldp x29, x30, [sp], #16")
+	g.emit("    ret")
+	g.emit("")
+
 	// Print string helper
 	g.emit("// Print string (x0 = pointer to header {.quad len; bytes...})")
 	g.emit("_sl_print_str:")
@@ -1471,6 +1514,33 @@ func (g *generator) genBinaryOp(v *ir.Value, op string) error {
 	return nil
 }
 
+// emitNarrowOverflowCheck traps if the 64-bit result in `reg` does not fit in
+// the value's declared narrow integer type. The 64-bit adds/subs/mul flag
+// checks only catch overflow at the 64-bit boundary, so without this an
+// s8/s16/s32/u8/u16/u32 result could silently hold an out-of-range value
+// (e.g. s8 100+100 = 200). It re-extends the low bits to the full width and
+// compares; a mismatch means the value overflowed the narrow type. No-op for
+// 64-bit (and wider) types, which are already checked via the flags. Uses x12
+// as scratch.
+func (g *generator) emitNarrowOverflowCheck(v *ir.Value, reg string, p panicMessage) {
+	it, ok := v.Type.(*ir.IntType)
+	if !ok || it.Bits >= 64 {
+		return
+	}
+	shift := 64 - it.Bits
+	label := g.labels.NextLabel()
+	g.emit("    lsl x12, %s, #%d", reg, shift)
+	if it.Signed {
+		g.emit("    asr x12, x12, #%d", shift)
+	} else {
+		g.emit("    lsr x12, x12, #%d", shift)
+	}
+	g.emit("    cmp %s, x12", reg)
+	g.emit("    b.eq _sl_narrow_ok_%d", label)
+	g.emitPanic(p)
+	g.emit("_sl_narrow_ok_%d:", label)
+}
+
 func (g *generator) genAdd(v *ir.Value) error {
 	g.loadValue(v.Args[0], "x10")
 	g.loadValue(v.Args[1], "x11")
@@ -1496,6 +1566,12 @@ func (g *generator) genAdd(v *ir.Value) error {
 	}
 
 	g.emit("_sl_add_ok_%d:", label)
+
+	if isSigned {
+		g.emitNarrowOverflowCheck(v, "x9", PanicOverflowAdd)
+	} else {
+		g.emitNarrowOverflowCheck(v, "x9", PanicUnsignedOverAdd)
+	}
 
 	offset := g.stackOffset(v)
 	g.storeToStack("x9", offset)
@@ -1528,6 +1604,12 @@ func (g *generator) genSub(v *ir.Value) error {
 	}
 
 	g.emit("_sl_sub_ok_%d:", label)
+
+	if isSigned {
+		g.emitNarrowOverflowCheck(v, "x9", PanicOverflowSub)
+	} else {
+		g.emitNarrowOverflowCheck(v, "x9", PanicUnsignedUnderSub)
+	}
 
 	offset := g.stackOffset(v)
 	g.storeToStack("x9", offset)
@@ -1566,6 +1648,12 @@ func (g *generator) genMul(v *ir.Value) error {
 	}
 
 	g.emit("_sl_mul_ok_%d:", label)
+
+	if isSigned {
+		g.emitNarrowOverflowCheck(v, "x9", PanicOverflowMul)
+	} else {
+		g.emitNarrowOverflowCheck(v, "x9", PanicUnsignedOverMul)
+	}
 
 	offset := g.stackOffset(v)
 	g.storeToStack("x9", offset)
@@ -1630,9 +1718,33 @@ func (g *generator) genNeg(v *ir.Value) error {
 	return nil
 }
 
+// unsignedCondCode maps a signed relational condition code to its unsigned
+// counterpart. The signed/unsigned codes for equality are identical.
+func unsignedCondCode(cond string) string {
+	switch cond {
+	case "lt":
+		return "lo"
+	case "le":
+		return "ls"
+	case "gt":
+		return "hi"
+	case "ge":
+		return "hs"
+	default:
+		return cond
+	}
+}
+
 func (g *generator) genCmp(v *ir.Value, cond string) error {
 	g.loadValue(v.Args[0], "x10")
 	g.loadValue(v.Args[1], "x11")
+
+	// Relational comparisons of unsigned integers must use the unsigned
+	// condition codes (lo/ls/hi/hs); the comparison's own result type is bool,
+	// so signedness is taken from the operand type.
+	if isUnsignedInt(v.Args[0].Type) || isUnsignedInt(v.Args[1].Type) {
+		cond = unsignedCondCode(cond)
+	}
 
 	g.emit("    cmp x10, x11")
 	g.emit("    cset x9, %s", cond)
@@ -1641,6 +1753,12 @@ func (g *generator) genCmp(v *ir.Value, cond string) error {
 	g.storeToStack("x9", offset)
 
 	return nil
+}
+
+// isUnsignedInt reports whether t is an unsigned integer IR type.
+func isUnsignedInt(t ir.Type) bool {
+	it, ok := t.(*ir.IntType)
+	return ok && !it.Signed
 }
 
 func (g *generator) genStrEq(v *ir.Value) error {
@@ -1725,13 +1843,20 @@ func (g *generator) genLoad(v *ir.Value) error {
 
 	// Use appropriate load instruction based on type size
 	if v.Type != nil {
+		signed := false
+		if it, ok := v.Type.(*ir.IntType); ok {
+			signed = it.Signed
+		}
 		switch v.Type.Size() {
 		case 1:
 			g.emit("    ldrb w9, [x10]")
+			g.signExtendNarrow("x9", 8, signed)
 		case 2:
 			g.emit("    ldrh w9, [x10]")
+			g.signExtendNarrow("x9", 16, signed)
 		case 4:
 			g.emit("    ldr w9, [x10]")
+			g.signExtendNarrow("x9", 32, signed)
 		default:
 			g.emit("    ldr x9, [x10]")
 		}
@@ -1743,6 +1868,20 @@ func (g *generator) genLoad(v *ir.Value) error {
 	g.storeToStack("x9", offset)
 
 	return nil
+}
+
+// signExtendNarrow sign-extends the low `bits` of reg into the full 64-bit
+// register when signed is true. The byte/half/word load instructions
+// zero-extend, which is wrong for negative values of s8/s16/s32. The assembler
+// has no ldrs*/sxt* mnemonics, so we sign-extend with a left shift followed by
+// an arithmetic right shift. No-op for unsigned types or full-width loads.
+func (g *generator) signExtendNarrow(reg string, bits int, signed bool) {
+	if !signed || bits >= 64 {
+		return
+	}
+	shift := 64 - bits
+	g.emit("    lsl %s, %s, #%d", reg, reg, shift)
+	g.emit("    asr %s, %s, #%d", reg, reg, shift)
 }
 
 func (g *generator) genLoadGlobal(v *ir.Value) error {
@@ -2079,14 +2218,21 @@ func (g *generator) genUnwrap(v *ir.Value) error {
 		return nil
 	}
 
+	signed := false
+	if it, ok := nullType.Elem.(*ir.IntType); ok {
+		signed = it.Signed
+	}
 	g.loadValue(v.Args[0], "x10")
 	switch nullType.Elem.Size() {
 	case 1:
 		g.emit("    ldrb w9, [x10]")
+		g.signExtendNarrow("x9", 8, signed)
 	case 2:
 		g.emit("    ldrh w9, [x10]")
+		g.signExtendNarrow("x9", 16, signed)
 	case 4:
 		g.emit("    ldr w9, [x10]")
+		g.signExtendNarrow("x9", 32, signed)
 	default:
 		g.emit("    ldr x9, [x10]")
 	}
@@ -2192,9 +2338,15 @@ func (g *generator) genPrint(v *ir.Value) error {
 	g.loadValue(arg, "x0")
 
 	// Call appropriate print helper based on type
-	switch arg.Type.(type) {
+	switch t := arg.Type.(type) {
 	case *ir.IntType:
-		g.emit("    bl _sl_print_int")
+		// Unsigned integers must be printed without sign interpretation,
+		// otherwise large values (e.g. a u64 above 2^63) print as negative.
+		if t.Signed {
+			g.emit("    bl _sl_print_int")
+		} else {
+			g.emit("    bl _sl_print_uint")
+		}
 	case *ir.StringType:
 		g.emit("    bl _sl_print_str")
 	case *ir.BoolType:
@@ -2385,24 +2537,113 @@ func (g *generator) generateTerminator(block *ir.Block) error {
 	return nil
 }
 
+// phiLoc is a location holding a phi value during parallel-copy resolution:
+// either a value's stack slot (val) or the scratch register x13 (temp).
+type phiLoc struct {
+	val  *ir.Value
+	temp bool
+}
+
+// emitPhiCopies resolves the phi nodes of the target block into copies on the
+// edge from `from`. Phi copies have parallel-copy semantics: conceptually they
+// all happen simultaneously. Emitting them naively as sequential stores is
+// wrong when one phi's destination slot is another phi's source (e.g. swapping
+// two loop variables), because an early store clobbers a value a later copy
+// still needs. This sequentializes the parallel copy using a single scratch
+// register to break cycles (Boissinot et al.).
 func (g *generator) emitPhiCopies(from *ir.Block, to *ir.Block) {
-	// Emit copies for phi nodes in the target block
+	// Collect the parallel copies (dst phi <- src value) for this edge.
+	var dsts []*ir.Value
+	pred := make(map[*ir.Value]*ir.Value)
 	for _, v := range to.Values {
 		if v.Op != ir.OpPhi {
 			break
 		}
-
-		// Find the value from this predecessor. All values, including
-		// nullables, are 8-byte copies.
 		for _, phiArg := range v.PhiArgs {
 			if phiArg.From == from {
 				if phiArg.Value != nil {
-					g.loadValue(phiArg.Value, "x9")
-					g.storeToStack("x9", g.stackOffset(v))
+					pred[v] = phiArg.Value
+					dsts = append(dsts, v)
 				}
 				break
 			}
 		}
+	}
+	if len(dsts) == 0 {
+		return
+	}
+
+	// loc[v] tracks the current location of the value originally held by v.
+	// Only source values are tracked; sources that are not themselves phi
+	// destinations stay in their own slot for the whole sequence.
+	loc := make(map[*ir.Value]phiLoc)
+	isDst := make(map[*ir.Value]bool, len(dsts))
+	for _, d := range dsts {
+		isDst[d] = true
+	}
+	for _, d := range dsts {
+		src := pred[d]
+		loc[src] = phiLoc{val: src}
+	}
+
+	emitMove := func(src, dst phiLoc) {
+		switch {
+		case dst.temp:
+			if src.temp {
+				return
+			}
+			g.loadValue(src.val, "x13")
+		case src.temp:
+			g.storeToStack("x13", g.stackOffset(dst.val))
+		default:
+			g.loadValue(src.val, "x9")
+			g.storeToStack("x9", g.stackOffset(dst.val))
+		}
+	}
+
+	// A destination is ready when its own original value is not needed as a
+	// source by any copy (i.e. it never appears as a source).
+	var ready []*ir.Value
+	for _, d := range dsts {
+		if _, usedAsSrc := loc[d]; !usedAsSrc {
+			ready = append(ready, d)
+		}
+	}
+
+	todo := append([]*ir.Value(nil), dsts...)
+	done := make(map[*ir.Value]bool, len(dsts))
+
+	for len(ready) > 0 || len(todo) > 0 {
+		for len(ready) > 0 {
+			b := ready[len(ready)-1]
+			ready = ready[:len(ready)-1]
+			if done[b] {
+				continue
+			}
+			a := pred[b]
+			emitMove(loc[a], phiLoc{val: b})
+			done[b] = true
+			prev := loc[a]
+			loc[a] = phiLoc{val: b} // a's value now lives in b
+			// If a's value was still in its own slot and a is itself a
+			// destination, that slot is now free to be written.
+			if !prev.temp && prev.val == a && isDst[a] && !done[a] {
+				ready = append(ready, a)
+			}
+		}
+		if len(todo) == 0 {
+			break
+		}
+		b := todo[len(todo)-1]
+		todo = todo[:len(todo)-1]
+		if done[b] {
+			continue
+		}
+		// b is unsatisfied and part of a cycle: save its current value to the
+		// scratch register, breaking the cycle, then queue b to be filled.
+		emitMove(phiLoc{val: b}, phiLoc{temp: true})
+		loc[b] = phiLoc{temp: true}
+		ready = append(ready, b)
 	}
 }
 

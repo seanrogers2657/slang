@@ -348,10 +348,47 @@ func (g *Generator) generateObject(od *semantic.TypedObjectDecl) error {
 	return nil
 }
 
+// mangleParamSuffix builds a label-safe suffix encoding parameter types, so
+// methods overloaded by type (same arity, different parameter types) get
+// distinct mangled names. The definition and call sites must both derive it
+// from the method's declared parameter types so the labels agree.
+func mangleParamSuffix(types []semantic.Type) string {
+	var b strings.Builder
+	for _, t := range types {
+		b.WriteByte('_')
+		for _, r := range t.String() {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+				b.WriteRune(r)
+			case r == '&':
+				b.WriteByte('R') // reference
+			case r == '*':
+				b.WriteByte('P') // owned pointer
+			case r == '?':
+				b.WriteByte('Q') // nullable
+			case r == '.':
+				b.WriteByte('D') // package separator in a type's String()
+			case r == '[':
+				b.WriteByte('L')
+			case r == ']':
+				b.WriteByte('J')
+				// Other characters (spaces, commas, <, >) are dropped; the same
+				// dropping happens on both sides so the labels still agree.
+			}
+		}
+	}
+	return b.String()
+}
+
 // generateMethod generates IR for a method declaration.
 func (g *Generator) generateMethod(className string, md *semantic.TypedMethodDecl) error {
-	// Mangle name: ClassName_methodName_paramCount (for overloading support)
-	mangledName := fmt.Sprintf("%s_%s_%d", className, md.Name, len(md.Parameters))
+	// Mangle name: ClassName_methodName_paramCount_<paramTypes> (the type
+	// suffix distinguishes overloads that share an arity).
+	paramTypes := make([]semantic.Type, len(md.Parameters))
+	for i, p := range md.Parameters {
+		paramTypes[i] = p.Type
+	}
+	mangledName := fmt.Sprintf("%s_%s_%d%s", className, md.Name, len(md.Parameters), mangleParamSuffix(paramTypes))
 
 	// Convert return type
 	retType := g.convertSSAType(md.ReturnType)
@@ -2424,14 +2461,22 @@ func (g *Generator) mangleMethodName(receiverType semantic.Type, mc *semantic.Ty
 		paramCount++ // Count self parameter
 	}
 
+	// Type suffix must match generateMethod's, derived from the resolved
+	// method's declared parameter types (which include self for instance
+	// methods, matching the count above).
+	suffix := ""
+	if mc.ResolvedMethod != nil {
+		suffix = mangleParamSuffix(mc.ResolvedMethod.ParamTypes)
+	}
+
 	// For cross-package types, prefix with the package path
 	pkgPath := g.getTypePackagePath(receiverType)
 	if pkgPath != "" && pkgPath != "main" {
 		prefix := strings.ReplaceAll(pkgPath, "/", "__") + "__"
-		return fmt.Sprintf("%s%s_%s_%d", prefix, className, mc.Method, paramCount)
+		return fmt.Sprintf("%s%s_%s_%d%s", prefix, className, mc.Method, paramCount, suffix)
 	}
 
-	return fmt.Sprintf("%s_%s_%d", className, mc.Method, paramCount)
+	return fmt.Sprintf("%s_%s_%d%s", className, mc.Method, paramCount, suffix)
 }
 
 // getTypePackagePath returns the PackagePath for a nominal type, unwrapping pointers/nullables.

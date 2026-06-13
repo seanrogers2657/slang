@@ -1014,20 +1014,21 @@ func (a *Analyzer) analyzeObjectDecl(o *ast.ObjectDecl) TypedDeclaration {
 
 // findMatchingMethodInfo finds the MethodInfo that matches the given method declaration.
 // This is used for overloaded methods where multiple MethodInfos exist with the same name.
-// We match by parameter count and type name strings for precise matching.
-func findMatchingMethodInfo(methodInfos []*MethodInfo, method *ast.MethodDecl) *MethodInfo {
+// We match by parameter count and resolved parameter types. Comparing resolved
+// types (rather than the raw TypeName strings) is required because the written
+// name and the type's String() can differ for aliases (e.g. "bool" vs the
+// "boolean" string form, or "int" vs "s64").
+func (a *Analyzer) findMatchingMethodInfo(methodInfos []*MethodInfo, method *ast.MethodDecl) *MethodInfo {
 	for _, mi := range methodInfos {
 		// Check if parameter count matches
 		if len(mi.ParamTypes) != len(method.Parameters) {
 			continue
 		}
-		// Check if parameter type names match
+		// Check if parameter types match structurally
 		match := true
 		for i, param := range method.Parameters {
-			// Compare the resolved type's string representation with the AST type name
-			// This handles cases like "i64" vs "i64?"
-			typeStr := mi.ParamTypes[i].String()
-			if typeStr != param.TypeName {
+			resolved := a.resolveTypeNameNoError(param.TypeName)
+			if !mi.ParamTypes[i].Equals(resolved) {
 				match = false
 				break
 			}
@@ -1122,10 +1123,10 @@ func (a *Analyzer) analyzeMethodDeclCore(classType *ClassType, objectType *Objec
 	if ok && len(methodInfos) > 0 {
 		if isClassMethod {
 			// Class methods may be overloaded - find matching one
-			methodInfo = findMatchingMethodInfo(methodInfos, method)
+			methodInfo = a.findMatchingMethodInfo(methodInfos, method)
 		} else {
 			// Object methods - just use first (overloading still supported)
-			methodInfo = findMatchingMethodInfo(methodInfos, method)
+			methodInfo = a.findMatchingMethodInfo(methodInfos, method)
 		}
 	}
 
@@ -4361,9 +4362,22 @@ func (a *Analyzer) checkAndRecordMove(expr ast.Expression, movedTo string, locat
 		return
 	}
 
-	// Handle field access - moving a field out of a struct
-	// For now, we don't allow moving fields out of structs
-	// (would require more complex tracking)
+	// Moving an owned value out of an array element or struct field would leave
+	// the container still owning (and later freeing) the same pointer, causing
+	// a double free. Disallow it; the container should be borrowed or the value
+	// explicitly copied.
+	switch e := expr.(type) {
+	case *ast.IndexExpr:
+		a.addError(
+			"cannot move an owned value out of an array element",
+			e.Pos(), e.End(),
+		).WithHint("index access does not transfer ownership; use .copy() or borrow instead")
+	case *ast.FieldAccessExpr:
+		a.addError(
+			"cannot move an owned value out of a struct field",
+			e.Pos(), e.End(),
+		).WithHint("field access does not transfer ownership; use .copy() or borrow instead")
+	}
 }
 
 // analyzeLiteral analyzes a literal expression

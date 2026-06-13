@@ -1202,9 +1202,7 @@ func (g *generator) emitPrologue() {
 	g.emit("    mov x29, sp")
 
 	// Allocate stack space for locals
-	if g.layout.Size > 0 {
-		g.emit("    sub sp, sp, #%d", g.layout.Size)
-	}
+	g.emitSpAdjust("sub", g.layout.Size)
 
 	// Store parameters to stack. All values, including nullables, are 8 bytes.
 	regIdx := 0
@@ -1251,11 +1249,25 @@ func (g *generator) emitReturnValue(block *ir.Block) {
 
 // emitEpilogue emits the function exit sequence: restore stack and return.
 func (g *generator) emitEpilogue() {
-	if g.layout.Size > 0 {
-		g.emit("    add sp, sp, #%d", g.layout.Size)
-	}
+	g.emitSpAdjust("add", g.layout.Size)
 	g.emit("    ldp x29, x30, [sp], #16")
 	g.emit("    ret")
+}
+
+// emitSpAdjust grows ("sub") or shrinks ("add") the stack pointer by size
+// bytes. add/sub take only a 12-bit immediate (0-4095) and the assembler has
+// no shifted-immediate form, so a large frame is adjusted in chunks. The chunk
+// is a multiple of 16, preserving the required 16-byte SP alignment.
+func (g *generator) emitSpAdjust(op string, size int) {
+	const chunk = 4080 // largest multiple of 16 within the 12-bit immediate range
+	for size > 0 {
+		n := size
+		if n > chunk {
+			n = chunk
+		}
+		g.emit("    %s sp, sp, #%d", op, n)
+		size -= n
+	}
 }
 
 // ComputeStackLayout calculates the stack frame layout for a function.
@@ -1988,9 +2000,10 @@ func (g *generator) genCopy(v *ir.Value) error {
 		g.emit("    str x9, [x10, #%d]", offset)
 	}
 
-	// Now handle deep copy for pointer fields in struct types
+	// Now handle deep copy for pointer fields in struct types.
+	// Convention: x10 = destination struct pointer, x11 = source struct pointer.
 	if structType, ok := elemType.(*ir.StructType); ok {
-		g.emitDeepCopyFields(structType.Fields, "x10", "x11")
+		g.emitDeepCopyFields(structType.Fields)
 	}
 
 	// Store new pointer
@@ -2000,60 +2013,61 @@ func (g *generator) genCopy(v *ir.Value) error {
 	return nil
 }
 
-// emitDeepCopyFields recursively copies pointer fields in a struct
-// destReg and srcReg contain pointers to the destination and source structs
-func (g *generator) emitDeepCopyFields(fields []ir.StructField, destReg, srcReg string) {
+// emitDeepCopyFields recursively deep-copies the owned-pointer fields of a
+// struct. The destination and source struct pointers are always held in x10
+// and x11; x9/x12/x13 are scratch and never alias them. For nested structs the
+// child pointers are marshalled into x10/x11 around the recursive call so the
+// same register convention holds at every depth. (The previous version passed
+// x12/x9 as the recursion's dest/src, which collided with its own scratch
+// registers and corrupted copies beyond two levels of nesting.)
+func (g *generator) emitDeepCopyFields(fields []ir.StructField) {
 	for _, field := range fields {
-		if ptrType, ok := field.Type.(*ir.PtrType); ok {
-			// This field is a pointer - need to deep copy the pointed-to data
-			fieldOffset := field.Offset
-			pointedSize := ptrType.Elem.Size()
-
-			// Save dest and src pointers
-			g.emit("    stp %s, %s, [sp, #-16]!", destReg, srcReg)
-
-			// Load source pointer field value
-			g.emit("    ldr x9, [%s, #%d]", srcReg, fieldOffset)
-
-			// Check if null - if so, skip copy (already copied null in shallow copy)
-			label := g.labels.NextLabel()
-			g.emit("    cbz x9, _sl_copy_field_done_%d", label)
-
-			// Save field pointer value (will be clobbered by heap_alloc)
-			g.emit("    str x9, [sp, #-16]!")
-
-			// Allocate memory for the pointed-to type
-			g.emit("    mov x0, #%d", pointedSize)
-			g.emit("    bl _sl_heap_alloc")
-			g.emit("    mov x12, x0") // x12 = new pointed-to memory
-
-			// Restore source field pointer
-			g.emit("    ldr x9, [sp], #16")
-
-			// Copy the pointed-to data
-			for offset := 0; offset < pointedSize; offset += 8 {
-				g.emit("    ldr x13, [x9, #%d]", offset)
-				g.emit("    str x13, [x12, #%d]", offset)
-			}
-
-			// Restore dest and src struct pointers
-			g.emit("    ldp %s, %s, [sp], #16", destReg, srcReg)
-
-			// Store new pointer in destination field
-			g.emit("    str x12, [%s, #%d]", destReg, fieldOffset)
-
-			// Handle recursive deep copy for nested struct pointers
-			if nestedStruct, ok := ptrType.Elem.(*ir.StructType); ok && len(nestedStruct.Fields) > 0 {
-				// Save current pointers
-				g.emit("    stp %s, %s, [sp, #-16]!", destReg, srcReg)
-				// Set up for recursive call - x12 is dest, x9 is src
-				g.emitDeepCopyFields(nestedStruct.Fields, "x12", "x9")
-				// Restore
-				g.emit("    ldp %s, %s, [sp], #16", destReg, srcReg)
-			}
-
-			g.emit("_sl_copy_field_done_%d:", label)
+		ptrType, ok := field.Type.(*ir.PtrType)
+		if !ok {
+			continue
 		}
+		fieldOffset := field.Offset
+		pointedSize := ptrType.Elem.Size()
+		label := g.labels.NextLabel()
+
+		// Load the source field pointer. If null, the shallow copy already put
+		// null in the destination field, so move on. (Checking before pushing
+		// anything keeps the stack balanced on the null path.)
+		g.emit("    ldr x9, [x11, #%d]", fieldOffset)
+		g.emit("    cbz x9, _sl_copy_field_done_%d", label)
+
+		// Save dest/src struct pointers and the source field pointer across the
+		// allocation call, which clobbers x0 and may clobber x9.
+		g.emit("    stp x10, x11, [sp, #-16]!")
+		g.emit("    str x9, [sp, #-16]!")
+
+		// Allocate memory for the pointed-to type.
+		g.emit("    mov x0, #%d", pointedSize)
+		g.emit("    bl _sl_heap_alloc")
+		g.emit("    mov x12, x0") // x12 = freshly allocated child
+
+		// Restore source field pointer and copy the pointed-to bytes.
+		g.emit("    ldr x9, [sp], #16")
+		for offset := 0; offset < pointedSize; offset += 8 {
+			g.emit("    ldr x13, [x9, #%d]", offset)
+			g.emit("    str x13, [x12, #%d]", offset)
+		}
+
+		// Restore dest/src struct pointers and store the new child pointer.
+		g.emit("    ldp x10, x11, [sp], #16")
+		g.emit("    str x12, [x10, #%d]", fieldOffset)
+
+		// Recurse into nested struct pointers, marshalling the child pointers
+		// into x10/x11 (preserving the current ones across the call).
+		if nested, ok := ptrType.Elem.(*ir.StructType); ok && len(nested.Fields) > 0 {
+			g.emit("    stp x10, x11, [sp, #-16]!")
+			g.emit("    mov x10, x12") // dest = new child
+			g.emit("    mov x11, x9")  // src  = old child
+			g.emitDeepCopyFields(nested.Fields)
+			g.emit("    ldp x10, x11, [sp], #16")
+		}
+
+		g.emit("_sl_copy_field_done_%d:", label)
 	}
 }
 
@@ -2061,12 +2075,17 @@ func (g *generator) genFieldPtr(v *ir.Value) error {
 	// Load struct pointer
 	g.loadValue(v.Args[0], "x10")
 
-	// Add field offset
+	// Add field offset. add takes only a 12-bit immediate, so for a far field
+	// (offset > 4095) materialize the offset in a scratch register and use the
+	// register form.
 	fieldOffset := v.AuxInt
-	if fieldOffset != 0 {
+	if fieldOffset == 0 {
+		g.emit("    mov x9, x10")
+	} else if fieldOffset <= 4095 {
 		g.emit("    add x9, x10, #%d", fieldOffset)
 	} else {
-		g.emit("    mov x9, x10")
+		g.loadImmediate(fieldOffset, "x11")
+		g.emit("    add x9, x10, x11")
 	}
 
 	offset := g.stackOffset(v)

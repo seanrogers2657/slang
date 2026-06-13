@@ -1064,7 +1064,11 @@ func (w *MachOWriter) calculateLayout(code, data []byte, relocations []DataReloc
 	layout.textVMAddr = VMBaseAddress
 	layout.textSegmentFileSize = MinSegmentFileSize
 	if (layout.codeOffset + layout.codeSize) > layout.textSegmentFileSize {
-		layout.textSegmentFileSize = ((layout.codeOffset + layout.codeSize + 0xFFF) / 0x1000) * 0x1000
+		// arm64 macOS requires 16KB (PageSize) segment alignment. Rounding to
+		// 4KB here left __TEXT a non-16KB-aligned size once code exceeded 16KB,
+		// which pushed __DATA/__LINKEDIT to misaligned VM addresses and made the
+		// kernel reject the binary (SIGKILL).
+		layout.textSegmentFileSize = ((layout.codeOffset + layout.codeSize + PageSize - 1) / PageSize) * PageSize
 	}
 	layout.textVMSize = layout.textSegmentFileSize
 

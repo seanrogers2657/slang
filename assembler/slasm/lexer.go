@@ -317,6 +317,12 @@ func (l *Lexer) readString(line, column int) Token {
 	for l.pos < len(l.source) && l.current != '"' && l.current != '\n' {
 		if l.current == '\\' {
 			hasEscape = true
+			// Skip the backslash and the character it escapes so an escaped
+			// quote (\") does not prematurely terminate the string scan.
+			l.advance()
+			if l.pos >= len(l.source) || l.current == '\n' {
+				break
+			}
 		}
 		l.advance()
 	}

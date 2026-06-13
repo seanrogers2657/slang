@@ -358,8 +358,28 @@ func (a *NativeAssembler) Build(assembly string, opts assembler.BuildOptions) er
 	codeOffset := ((uint64(MachHeader64Size) + loadCmdsSize + 7) / 8) * 8 // Align to 8 bytes
 	textBase := vmAddr + codeOffset
 
-	// Calculate text segment size for data base calculation
-	textSegmentFileSize := uint64(MinSegmentFileSize) // 16KB minimum
+	// Determine the actual encoded code size (each ARM64 instruction is 4
+	// bytes) so the data base matches the Mach-O layout's 16KB-aligned __TEXT.
+	// Using a fixed one-page __TEXT here left data symbol addresses pointing
+	// into __TEXT once the code exceeded 16KB, causing runtime faults.
+	var codeSize uint64
+	for _, section := range program.Sections {
+		if section.Type == SectionText {
+			for _, item := range section.Items {
+				if _, ok := item.(*Instruction); ok {
+					codeSize += 4
+				}
+			}
+		}
+	}
+
+	// Calculate text segment size for data base calculation. Must match
+	// computeLayout in macho.go: 16KB minimum, otherwise rounded up to a
+	// 16KB (PageSize) boundary.
+	textSegmentFileSize := uint64(MinSegmentFileSize)
+	if codeOffset+codeSize > textSegmentFileSize {
+		textSegmentFileSize = ((codeOffset + codeSize + PageSize - 1) / PageSize) * PageSize
+	}
 
 	// Calculate data base address
 	dataBase := vmAddr + textSegmentFileSize // Data comes after TEXT segment

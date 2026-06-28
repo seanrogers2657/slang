@@ -502,6 +502,12 @@ func (p *parser) ParseStatement() ast.Statement {
 		return p.ParseWhenStatement()
 	}
 
+	// Check for a bare block statement: '{ ... }' opens a nested scope whose
+	// heap allocations are freed at the closing brace.
+	if p.CurrentToken().Type == lexer.TokenTypeLBrace {
+		return p.ParseBlockStmt()
+	}
+
 	// Check if it's an immutable variable declaration (val)
 	if p.CurrentToken().Type == lexer.TokenTypeVal {
 		return p.ParseVarDecl(false)

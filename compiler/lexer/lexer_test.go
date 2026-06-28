@@ -400,7 +400,9 @@ func TestLexerErrorRecovery(t *testing.T) {
 			name:           "continues after error on different lines",
 			input:          "val x = @\nval y = 5",
 			expectedErrors: 1,
-			expectedTokens: 8, // VAL, IDENTIFIER, ASSIGN, NEWLINE, VAL, IDENTIFIER, ASSIGN, INTEGER
+			// The newline after '=' is a line continuation (trailing operator),
+			// so it is not emitted as a statement separator.
+			expectedTokens: 7, // VAL, IDENTIFIER, ASSIGN, VAL, IDENTIFIER, ASSIGN, INTEGER
 		},
 	}
 
@@ -665,7 +667,7 @@ func TestLexerStringInterpolation(t *testing.T) {
 			name:  "nested interpolation inside interpolation",
 			input: "\"${\"a${b}\"}\"",
 			expected: []Token{
-				{Type: TokenTypeStrChunk, Value: ""},  // outer leading chunk
+				{Type: TokenTypeStrChunk, Value: ""}, // outer leading chunk
 				{Type: TokenTypeInterpStart, Value: "${"},
 				{Type: TokenTypeStrChunk, Value: "a"}, // inner leading chunk
 				{Type: TokenTypeInterpStart, Value: "${"},
@@ -1766,6 +1768,131 @@ func TestLexerImportKeyword(t *testing.T) {
 			for i, token := range l.Tokens {
 				if token.Type != tt.expected[i].Type {
 					t.Errorf("token %d: expected type %v, got %v", i, tt.expected[i].Type, token.Type)
+				}
+				if token.Value != tt.expected[i].Value {
+					t.Errorf("token %d: expected value %q, got %q", i, tt.expected[i].Value, token.Value)
+				}
+			}
+		})
+	}
+}
+
+// TestLexerLineContinuation verifies that newlines acting as line continuations
+// (not statement separators) are not emitted: after a trailing operator, before
+// a leading binary operator, and inside () / []. Braces and complete-statement
+// boundaries must still keep their separating newline.
+func TestLexerLineContinuation(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []Token
+	}{
+		{
+			name:  "trailing operator continues",
+			input: "1 +\n2",
+			expected: []Token{
+				{Type: TokenTypeInteger, Value: "1"},
+				{Type: TokenTypePlus, Value: "+"},
+				{Type: TokenTypeInteger, Value: "2"},
+			},
+		},
+		{
+			name:  "leading operator continues",
+			input: "1\n+ 2",
+			expected: []Token{
+				{Type: TokenTypeInteger, Value: "1"},
+				{Type: TokenTypePlus, Value: "+"},
+				{Type: TokenTypeInteger, Value: "2"},
+			},
+		},
+		{
+			name:  "trailing assignment continues",
+			input: "x =\n5",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "x"},
+				{Type: TokenTypeAssign, Value: "="},
+				{Type: TokenTypeInteger, Value: "5"},
+			},
+		},
+		{
+			name:  "leading dot continues (fluent)",
+			input: "a\n.b",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "a"},
+				{Type: TokenTypeDot, Value: "."},
+				{Type: TokenTypeIdentifier, Value: "b"},
+			},
+		},
+		{
+			name:  "leading logical operator continues",
+			input: "a\n&& b",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "a"},
+				{Type: TokenTypeAnd, Value: "&&"},
+				{Type: TokenTypeIdentifier, Value: "b"},
+			},
+		},
+		{
+			name:  "newlines inside parentheses are suppressed",
+			input: "f(\n1,\n2\n)",
+			expected: []Token{
+				{Type: TokenTypeIdentifier, Value: "f"},
+				{Type: TokenTypeLParen, Value: "("},
+				{Type: TokenTypeInteger, Value: "1"},
+				{Type: TokenTypeComma, Value: ","},
+				{Type: TokenTypeInteger, Value: "2"},
+				{Type: TokenTypeRParen, Value: ")"},
+			},
+		},
+		{
+			name:  "newlines inside brackets are suppressed",
+			input: "[\n1,\n2\n]",
+			expected: []Token{
+				{Type: TokenTypeLBracket, Value: "["},
+				{Type: TokenTypeInteger, Value: "1"},
+				{Type: TokenTypeComma, Value: ","},
+				{Type: TokenTypeInteger, Value: "2"},
+				{Type: TokenTypeRBracket, Value: "]"},
+			},
+		},
+		{
+			name:  "separator between complete statements is preserved",
+			input: "1\n2",
+			expected: []Token{
+				{Type: TokenTypeInteger, Value: "1"},
+				{Type: TokenTypeNewline, Value: "\n"},
+				{Type: TokenTypeInteger, Value: "2"},
+			},
+		},
+		{
+			name:  "braces do not suppress newlines",
+			input: "{\n1\n}",
+			expected: []Token{
+				{Type: TokenTypeLBrace, Value: "{"},
+				{Type: TokenTypeNewline, Value: "\n"},
+				{Type: TokenTypeInteger, Value: "1"},
+				{Type: TokenTypeNewline, Value: "\n"},
+				{Type: TokenTypeRBrace, Value: "}"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := NewLexer([]byte(tt.input))
+			l.Parse()
+
+			if len(l.Errors) > 0 {
+				t.Fatalf("unexpected errors: %v", l.Errors)
+			}
+
+			if len(l.Tokens) != len(tt.expected) {
+				t.Fatalf("expected %d tokens, got %d: %v", len(tt.expected), len(l.Tokens), l.Tokens)
+			}
+
+			for i, token := range l.Tokens {
+				if token.Type != tt.expected[i].Type {
+					t.Errorf("token %d: expected type %s, got %s", i, tt.expected[i].Type, token.Type)
 				}
 				if token.Value != tt.expected[i].Value {
 					t.Errorf("token %d: expected value %q, got %q", i, tt.expected[i].Value, token.Value)

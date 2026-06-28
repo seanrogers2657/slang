@@ -175,17 +175,18 @@ func TestNullableTypeSize(t *testing.T) {
 	cases := []struct {
 		name string
 		nt   *NullableType
+		want int // flat nullables are tag(8)+payload; niche nullables are an 8-byte pointer
 	}{
-		{"s64?", &NullableType{Elem: TypeS64}},
-		{"bool?", &NullableType{Elem: TypeBool}},
-		{"s128?", &NullableType{Elem: TypeS128}},
-		{"*Point?", &NullableType{Elem: &PtrType{Elem: &StructType{Name: "Point"}}}},
-		{"Point?", &NullableType{Elem: &StructType{Name: "Point"}}},
+		{"s64?", &NullableType{Elem: TypeS64}, 16},
+		{"bool?", &NullableType{Elem: TypeBool}, 16},
+		{"s128?", &NullableType{Elem: TypeS128}, 24},
+		{"*Point?", &NullableType{Elem: &PtrType{Elem: &StructType{Name: "Point"}}}, 8},
+		{"Point?", &NullableType{Elem: &StructType{Name: "Point"}}, 8},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := c.nt.Size(); got != 8 {
-				t.Errorf("Size() = %d, want 8", got)
+			if got := c.nt.Size(); got != c.want {
+				t.Errorf("Size() = %d, want %d", got, c.want)
 			}
 		})
 	}
@@ -196,13 +197,21 @@ func TestNullableTypeSize(t *testing.T) {
 // requires heap allocation at wrap time; the pointer-element case carries
 // the pointer through directly.
 func TestNullableValueInner(t *testing.T) {
-	t.Run("value_nullable_returns_inner", func(t *testing.T) {
-		got := nullableValueInner(semantic.NullableType{InnerType: semantic.S64Type{}})
+	t.Run("flat_value_nullable_returns_nil", func(t *testing.T) {
+		// s64? is a flat tag+payload value-nullable — it owns no heap, so it is
+		// not a "boxed value nullable" and returns nil.
+		if got := nullableValueInner(semantic.NullableType{InnerType: semantic.S64Type{}}); got != nil {
+			t.Errorf("expected nil for flat value nullable, got %v", got)
+		}
+	})
+	t.Run("boxed_string_nullable_returns_inner", func(t *testing.T) {
+		// string? is still boxed (its payload owns heap), so it returns its inner.
+		got := nullableValueInner(semantic.NullableType{InnerType: semantic.StringType{}})
 		if got == nil {
 			t.Fatal("expected inner type, got nil")
 		}
-		if _, ok := got.(semantic.S64Type); !ok {
-			t.Errorf("expected S64Type, got %T", got)
+		if _, ok := got.(semantic.StringType); !ok {
+			t.Errorf("expected StringType, got %T", got)
 		}
 	})
 	t.Run("owned_pointer_nullable_returns_nil", func(t *testing.T) {
@@ -244,8 +253,16 @@ func TestVarOwnsHeapVsFieldOwnsHeap(t *testing.T) {
 			varOwns:   true,
 		},
 		{
-			name:      "value_nullable",
+			// Flat value-nullable: inline tag+payload, owns no heap.
+			name:      "flat_value_nullable",
 			semType:   semantic.NullableType{InnerType: semantic.S64Type{}},
+			fieldOwns: false,
+			varOwns:   false,
+		},
+		{
+			// Boxed value-nullable: payload owns heap, so the binding does too.
+			name:      "boxed_string_nullable",
+			semType:   semantic.NullableType{InnerType: semantic.StringType{}},
 			fieldOwns: true,
 			varOwns:   true,
 		},
@@ -300,10 +317,11 @@ func TestVarOwnsHeapVsFieldOwnsHeap(t *testing.T) {
 	}
 }
 
-// TestArgTransfersOwnership pins the move-vs-borrow rule at call sites.
+// TestArgTransfersOwnership pins the own-vs-borrow rule at call sites.
 // Owned-pointer args going to owned-pointer params transfer; everything
 // else borrows. Value-type nullables always borrow — they have copy-style
-// semantics across function boundaries.
+// semantics across function boundaries. (Owned-pointer params are rejected by
+// semantic, so the transferring cases only document the defensive contract.)
 func TestArgTransfersOwnership(t *testing.T) {
 	ownedS64 := &semantic.OwnedPointerType{ElementType: semantic.S64Type{}}
 	refS64 := &semantic.RefPointerType{ElementType: semantic.S64Type{}}
@@ -317,12 +335,12 @@ func TestArgTransfersOwnership(t *testing.T) {
 		paramType semantic.Type
 		want      bool
 	}{
-		{"owned_to_owned_moves", ownedS64, ownedS64, true},
-		{"owned_to_immutable_borrow_does_not_move", ownedS64, refS64, false},
-		{"owned_to_mutable_borrow_does_not_move", ownedS64, mutRefS64, false},
-		{"owned_to_nullable_owned_moves", ownedS64, nullableOwnedS64, true},
+		{"owned_to_owned_transfers", ownedS64, ownedS64, true},
+		{"owned_to_immutable_borrow_does_not_transfer", ownedS64, refS64, false},
+		{"owned_to_mutable_borrow_does_not_transfer", ownedS64, mutRefS64, false},
+		{"owned_to_nullable_owned_transfers", ownedS64, nullableOwnedS64, true},
 		{"value_nullable_to_value_nullable_borrows", nullableValueS64, nullableValueS64, false},
-		{"primitive_does_not_move", semantic.S64Type{}, semantic.S64Type{}, false},
+		{"primitive_does_not_transfer", semantic.S64Type{}, semantic.S64Type{}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -335,10 +353,11 @@ func TestArgTransfersOwnership(t *testing.T) {
 
 // TestShouldCopyOnReturn pins the copy-on-extract rule. Container reads
 // (arr[i], obj.field) of value-type nullables must be copied; everything
-// else either transfers via markMoved or doesn't own heap to begin with.
+// else either transfers via markHeapAliased or doesn't own heap to begin with.
 func TestShouldCopyOnReturn(t *testing.T) {
 	pos := ast.Position{Line: 1, Column: 1}
-	nullableS64 := semantic.NullableType{InnerType: semantic.S64Type{}}
+	flatNullable := semantic.NullableType{InnerType: semantic.S64Type{}}    // s64?: inline value, never copies
+	boxedNullable := semantic.NullableType{InnerType: semantic.StringType{}} // string?: heap-backed, copies
 
 	cases := []struct {
 		name string
@@ -346,18 +365,23 @@ func TestShouldCopyOnReturn(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "index_of_nullable_copies",
-			expr: &semantic.TypedIndexExpr{Type: nullableS64},
+			name: "index_of_boxed_nullable_copies",
+			expr: &semantic.TypedIndexExpr{Type: boxedNullable},
 			want: true,
 		},
 		{
-			name: "field_of_nullable_copies",
-			expr: &semantic.TypedFieldAccessExpr{Type: nullableS64},
+			name: "field_of_boxed_nullable_copies",
+			expr: &semantic.TypedFieldAccessExpr{Type: boxedNullable},
 			want: true,
 		},
 		{
-			name: "identifier_of_nullable_does_not_copy",
-			expr: &semantic.TypedIdentifierExpr{Type: nullableS64, StartPos: pos, EndPos: pos},
+			name: "index_of_flat_nullable_does_not_copy",
+			expr: &semantic.TypedIndexExpr{Type: flatNullable},
+			want: false,
+		},
+		{
+			name: "identifier_of_boxed_nullable_does_not_copy",
+			expr: &semantic.TypedIdentifierExpr{Type: boxedNullable, StartPos: pos, EndPos: pos},
 			want: false,
 		},
 		{

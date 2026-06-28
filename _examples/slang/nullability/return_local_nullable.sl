@@ -1,8 +1,8 @@
 // @test: exit_code=0
 // @test: stdout=42\n
-// Returning a local value-type nullable transfers ownership of the heap
-// slot to the caller — the function must not free it on the way out, and
-// the caller's binding owns it until its own scope ends.
+// A value-type nullable is returned by value (like any value): its heap slot
+// becomes the caller's, so the function must not free it on the way out, and
+// the caller's binding holds it until that binding's scope ends.
 
 make_value = () -> s64? {
     val x: s64? = 42

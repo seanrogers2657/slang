@@ -4,8 +4,8 @@
 Container = class {
     var value: s64
 
-    create = (v: s64) -> *Container {
-        return new Container{ v }
+    create = (v: s64) -> Container {
+        return Container{ v }
     }
 
     get_value = (self: &Container) -> s64 {

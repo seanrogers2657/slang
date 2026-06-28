@@ -8,13 +8,13 @@ Point = struct {
     val y: s64
 }
 
-// Create a point on the heap
-createPoint = (x: s64, y: s64) -> *Point {
-    return new Point{ x, y }
+// Create a point by value
+createPoint = (x: s64, y: s64) -> Point {
+    return Point{ x, y }
 }
 
 // Sum and print a point
-printPoint = (p: &Point) {
+printPoint = (p: Point) {
     print(p.x)
 }
 

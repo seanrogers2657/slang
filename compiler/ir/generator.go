@@ -49,14 +49,21 @@ type Generator struct {
 	// Loop control flow targets
 	breakTarget    *Block
 	continueTarget *Block
+	// loopScopeDepth is the index of the innermost loop body's scope in
+	// ownedVarScopes. break/continue free every scope from the current innermost
+	// one down to (and including) this depth before jumping out of the body.
+	loopScopeDepth int
 
 	// Scope tracking for owned pointer cleanup
 	// Each scope level contains owned pointers declared at that level
 	ownedVarScopes [][]ownedVar
 
-	// Track variables whose ownership has been transferred (moved)
-	// These should not be freed during cleanup
-	movedVars map[string]bool
+	// Track value-type-nullable variables whose heap slot has been aliased into
+	// another binding/array. These must not be freed at scope exit, or the new
+	// owner would be double-freed. Non-copyable types (*T, classes) can never be
+	// aliased — semantic rejects that — so this only ever holds
+	// copyable-but-heap-backed value nullables.
+	aliasedHeapVars map[string]bool
 
 	// Top-level statements (val/var) to inject at the start of main.
 	// Each statement carries the package prefix to apply during generation.
@@ -70,7 +77,7 @@ type Generator struct {
 
 	// funcSemanticParams maps a (mangled) function name to its parameters'
 	// semantic types. The IR collapses owned/borrow pointer kinds into a
-	// single PtrType, so move-vs-borrow at call sites must be decided from
+	// single PtrType, so own-vs-borrow at call sites must be decided from
 	// the original semantic param types.
 	funcSemanticParams map[string][]semantic.Type
 }
@@ -151,24 +158,26 @@ func (g *Generator) emitScopeCleanup() {
 	}
 	lastIdx := len(g.ownedVarScopes) - 1
 	for _, ov := range g.ownedVarScopes[lastIdx] {
-		// Skip variables that have been moved (ownership transferred)
-		if g.movedVars[ov.name] {
+		// Skip variables whose heap slot was aliased into another owner.
+		if g.aliasedHeapVars[ov.name] {
 			continue
 		}
 		g.emitFreeIfOwned(ov.name, ov.semType)
 	}
 }
 
-// emitAllScopesCleanup emits cleanup for all scopes (for function return).
-func (g *Generator) emitAllScopesCleanup(excludeVar string) {
+// emitLoopExitCleanup frees owned locals from the current innermost scope down
+// to and including the loop body scope (loopScopeDepth). break and continue jump
+// out of the loop body without reaching the body's fall-through cleanup, so they
+// must emit the equivalent frees themselves to keep the heap balanced.
+func (g *Generator) emitLoopExitCleanup() {
 	if g.block == nil {
 		return
 	}
-	// Free owned pointers from all scopes, innermost first
-	for i := len(g.ownedVarScopes) - 1; i >= 0; i-- {
+	for i := len(g.ownedVarScopes) - 1; i >= g.loopScopeDepth; i-- {
 		for _, ov := range g.ownedVarScopes[i] {
-			// Skip variables that have been moved or are being returned
-			if ov.name == excludeVar || g.movedVars[ov.name] {
+			// Skip variables whose heap slot was aliased into another owner.
+			if g.aliasedHeapVars[ov.name] {
 				continue
 			}
 			g.emitFreeIfOwned(ov.name, ov.semType)
@@ -176,13 +185,32 @@ func (g *Generator) emitAllScopesCleanup(excludeVar string) {
 	}
 }
 
-// markMoved marks a variable as moved (ownership transferred).
-// Moved variables will not be freed during cleanup.
-func (g *Generator) markMoved(name string) {
-	if g.movedVars == nil {
-		g.movedVars = make(map[string]bool)
+// emitAllScopesCleanup emits cleanup for all scopes (for function return).
+// excludeVar names a local whose heap backing is being returned by value, so
+// it must not be freed here (ownership transfers to the caller).
+func (g *Generator) emitAllScopesCleanup(excludeVar string) {
+	if g.block == nil {
+		return
 	}
-	g.movedVars[name] = true
+	// Free owned pointers from all scopes, innermost first
+	for i := len(g.ownedVarScopes) - 1; i >= 0; i-- {
+		for _, ov := range g.ownedVarScopes[i] {
+			// Skip the returned local and any whose slot was aliased away.
+			if ov.name == excludeVar || g.aliasedHeapVars[ov.name] {
+				continue
+			}
+			g.emitFreeIfOwned(ov.name, ov.semType)
+		}
+	}
+}
+
+// markHeapAliased records that a value-type-nullable variable's heap slot has been
+// aliased into another binding/array, so it must not be freed at scope exit.
+func (g *Generator) markHeapAliased(name string) {
+	if g.aliasedHeapVars == nil {
+		g.aliasedHeapVars = make(map[string]bool)
+	}
+	g.aliasedHeapVars[name] = true
 }
 
 // Generate converts a TypedProgram to IR.
@@ -257,7 +285,7 @@ func (g *Generator) generateFunction(fd *semantic.TypedFunctionDecl) error {
 
 	// Reset owned pointer scope tracking for this function
 	g.ownedVarScopes = nil
-	g.movedVars = make(map[string]bool)
+	g.aliasedHeapVars = make(map[string]bool)
 	g.pushScope()
 
 	// Create entry block
@@ -272,10 +300,11 @@ func (g *Generator) generateFunction(fd *semantic.TypedFunctionDecl) error {
 		// Record parameter as initial definition of the variable
 		g.writeVariable(param.Name, g.block, paramVal)
 
-		// Owned-pointer parameters move into the callee — the callee owns
-		// them and must free at scope exit. Value-type nullable parameters
-		// (s64?, bool?, ...) are borrowed: the caller retains ownership of
-		// the heap slot, so the callee must not free it.
+		// An owned-pointer parameter would be owned by the callee and freed at
+		// its scope exit. The scope-frees-it model forbids *T params (semantic
+		// rejects them), so this branch is defensive only. Value-type nullable
+		// parameters (s64?, bool?, ...) are borrowed: the caller retains
+		// ownership of the heap slot, so the callee must not free it.
 		if elemType, _ := g.getOwnedPointerInfo(param.Type); elemType != nil {
 			g.trackOwnedVar(param.Name, param.Type)
 		}
@@ -444,6 +473,22 @@ func (g *Generator) generateBlock(bs *semantic.TypedBlockStmt) error {
 	return nil
 }
 
+// generateScopedBlock generates a block in its own owned-pointer scope, so heap
+// allocations created inside the block are freed at the block's end rather than
+// living until the enclosing function returns. This is the same scoping the
+// loop bodies use, applied to if/else branches and bare { } blocks.
+func (g *Generator) generateScopedBlock(bs *semantic.TypedBlockStmt) error {
+	g.pushScope()
+	err := g.generateBlock(bs)
+	// Free this scope's allocations at the block's end, but only if control
+	// still reaches here (a return/break already emitted its own cleanup).
+	if err == nil && g.block != nil && g.block.Kind == BlockPlain {
+		g.emitScopeCleanup()
+	}
+	g.ownedVarScopes = g.ownedVarScopes[:len(g.ownedVarScopes)-1]
+	return err
+}
+
 // generateStatement generates IR for a statement.
 func (g *Generator) generateStatement(stmt semantic.TypedStatement) error {
 	switch s := stmt.(type) {
@@ -495,7 +540,7 @@ func (g *Generator) generateStatement(stmt semantic.TypedStatement) error {
 		return g.generateContinue(s)
 
 	case *semantic.TypedBlockStmt:
-		return g.generateBlock(s)
+		return g.generateScopedBlock(s)
 
 	case *semantic.TypedWhenExpr:
 		_, err := g.generateWhen(s)
@@ -532,9 +577,11 @@ func (g *Generator) generateVarDecl(vd *semantic.TypedVarDeclStmt) error {
 	// A bound string takes value semantics: copy if it borrows storage owned
 	// elsewhere so the binding owns an independent buffer.
 	val = g.maybeCopyString(val, vd.Initializer)
+	val = g.maybeCopyVec(val, vd.Initializer)
 
 	// Aggregates take value semantics too: deep-copy a copyable aggregate
-	// read from an existing binding; move ownership out of a move-only one.
+	// read from an existing binding. A non-copyable aggregate passes its
+	// allocation through unchanged (aliasing one is rejected by semantic).
 	val = g.bindAggregateValue(val, vd.Initializer)
 
 	g.writeVariable(vd.Name, g.block, g.wrapIfNeeded(val, declType))
@@ -543,9 +590,10 @@ func (g *Generator) generateVarDecl(vd *semantic.TypedVarDeclStmt) error {
 }
 
 // shouldCopyOnReturn reports whether a returned expression must be copied
-// to give the caller an unaliased heap slot. Identifier reads are returned
-// by ownership transfer (the caller markMoves the source); container reads
-// (arr[i], obj.field) alias and need a true copy.
+// to give the caller an unaliased heap slot. Identifier reads transfer the
+// local's backing allocation to the caller (the local is excluded from
+// scope-exit cleanup); container reads (arr[i], obj.field) alias and need a
+// true copy.
 func shouldCopyOnReturn(expr semantic.TypedExpression) bool {
 	if nullableValueInner(expr.GetType()) == nil {
 		return false
@@ -560,9 +608,7 @@ func shouldCopyOnReturn(expr semantic.TypedExpression) bool {
 
 // shouldCopyOnReturnFromCall is the variant used by generateReturn: a
 // returned identifier of value-nullable type is also an alias of a caller-
-// reachable slot (the parameter), so the function must copy. Distinct from
-// shouldCopyOnReturn because variable-to-variable assignments use markMoved
-// and do not need a copy.
+// reachable slot (the parameter), so the function must copy.
 func shouldCopyOnReturnFromCall(expr semantic.TypedExpression) bool {
 	if shouldCopyOnReturn(expr) {
 		return true
@@ -621,27 +667,25 @@ func (g *Generator) generateAssign(as *semantic.TypedAssignStmt) error {
 
 	if isNullLiteral(as.Value) {
 		g.emitFreeIfOwned(as.Name, as.VarType)
-		delete(g.movedVars, as.Name)
+		delete(g.aliasedHeapVars, as.Name)
 		g.writeVariable(as.Name, g.block, g.block.NewValue(OpWrapNull, varType))
 		return nil
 	}
 
-	// If the RHS is an identifier that owns heap storage, ownership transfers
-	// to as.Name. Mark the source as moved so its scope exit doesn't double-
-	// free what the destination now owns.
+	// If the RHS is an identifier whose heap slot is aliased into as.Name
+	// (value-type nullables: copyable, so semantic permits the alias), mark the
+	// source moved so its scope exit doesn't double-free the slot the
+	// destination now owns. Strings and copyable aggregates use copy semantics
+	// (handled below), so the source remains valid and must not be marked.
 	if ident, ok := as.Value.(*semantic.TypedIdentifierExpr); ok {
-		// Strings and copyable aggregates use copy semantics (not move), so
-		// the source remains valid and must not be marked moved.
 		if ident.Name != as.Name && varOwnsHeap(ident.Type) && !isStringType(ident.Type) &&
 			!g.aggregateIsCopyable(ident.Type) {
-			g.markMoved(ident.Name)
+			g.markHeapAliased(ident.Name)
 		}
 	}
 
 	// Generate the new value first so any read of the old variable inside the
-	// RHS resolves before we free it. Struct/class literal generation can mark
-	// as.Name as moved if the RHS consumed it (e.g. `head = Node{ head, ... }`),
-	// in which case emitFreeIfOwned will correctly skip it.
+	// RHS resolves before we free it.
 	val, err := g.generateExpr(as.Value)
 	if err != nil {
 		return err
@@ -656,15 +700,17 @@ func (g *Generator) generateAssign(as *semantic.TypedAssignStmt) error {
 	// Strings take value semantics: copy a borrowed source so the destination
 	// owns an independent buffer.
 	val = g.maybeCopyString(val, as.Value)
+	val = g.maybeCopyVec(val, as.Value)
 
 	// Aggregates take value semantics too: deep-copy a copyable aggregate
-	// read from an existing binding; move ownership out of a move-only one.
+	// read from an existing binding. A non-copyable aggregate passes its
+	// allocation through unchanged (aliasing one is rejected by semantic).
 	val = g.bindAggregateValue(val, as.Value)
 
 	// Free whatever the variable currently owns before overwriting. The new
-	// value gives the variable fresh ownership, so clear any moved flag too.
+	// value gives the variable fresh ownership, so clear any aliased flag too.
 	g.emitFreeIfOwned(as.Name, as.VarType)
-	delete(g.movedVars, as.Name)
+	delete(g.aliasedHeapVars, as.Name)
 	g.writeVariable(as.Name, g.block, g.wrapIfNeeded(val, varType))
 	return nil
 }
@@ -690,6 +736,7 @@ func (g *Generator) generateFieldAssign(fa *semantic.TypedFieldAssignStmt) error
 		}
 		// Borrowed string values are copied so the field owns its own buffer.
 		val = g.maybeCopyString(val, fa.Value)
+		val = g.maybeCopyVec(val, fa.Value)
 		val = g.wrapIfNeeded(val, fieldIRType)
 	}
 
@@ -751,6 +798,10 @@ func varOwnsHeap(t semantic.Type) bool {
 		// (interpolation results, copies) and frees it at scope exit. Constant
 		// strings live in .data and free as a no-op (see _sl_str_free).
 		return true
+	case semantic.VecType, *semantic.VecType:
+		// vec is a heap-owned value type just like string: a binding owns its
+		// header+data and frees them at scope exit, with copy-on-store.
+		return true
 	}
 	return false
 }
@@ -762,6 +813,40 @@ func isStringType(t semantic.Type) bool {
 		return true
 	}
 	return false
+}
+
+// isVecType reports whether t is the vec type.
+func isVecType(t semantic.Type) bool {
+	switch t.(type) {
+	case semantic.VecType, *semantic.VecType:
+		return true
+	}
+	return false
+}
+
+// vecIsBorrow reports whether a vec-typed expression refers to storage owned
+// elsewhere (a variable, field, or array element), so storing it requires a deep
+// copy. A fresh vec (vec() / a call result) is not a borrow.
+func vecIsBorrow(expr semantic.TypedExpression) bool {
+	if !isVecType(expr.GetType()) {
+		return false
+	}
+	switch expr.(type) {
+	case *semantic.TypedIdentifierExpr,
+		*semantic.TypedFieldAccessExpr,
+		*semantic.TypedIndexExpr:
+		return true
+	}
+	return false
+}
+
+// maybeCopyVec returns a deep copy of val when expr is a borrowed vec, otherwise
+// val unchanged. Parallels maybeCopyString.
+func (g *Generator) maybeCopyVec(val *Value, expr semantic.TypedExpression) *Value {
+	if vecIsBorrow(expr) {
+		return g.builder().VecCopy(val)
+	}
+	return val
 }
 
 // stringIsBorrow reports whether a string-typed expression refers to storage
@@ -838,6 +923,7 @@ func (g *Generator) generateIndexAssign(ia *semantic.TypedIndexAssignStmt) error
 		}
 		// Borrowed string values are copied so the element owns its own buffer.
 		val = g.maybeCopyString(val, ia.Value)
+		val = g.maybeCopyVec(val, ia.Value)
 		if elemIRType != nil {
 			val = g.wrapIfNeeded(val, elemIRType)
 		}
@@ -880,7 +966,7 @@ func arrayElementSemType(t semantic.Type) semantic.Type {
 // generateReturn generates IR for a return statement.
 func (g *Generator) generateReturn(rs *semantic.TypedReturnStmt) error {
 	var retVal *Value
-	var excludeVar string // Variable to exclude from cleanup if returning owned pointer
+	var excludeVar string // Local whose heap backing is returned by value (skip its free)
 
 	if rs.Value != nil {
 		retType := g.fn.ReturnType
@@ -889,18 +975,14 @@ func (g *Generator) generateReturn(rs *semantic.TypedReturnStmt) error {
 		if isNullLiteral(rs.Value) {
 			retVal = g.block.NewValue(OpWrapNull, retType)
 		} else {
-			// Check if we're returning an identifier that owns heap storage.
-			// Owned-pointer returns transfer ownership: skip scope-exit free
-			// so the caller gets a live pointer.
+			// Returning a struct/class/array local by value transfers its
+			// backing allocation to the caller, so it must be excluded from
+			// scope-exit cleanup. Strings are copied (below) and value-type
+			// nullables get a fresh slot, so both still need their free.
+			// (Owned pointers *T can never be returned — semantic rejects it.)
 			if ident, ok := rs.Value.(*semantic.TypedIdentifierExpr); ok {
-				if elemType, _ := g.getOwnedPointerInfo(ident.Type); elemType != nil {
-					excludeVar = ident.Name
-				} else if varOwnsHeap(ident.Type) && !isStringType(ident.Type) &&
-					nullableValueInner(ident.Type) == nil {
-					// Struct/class/array locals transfer their backing
-					// allocation to the caller on return. Strings are copied
-					// (below) and value-type nullables get a fresh slot, so
-					// both still need their scope-exit free.
+				if varOwnsHeap(ident.Type) && !isStringType(ident.Type) &&
+					!isVecType(ident.Type) && nullableValueInner(ident.Type) == nil {
 					excludeVar = ident.Name
 				}
 			}
@@ -915,6 +997,7 @@ func (g *Generator) generateReturn(rs *semantic.TypedReturnStmt) error {
 			// an owned buffer and the local/parameter isn't double-freed by
 			// scope cleanup. Done before wrapping so the copy is the raw string.
 			retVal = g.maybeCopyString(retVal, rs.Value)
+			retVal = g.maybeCopyVec(retVal, rs.Value)
 
 			retVal = g.wrapIfNeeded(retVal, retType)
 
@@ -974,9 +1057,10 @@ func (g *Generator) generateIf(is *semantic.TypedIfStmt) error {
 	// Seal thenBlock - its only predecessor is the current (condition) block
 	g.sealBlock(thenBlock)
 
-	// Generate then branch
+	// Generate then branch in its own scope so block-local allocations are
+	// freed at the branch's end.
 	g.block = thenBlock
-	if err := g.generateBlock(is.ThenBranch); err != nil {
+	if err := g.generateScopedBlock(is.ThenBranch); err != nil {
 		return err
 	}
 	// Jump to merge if not terminated
@@ -1018,6 +1102,7 @@ func (g *Generator) generateWhile(ws *semantic.TypedWhileStmt) error {
 	// Save loop context for break/continue
 	prevBreakTarget := g.breakTarget
 	prevContinueTarget := g.continueTarget
+	prevLoopScopeDepth := g.loopScopeDepth
 	g.breakTarget = exitBlock
 	g.continueTarget = headerBlock
 
@@ -1044,6 +1129,7 @@ func (g *Generator) generateWhile(ws *semantic.TypedWhileStmt) error {
 	// are freed before the next iteration.
 	g.block = bodyBlock
 	g.pushScope()
+	g.loopScopeDepth = len(g.ownedVarScopes) - 1
 	if err := g.generateBlock(ws.Body); err != nil {
 		return err
 	}
@@ -1065,6 +1151,7 @@ func (g *Generator) generateWhile(ws *semantic.TypedWhileStmt) error {
 	// Restore loop context
 	g.breakTarget = prevBreakTarget
 	g.continueTarget = prevContinueTarget
+	g.loopScopeDepth = prevLoopScopeDepth
 
 	// Continue in exit block
 	g.block = exitBlock
@@ -1091,6 +1178,7 @@ func (g *Generator) generateFor(fs *semantic.TypedForStmt) error {
 	// Save loop context for break/continue
 	prevBreakTarget := g.breakTarget
 	prevContinueTarget := g.continueTarget
+	prevLoopScopeDepth := g.loopScopeDepth
 	g.breakTarget = exitBlock
 	g.continueTarget = updateBlock
 
@@ -1122,6 +1210,7 @@ func (g *Generator) generateFor(fs *semantic.TypedForStmt) error {
 	// (val p = new T{...}) are freed before the next iteration.
 	g.block = bodyBlock
 	g.pushScope()
+	g.loopScopeDepth = len(g.ownedVarScopes) - 1
 	if err := g.generateBlock(fs.Body); err != nil {
 		return err
 	}
@@ -1158,6 +1247,7 @@ func (g *Generator) generateFor(fs *semantic.TypedForStmt) error {
 	// Restore loop context
 	g.breakTarget = prevBreakTarget
 	g.continueTarget = prevContinueTarget
+	g.loopScopeDepth = prevLoopScopeDepth
 
 	// Continue in exit block
 	g.block = exitBlock
@@ -1170,6 +1260,8 @@ func (g *Generator) generateBreak(_ *semantic.TypedBreakStmt) error {
 	if g.breakTarget == nil {
 		return fmt.Errorf("break outside of loop")
 	}
+	// Free owned locals allocated in the loop body before leaving it.
+	g.emitLoopExitCleanup()
 	g.block.AddSucc(g.breakTarget)
 	g.block = nil // Block is terminated
 	return nil
@@ -1180,6 +1272,8 @@ func (g *Generator) generateContinue(_ *semantic.TypedContinueStmt) error {
 	if g.continueTarget == nil {
 		return fmt.Errorf("continue outside of loop")
 	}
+	// Free owned locals allocated in the loop body before restarting the loop.
+	g.emitLoopExitCleanup()
 	g.block.AddSucc(g.continueTarget)
 	g.block = nil // Block is terminated
 	return nil
@@ -1860,14 +1954,57 @@ func (g *Generator) generateUnary(ue *semantic.TypedUnaryExpr) (*Value, error) {
 
 // generateCall generates IR for a function call.
 func (g *Generator) generateCall(ce *semantic.TypedCallExpr) (*Value, error) {
-	// Resolve the callee's semantic param types so we can decide which
-	// arguments transfer ownership (callee declares *T) vs. which borrow
-	// (callee declares &T or &&T). The IR collapses these into PtrType.
+	// Resolve the callee's semantic param types. Under the scope-frees-it model
+	// parameters are values or borrows (never owned *T), so arguments are always
+	// borrowed — the caller frees any heap temporary it passed. The IR collapses
+	// pointer kinds into PtrType.
 	calleeName := ce.Name
 	if strings.Contains(calleeName, ".") {
 		calleeName = strings.ReplaceAll(calleeName, "/", "__")
 		calleeName = strings.ReplaceAll(calleeName, ".", "__")
 	}
+
+	// Built-in vec operations lower to dedicated IR ops. The vec argument is a
+	// borrowed pointer the op reads/mutates in place — no copy.
+	switch ce.Name {
+	case "vec":
+		return g.builder().VecNew(), nil
+	case "push":
+		vec, err := g.generateExpr(ce.Arguments[0])
+		if err != nil {
+			return nil, err
+		}
+		val, err := g.generateExpr(ce.Arguments[1])
+		if err != nil {
+			return nil, err
+		}
+		return g.builder().VecPush(vec, val), nil
+	case "get":
+		vec, err := g.generateExpr(ce.Arguments[0])
+		if err != nil {
+			return nil, err
+		}
+		idx, err := g.generateExpr(ce.Arguments[1])
+		if err != nil {
+			return nil, err
+		}
+		return g.builder().VecGet(vec, idx), nil
+	case "set":
+		vec, err := g.generateExpr(ce.Arguments[0])
+		if err != nil {
+			return nil, err
+		}
+		idx, err := g.generateExpr(ce.Arguments[1])
+		if err != nil {
+			return nil, err
+		}
+		val, err := g.generateExpr(ce.Arguments[2])
+		if err != nil {
+			return nil, err
+		}
+		return g.builder().VecSet(vec, idx, val), nil
+	}
+
 	calleeParams := g.funcSemanticParams[calleeName]
 
 	// Generate arguments
@@ -1881,16 +2018,6 @@ func (g *Generator) generateCall(ce *semantic.TypedCallExpr) (*Value, error) {
 	}
 	var aggTempFrees []aggTemp
 	for i, arg := range ce.Arguments {
-		// If this argument is an identifier of an owned-heap type AND the
-		// callee declares the corresponding parameter as an owned pointer,
-		// ownership transfers — mark the source as moved. Borrowed params
-		// (&T, &&T) leave the caller's binding intact.
-		if ident, ok := arg.(*semantic.TypedIdentifierExpr); ok {
-			if i < len(calleeParams) && argTransfersOwnership(ident.Type, calleeParams[i]) {
-				g.markMoved(ident.Name)
-			}
-		}
-
 		v, err := g.generateExpr(arg)
 		if err != nil {
 			return nil, err
@@ -1903,8 +2030,8 @@ func (g *Generator) generateCall(ce *semantic.TypedCallExpr) (*Value, error) {
 		if isOwnedStringTemp(arg) {
 			strTempFrees = append(strTempFrees, v)
 		} else if isOwningTemp(arg) && isHeapValueType(arg.GetType()) {
-			// Struct/class/array values are borrowed by callees (only *T
-			// params consume). A temp produced by a literal or call result
+			// Struct/class/array values are borrowed by callees (parameters
+			// are never owned *T). A temp produced by a literal or call result
 			// has no owner to free it at scope exit — free it here.
 			transfers := i < len(calleeParams) && argTransfersOwnership(arg.GetType(), calleeParams[i])
 			if !transfers {
@@ -1939,12 +2066,13 @@ func (g *Generator) generateCall(ce *semantic.TypedCallExpr) (*Value, error) {
 						arg.Type = paramType
 					} else if _, argIsNullable := arg.Type.(*NullableType); !argIsNullable {
 						// Non-nullable value — wrap it. The wrap allocates a
-						// heap slot only for value-type nullables; reference
-						// nullables are pointer carry-overs (no alloc).
+						// heap slot only for legacy boxed value-type nullables
+						// (string?/array?); reference and flat nullables are not
+						// heap-backed, so only boxed wraps need freeing.
 						wrap := g.block.NewValue(OpWrap, paramType)
 						wrap.AddArg(arg)
 						args[i] = wrap
-						if nt, ok := paramType.(*NullableType); ok && !nt.IsReferenceNullable() {
+						if nt, ok := paramType.(*NullableType); ok && !nt.IsReferenceNullable() && !nt.IsFlat() {
 							wrappedTemps = append(wrappedTemps, wrap)
 						}
 					}
@@ -2062,6 +2190,14 @@ func (g *Generator) generateLen(le *semantic.TypedLenExpr) (*Value, error) {
 			v.AddArg(strVal)
 			return v, nil
 		}
+		// vec: runtime length from the header
+		if isVecType(le.Array.GetType()) {
+			vecVal, err := g.generateExpr(le.Array)
+			if err != nil {
+				return nil, err
+			}
+			return g.builder().VecLen(vecVal), nil
+		}
 	}
 	// Array: size known at compile time
 	v := g.block.NewValue(OpConst, TypeS64)
@@ -2080,11 +2216,14 @@ func (g *Generator) generateArrayLiteral(al *semantic.TypedArrayLiteralExpr) (*V
 
 	// Store each element
 	for i, elemExpr := range al.Elements {
-		// Identifier elements transfer ownership to the array. Strings use
-		// copy semantics (handled below), so they are not moved.
+		// An identifier element that owns a heap slot (value-type nullable, or a
+		// struct/array value) aliases that slot into the array. These are
+		// copyable types, so semantic allows the alias; mark the source aliased so
+		// it isn't double-freed at scope exit. Strings use copy semantics
+		// (handled below) and container reads are copied, not aliased.
 		if ident, ok := elemExpr.(*semantic.TypedIdentifierExpr); ok {
 			if varOwnsHeap(ident.Type) && !isStringType(ident.Type) {
-				g.markMoved(ident.Name)
+				g.markHeapAliased(ident.Name)
 			}
 		}
 
@@ -2126,14 +2265,6 @@ func (g *Generator) generateStructLiteral(sl *semantic.TypedStructLiteralExpr) (
 		fieldType := structType.Fields[i].Type
 		fieldOffset := int64(structType.Fields[i].Offset)
 
-		// If this argument is an identifier that's an owned pointer,
-		// mark it as moved (ownership is transferring to the struct)
-		if ident, ok := argExpr.(*semantic.TypedIdentifierExpr); ok {
-			if elemType, _ := g.getOwnedPointerInfo(ident.Type); elemType != nil {
-				g.markMoved(ident.Name)
-			}
-		}
-
 		// Generate field value with null/nullable handling
 		arg, err := g.generateTypedValue(argExpr, fieldType)
 		if err != nil {
@@ -2162,21 +2293,22 @@ func (g *Generator) generateStructLiteral(sl *semantic.TypedStructLiteralExpr) (
 	return alloc, nil
 }
 
-// argTransfersOwnership reports whether passing an argument of type argType
-// to a parameter declared as paramType transfers ownership of the heap
-// allocation. Owned-pointer-to-owned-pointer transfers; owned-pointer-to-
-// borrow does not. Value-type nullables, struct/class/array values are
-// always borrowed (caller retains the heap slot) — they never transfer.
+// argTransfersOwnership reports whether passing an argument transfers ownership
+// of its heap allocation to the callee. Under the scope-frees-it model a
+// parameter can never be an owned pointer (the semantic analyzer rejects *T
+// params), so for valid programs this is always false: aggregate and string
+// temporaries are borrowed and freed by the caller. It is kept as a defensive
+// guard documenting that contract.
 func argTransfersOwnership(argType, paramType semantic.Type) bool {
 	if !varOwnsHeap(argType) {
 		return false
 	}
-	// Only owned-pointer params consume their argument.
+	// A parameter is never an owned pointer under this model; these branches are
+	// unreachable for valid programs and remain only as a defensive guard.
 	switch paramType.(type) {
 	case *semantic.OwnedPointerType, semantic.OwnedPointerType:
 		return true
 	}
-	// Nullable-of-owned (T? where T is *X) also consumes.
 	if isNullableOwnedType(paramType) {
 		return true
 	}
@@ -2210,14 +2342,6 @@ func (g *Generator) generateClassLiteral(cl *semantic.TypedClassLiteralExpr) (*V
 		fieldType := classType.Fields[i].Type
 		fieldOffset := int64(classType.Fields[i].Offset)
 
-		// If this argument is an identifier that's an owned pointer,
-		// mark it as moved (ownership is transferring to the class)
-		if ident, ok := argExpr.(*semantic.TypedIdentifierExpr); ok {
-			if elemType, _ := g.getOwnedPointerInfo(ident.Type); elemType != nil {
-				g.markMoved(ident.Name)
-			}
-		}
-
 		// Generate field value with null/nullable handling
 		arg, err := g.generateTypedValue(argExpr, fieldType)
 		if err != nil {
@@ -2225,10 +2349,22 @@ func (g *Generator) generateClassLiteral(cl *semantic.TypedClassLiteralExpr) (*V
 		}
 
 		fieldPtr := b.FieldPtr(alloc, fieldType, fieldOffset)
-		// Borrowed string fields must be copied so the class owns its own
-		// buffer (value semantics); fresh strings transfer ownership.
-		arg = g.maybeCopyString(arg, argExpr)
-		b.Store(fieldPtr, arg)
+
+		// For embedded aggregate fields (struct/class, both IR *StructType),
+		// copy the data inline instead of storing a pointer. The source is then
+		// a temporary heap allocation that nothing references, so free it.
+		if _, isStruct := fieldType.(*StructType); isStruct {
+			b.MemCopy(fieldPtr, arg, int64(fieldType.Size()))
+			if isFreshAlloc(argExpr) {
+				freeVal := g.block.NewValue(OpFree, nil, arg)
+				freeVal.AuxInt = int64(fieldType.Size())
+			}
+		} else {
+			// Borrowed string fields must be copied so the class owns its own
+			// buffer (value semantics); fresh strings transfer ownership.
+			arg = g.maybeCopyString(arg, argExpr)
+			b.Store(fieldPtr, arg)
+		}
 	}
 
 	return alloc, nil
@@ -2564,7 +2700,7 @@ func (g *Generator) generateNewExpr(expr *semantic.TypedNewExpr) (*Value, error)
 
 // aggregateIsCopyable reports whether an aggregate (struct/class/array) type
 // has copy semantics. Normalizes pointer/value forms before consulting
-// semantic.IsCopyable (which only matches value forms). Classes are move-only.
+// semantic.IsCopyable (which only matches value forms). Classes are non-copyable.
 func (g *Generator) aggregateIsCopyable(t semantic.Type) bool {
 	if st := g.getSemanticStructType(t); st != nil {
 		return semantic.IsCopyable(*st)
@@ -2579,7 +2715,7 @@ func (g *Generator) aggregateIsCopyable(t semantic.Type) bool {
 // (struct/class/array) read to a variable. Fresh temporaries (literals, call
 // results) already belong to the new binding. Aliasing reads of a copyable
 // aggregate are deep-copied so each binding owns independent storage.
-// Move-only aggregates transfer ownership out of their source binding.
+// A non-copyable aggregate passes its source allocation through unchanged.
 func (g *Generator) bindAggregateValue(val *Value, expr semantic.TypedExpression) *Value {
 	t := expr.GetType()
 	if !isHeapValueType(t) {
@@ -2591,14 +2727,11 @@ func (g *Generator) bindAggregateValue(val *Value, expr semantic.TypedExpression
 	if g.aggregateIsCopyable(t) {
 		return g.emitDeepCopyAggregate(val, t)
 	}
-	if ident, ok := expr.(*semantic.TypedIdentifierExpr); ok {
-		g.markMoved(ident.Name)
-	}
 	return val
 }
 
 // emitDeepCopyAggregate returns a pointer to a fresh deep copy of the
-// copyable aggregate (struct or array) at src. Move-only aggregates never
+// copyable aggregate (struct or array) at src. Non-copyable aggregates never
 // reach here, so owned-pointer fields cannot appear at any depth and the
 // recursion terminates.
 func (g *Generator) emitDeepCopyAggregate(src *Value, semType semantic.Type) *Value {
@@ -2645,8 +2778,8 @@ func (g *Generator) emitDeepCopyFixups(dst *Value, semType semantic.Type) {
 				continue
 			}
 
-			if isStringType(field.Type) || nullableValueInner(field.Type) != nil ||
-				isHeapValueType(field.Type) {
+			if isStringType(field.Type) || isVecType(field.Type) ||
+				nullableValueInner(field.Type) != nil || isHeapValueType(field.Type) {
 				fieldPtr := b.FieldPtr(dst, fieldIRType, offset)
 				fieldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
 				b.Store(fieldPtr, g.deepCopiedValue(fieldVal, field.Type))
@@ -2662,6 +2795,9 @@ func (g *Generator) emitDeepCopyFixups(dst *Value, semType semantic.Type) {
 func (g *Generator) deepCopiedValue(val *Value, semType semantic.Type) *Value {
 	if isStringType(semType) {
 		return g.builder().StrCopy(val)
+	}
+	if isVecType(semType) {
+		return g.builder().VecCopy(val)
 	}
 	if nullableValueInner(semType) != nil {
 		return g.copyNullableValue(val, semType)
@@ -2885,10 +3021,10 @@ func (g *Generator) sealBlock(block *Block) {
 // value-type nullables (s64?, bool?, ...) free the wrap heap slot;
 // struct/class/array bindings free the literal's heap allocation.
 //
-// Variables whose ownership has been transferred elsewhere (markMoved) are
+// Variables whose heap slot was aliased into another owner (markHeapAliased) are
 // skipped — freeing them would double-free the new owner.
 func (g *Generator) emitFreeIfOwned(name string, semType semantic.Type) {
-	if g.movedVars[name] {
+	if g.aliasedHeapVars[name] {
 		return
 	}
 
@@ -2899,6 +3035,17 @@ func (g *Generator) emitFreeIfOwned(name string, semType semantic.Type) {
 		}
 		if oldVal := g.readVariable(name, g.block); oldVal != nil {
 			g.builder().StrFree(oldVal)
+		}
+		return
+	}
+
+	// vec: free its header + data (no-op for non-heap pointers).
+	if isVecType(semType) {
+		if !g.ssa.IsVariableDefinedOnAllPaths(name, g.block) {
+			return
+		}
+		if oldVal := g.readVariable(name, g.block); oldVal != nil {
+			g.builder().VecFree(oldVal)
 		}
 		return
 	}
@@ -3139,6 +3286,17 @@ func (g *Generator) emitRecursiveFreeWithVisited(ptr *Value, elemType semantic.T
 				fieldPtr.AuxInt = int64(offset)
 				fieldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
 				g.builder().StrFree(fieldVal)
+				continue
+			}
+
+			// Vec field: load the header pointer and free it (no-op for non-heap).
+			if isVecType(field.Type) {
+				offset := st.FieldOffset(field.Name)
+				fieldIRType := g.convertType(field.Type)
+				fieldPtr := g.block.NewValue(OpFieldPtr, &PtrType{Elem: fieldIRType}, ptr)
+				fieldPtr.AuxInt = int64(offset)
+				fieldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
+				g.builder().VecFree(fieldVal)
 				continue
 			}
 
@@ -3430,7 +3588,28 @@ func nullableValueInner(t semantic.Type) semantic.Type {
 	if _, ok := inner.(semantic.StructType); ok {
 		return nil
 	}
+	// Flat value-nullables (integer/bool inner) use the inline tag+payload
+	// representation — they own no heap and need no copy/free. This mirrors
+	// ir.NullableType.IsFlat; the two must agree. string?/array? remain boxed
+	// and fall through to return their inner.
+	if isFlatNullableInner(inner) {
+		return nil
+	}
 	return inner
+}
+
+// isFlatNullableInner reports whether a nullable with this inner type uses the
+// flat tag+payload representation (no heap). Must match ir.NullableType.IsFlat:
+// integer and bool inners are flat.
+func isFlatNullableInner(inner semantic.Type) bool {
+	if semantic.IsIntegerType(inner) {
+		return true
+	}
+	switch inner.(type) {
+	case semantic.BooleanType, *semantic.BooleanType:
+		return true
+	}
+	return false
 }
 
 // nullableValueAllocSize returns the heap slot size used to wrap a value-type

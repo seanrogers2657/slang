@@ -5,8 +5,8 @@ Point = class {
     var x: s64
     var y: s64
 
-    create = (x: s64, y: s64) -> *Point {
-        return new Point{ x, y }
+    create = (x: s64, y: s64) -> Point {
+        return Point{ x, y }
     }
 
     get_x = (self: &Point) -> s64 {
@@ -33,8 +33,8 @@ manhattan = (p: &Point) -> s64 {
 }
 
 main = () {
-    val p1 = Point.create(5, 7)
-    val p2 = Point.create(10, 3)
+    val p1 = new Point{ 5, 7 }
+    val p2 = new Point{ 10, 3 }
 
     // Pass to free function with immutable borrow
     val sum = sum_points(p1, p2)  // 5 + 7 + 10 + 3 = 25

@@ -567,6 +567,73 @@ func (p *lexer) ParseIdentifierOrKeyword() {
 	})
 }
 
+// isContinuationLeft reports whether a token appearing at the end of a line
+// means the statement continues on the next line, so the following newline is
+// not a statement separator (e.g. `a +` <newline> `b`).
+func isContinuationLeft(t TokenType) bool {
+	switch t {
+	case TokenTypePlus, TokenTypeMinus, TokenTypeMultiply, TokenTypeDivide, TokenTypeModulo,
+		TokenTypeAssign, TokenTypeEqual, TokenTypeNotEqual,
+		TokenTypeLessThan, TokenTypeGreaterThan, TokenTypeLessThanOrEqual, TokenTypeGreaterThanOrEqual,
+		TokenTypeAnd, TokenTypeOr, TokenTypeComma, TokenTypeDot, TokenTypeArrow,
+		TokenTypeElvis, TokenTypeSafeCall, TokenTypeColon, TokenTypeQuestion,
+		TokenTypeLParen, TokenTypeLBracket:
+		return true
+	}
+	return false
+}
+
+// isContinuationRight reports whether a token appearing at the start of a line
+// continues the previous line, because a binary/postfix operator can never
+// begin a statement (e.g. `a` <newline> `+ b`).
+func isContinuationRight(t TokenType) bool {
+	switch t {
+	case TokenTypePlus, TokenTypeMinus, TokenTypeMultiply, TokenTypeDivide, TokenTypeModulo,
+		TokenTypeEqual, TokenTypeNotEqual,
+		TokenTypeLessThan, TokenTypeGreaterThan, TokenTypeLessThanOrEqual, TokenTypeGreaterThanOrEqual,
+		TokenTypeAnd, TokenTypeOr, TokenTypeDot, TokenTypeElvis, TokenTypeSafeCall:
+		return true
+	}
+	return false
+}
+
+// joinContinuationLines drops newline tokens that are line continuations rather
+// than statement separators: newlines inside () or [], newlines after a
+// trailing operator, and newlines before a leading binary operator. Braces ({})
+// do not suppress newlines, since blocks rely on them as separators.
+func joinContinuationLines(tokens []Token) []Token {
+	out := make([]Token, 0, len(tokens))
+	depth := 0
+	for i := range tokens {
+		tok := tokens[i]
+		switch tok.Type {
+		case TokenTypeLParen, TokenTypeLBracket:
+			depth++
+		case TokenTypeRParen, TokenTypeRBracket:
+			if depth > 0 {
+				depth--
+			}
+		}
+		if tok.Type == TokenTypeNewline {
+			if depth > 0 {
+				continue
+			}
+			if n := len(out); n > 0 && isContinuationLeft(out[n-1].Type) {
+				continue
+			}
+			j := i + 1
+			for j < len(tokens) && tokens[j].Type == TokenTypeNewline {
+				j++
+			}
+			if j < len(tokens) && isContinuationRight(tokens[j].Type) {
+				continue
+			}
+		}
+		out = append(out, tok)
+	}
+	return out
+}
+
 func (p *lexer) Parse() {
 	for p.Index < len(p.Source) {
 		b := p.Source[p.Index]
@@ -760,4 +827,6 @@ func (p *lexer) Parse() {
 			p.advance() // skip invalid character and continue lexing
 		}
 	}
+
+	p.Tokens = joinContinuationLines(p.Tokens)
 }

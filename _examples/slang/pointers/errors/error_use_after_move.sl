@@ -1,7 +1,8 @@
 // @test: expect_error=true
 // @test: error_stage=semantic
-// @test: error_contains=moved value
-// Test: Use-after-move should produce an error
+// @test: error_contains=cannot bind owned value
+// Test: Binding an owned pointer to another variable is rejected
+//       (there can be only one owner).
 Point = struct {
     val x: s64
     val y: s64
@@ -9,6 +10,6 @@ Point = struct {
 
 main = () {
     val p = new Point{ 10, 20 }
-    val q = p  // p is moved to q
-    print(p.x)  // Error: p was moved
+    val q = p  // Error: cannot bind owned value 'p' to another variable
+    print(p.x)
 }

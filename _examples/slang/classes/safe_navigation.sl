@@ -4,11 +4,6 @@
 Counter = class {
     var value: s64
 
-    // Static factory
-    create = (initial: s64) -> *Counter {
-        return new Counter{ initial }
-    }
-
     // Instance method that returns a value
     get_value = (self: &Counter) -> s64 {
         return self.value
@@ -22,7 +17,7 @@ Counter = class {
 
 main = () {
     // Test 1: Safe call on non-null returns the value
-    val counter: *Counter? = Counter.create(10)
+    val counter: *Counter? = new Counter{ 10 }
     val v1 = counter?.get_value()
     // v1 is s64? = 10
 

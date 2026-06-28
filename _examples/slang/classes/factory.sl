@@ -6,8 +6,8 @@ Point = class {
     var y: s64
 
     // Static factory method
-    create = (x: s64, y: s64) -> *Point {
-        return new Point{ x, y }
+    create = (x: s64, y: s64) -> Point {
+        return Point{ x, y }
     }
 
     // Instance method

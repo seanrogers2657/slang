@@ -1,61 +1,37 @@
-// Linked List Pattern
-// Demonstrates: *T?, building lists, safe call traversal (?.)
-//
-// NOTE: Full recursive traversal requires smart casts (planned feature).
-// This example shows safe call chaining which is currently supported.
-
-Node = struct {
-    var next: *Node?
-    val value: s64
-}
-
-// Build a list by prepending nodes
-prepend = (head: *Node?, value: s64) -> *Node {
-    return new Node{ head, value }
-}
+// Linked List Pattern (growable-vec arena form)
+// The scope-frees-it idiom that replaces owned-pointer fields: one scope owns a
+// growable vec of node fields and the "next pointer" is an integer index into it
+// (-1 = end of list). Nodes are appended dynamically (the vec reallocates as it
+// grows). No node owns another node, so there are no owned-pointer fields and no
+// moves. The whole arena (both vecs) frees at once when main returns.
 
 main = () {
-    // Build list: 5 -> 4 -> 3 -> 2 -> 1 -> null
-    var list: *Node? = null
-    list = prepend(list, 1)
-    list = prepend(list, 2)
-    list = prepend(list, 3)
-    list = prepend(list, 4)
-    list = prepend(list, 5)
+    var value = vec()   // value of node i
+    var next = vec()    // index of node i's successor (-1 = end)
+    var head = 0 - 1
 
-    // Access head value using safe call
-    val head_val = list?.value
-    assert(head_val != null, "head value should exist")
-    if head_val != null {
-        print("Head value exists")
+    // Build by prepending 1..5  =>  head -> 5 -> 4 -> 3 -> 2 -> 1.
+    // "Allocating" is push (the vec grows as needed); "linking" writes an index.
+    var i = 1
+    while i <= 5 {
+        push(value, i)
+        push(next, head)
+        head = len(value) - 1
+        i = i + 1
     }
 
-    // Safe call chaining - access values through nullable pointers
-    val v1 = list?.value
-    val v2 = list?.next?.value
-    val v3 = list?.next?.next?.value
-    val v4 = list?.next?.next?.next?.value
-    val v5 = list?.next?.next?.next?.next?.value
-    val v6 = list?.next?.next?.next?.next?.next?.value  // null - past end
+    // Head value is the last prepended (5).
+    assert(get(value, head) == 5, "head value should be 5")
+    print("Head value exists")
 
-    // Verify all values exist except v6
-    assert(v1 != null, "v1 should exist")
-    assert(v2 != null, "v2 should exist")
-    assert(v3 != null, "v3 should exist")
-    assert(v4 != null, "v4 should exist")
-    assert(v5 != null, "v5 should exist")
-    assert(v6 == null, "v6 should be null (past end)")
+    // Traverse from the head index to the end, printing each value.
+    var cur = head
+    while cur != 0 - 1 {
+        print(get(value, cur))
+        cur = get(next, cur)
+    }
 
-    // Check which values exist
-    if v1 != null { print("v1 exists") }
-    if v2 != null { print("v2 exists") }
-    if v3 != null { print("v3 exists") }
-    if v4 != null { print("v4 exists") }
-    if v5 != null { print("v5 exists") }
-    if v6 == null { print("v6 is null (past end of list)") }
-
-    print("Done - list will be freed automatically")
     print("Linked list test passed!")
     exit(0)
-    // All 5 nodes freed when list goes out of scope
+    // The arena (both vecs) is freed when main returns.
 }

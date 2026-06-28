@@ -4,8 +4,8 @@
 Accumulator = class {
     var total: s64
 
-    create = () -> *Accumulator {
-        return new Accumulator{ 0 }
+    create = () -> Accumulator {
+        return Accumulator{ 0 }
     }
 
     add = (self: &&Accumulator, n: s64) {

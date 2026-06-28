@@ -4,8 +4,8 @@
 Transformer = class {
     var offset: s64
 
-    create = (offset: s64) -> *Transformer {
-        return new Transformer{ offset }
+    create = (offset: s64) -> Transformer {
+        return Transformer{ offset }
     }
 
     // Method to be nested

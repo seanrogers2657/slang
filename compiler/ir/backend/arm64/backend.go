@@ -40,6 +40,9 @@ type StackLayout struct {
 	Size int
 	// Offsets maps IR values to their stack slot offsets (relative to x29).
 	Offsets map[*ir.Value]int
+	// PhiSpill is the x29-relative offset of a scratch region used to break
+	// cycles when shuffling multi-word phi values (flat nullables). 0 if unused.
+	PhiSpill int
 }
 
 // LabelManager generates unique labels during code generation.
@@ -167,6 +170,9 @@ func (g *generator) generate() (string, error) {
 
 	// Emit string conversion/concatenation helpers (for interpolation)
 	g.emitStringConvHelpers()
+
+	// Emit growable vector (vec) runtime helpers
+	g.emitVecHelpers()
 
 	// Emit panic helper
 	g.emitPanicHelper()
@@ -1125,6 +1131,206 @@ func (g *generator) emitStringConvHelpers() {
 	g.emit("")
 }
 
+// emitVecHelpers emits the runtime helpers for the growable vec type. A vec is a
+// pointer to a 24-byte header { len:[+0], cap:[+8], data:[+16] }, where data
+// points to a separate cap*8-byte buffer of s64 elements. The stable header lets
+// push mutate in place.
+// emitVecHelpers emits the copy-on-write runtime for vec. The data buffer is
+// prefixed with a refcount: data = { refcount:[+0], elem0:[+8], elem1:[+16], ... }
+// (allocation size 8 + cap*8), so multiple vecs can share one buffer. The vec
+// header { len:[+0], cap:[+8], data:[+16] } is per-binding (copy clones it).
+// Binding/return retain (refcount++); a mutation on a shared buffer uniquifies
+// (private copy) first, so value semantics hold while binds stay O(1).
+func (g *generator) emitVecHelpers() {
+	// ---- _sl_vec_new () -> x0 = empty vec header ----
+	g.emit("// vec new () -> x0 = header {len=0, cap=0, data=0}")
+	g.emit("_sl_vec_new:")
+	g.emit("    stp x29, x30, [sp, #-16]!")
+	g.emit("    mov x29, sp")
+	g.emit("    mov x0, #24")
+	g.emit("    bl _sl_heap_alloc")
+	g.emit("    str xzr, [x0]")       // len = 0
+	g.emit("    str xzr, [x0, #8]")   // cap = 0
+	g.emit("    str xzr, [x0, #16]")  // data = 0
+	g.emit("    ldp x29, x30, [sp], #16")
+	g.emit("    ret")
+	g.emit("")
+
+	// ---- _sl_vec_uniquify (x0 = header); ensure this binding owns its buffer ----
+	// If the data buffer is shared (refcount > 1), copy it to a private buffer
+	// (refcount 1, same cap), decrement the shared one, and point header.data at
+	// the copy. No-op for a private or empty buffer.
+	g.emit("// vec uniquify (x0 = header); private-copy the data buffer if shared")
+	g.emit("_sl_vec_uniquify:")
+	g.emit("    stp x29, x30, [sp, #-16]!")
+	g.emit("    mov x29, sp")
+	g.emit("    stp x19, x20, [sp, #-16]!")
+	g.emit("    stp x21, x22, [sp, #-16]!")
+	g.emit("    mov x19, x0")          // header
+	g.emit("    ldr x20, [x19, #16]")  // data
+	g.emit("    cbz x20, _sl_vec_uniq_done") // no buffer
+	g.emit("    ldr x9, [x20]")        // refcount
+	g.emit("    cmp x9, #1")
+	g.emit("    beq _sl_vec_uniq_done") // private (rc==1) -> no-op
+	g.emit("    ldr x21, [x19]")       // len
+	g.emit("    ldr x22, [x19, #8]")   // cap
+	g.emit("    lsl x0, x22, #3")      // cap*8
+	g.emit("    add x0, x0, #8")       // + refcount prefix
+	g.emit("    bl _sl_heap_alloc")    // x0 = newbuf
+	g.emit("    mov x9, #1")
+	g.emit("    str x9, [x0]")         // newbuf.refcount = 1
+	g.emit("    add x10, x20, #8")     // old elems
+	g.emit("    add x11, x0, #8")      // new elems
+	g.emit("    mov x12, x21")         // count = len
+	g.emit("_sl_vec_uniq_copy:")
+	g.emit("    cbz x12, _sl_vec_uniq_set")
+	g.emit("    ldr x13, [x10]")
+	g.emit("    str x13, [x11]")
+	g.emit("    add x10, x10, #8")
+	g.emit("    add x11, x11, #8")
+	g.emit("    sub x12, x12, #1")
+	g.emit("    b _sl_vec_uniq_copy")
+	g.emit("_sl_vec_uniq_set:")
+	g.emit("    ldr x9, [x20]")        // old refcount (was > 1)
+	g.emit("    sub x9, x9, #1")
+	g.emit("    str x9, [x20]")        // decrement shared
+	g.emit("    str x0, [x19, #16]")   // header.data = newbuf
+	g.emit("_sl_vec_uniq_done:")
+	g.emit("    ldp x21, x22, [sp], #16")
+	g.emit("    ldp x19, x20, [sp], #16")
+	g.emit("    ldp x29, x30, [sp], #16")
+	g.emit("    ret")
+	g.emit("")
+
+	// ---- _sl_vec_push (x0 = header, x1 = value) ----
+	g.emit("// vec push (x0 = header, x1 = value); grow-or-uniquify then append")
+	g.emit("_sl_vec_push:")
+	g.emit("    stp x29, x30, [sp, #-16]!")
+	g.emit("    mov x29, sp")
+	g.emit("    stp x19, x20, [sp, #-16]!")
+	g.emit("    stp x21, x22, [sp, #-16]!")
+	g.emit("    stp x23, x24, [sp, #-16]!")
+	g.emit("    mov x19, x0")          // header
+	g.emit("    mov x20, x1")          // value
+	g.emit("    ldr x21, [x19]")       // len
+	g.emit("    ldr x22, [x19, #8]")   // cap
+	g.emit("    cmp x21, x22")
+	g.emit("    bne _sl_vec_push_room") // not full -> ensure private + append
+	// ---- grow (full): allocate a bigger private buffer, copy, release old ----
+	g.emit("    cbnz x22, _sl_vec_push_double")
+	g.emit("    mov x24, #4")          // newcap = 4 when cap == 0
+	g.emit("    b _sl_vec_push_galloc")
+	g.emit("_sl_vec_push_double:")
+	g.emit("    lsl x24, x22, #1")     // newcap = cap*2
+	g.emit("_sl_vec_push_galloc:")
+	g.emit("    lsl x0, x24, #3")      // newcap*8
+	g.emit("    add x0, x0, #8")       // + refcount prefix
+	g.emit("    bl _sl_heap_alloc")    // x0 = newbuf
+	g.emit("    mov x23, x0")          // newbuf
+	g.emit("    mov x9, #1")
+	g.emit("    str x9, [x23]")        // newbuf.refcount = 1
+	g.emit("    ldr x10, [x19, #16]")  // old data
+	g.emit("    cbz x10, _sl_vec_push_gset") // no old buffer
+	g.emit("    add x9, x10, #8")      // old elems
+	g.emit("    add x11, x23, #8")     // new elems
+	g.emit("    mov x12, x21")         // count = len
+	g.emit("_sl_vec_push_gcopy:")
+	g.emit("    cbz x12, _sl_vec_push_grelease")
+	g.emit("    ldr x13, [x9]")
+	g.emit("    str x13, [x11]")
+	g.emit("    add x9, x9, #8")
+	g.emit("    add x11, x11, #8")
+	g.emit("    sub x12, x12, #1")
+	g.emit("    b _sl_vec_push_gcopy")
+	g.emit("_sl_vec_push_grelease:")
+	g.emit("    ldr x9, [x10]")        // old refcount
+	g.emit("    sub x9, x9, #1")
+	g.emit("    str x9, [x10]")
+	g.emit("    cbnz x9, _sl_vec_push_gset") // still shared -> don't free
+	g.emit("    mov x0, x10")          // old buffer
+	g.emit("    lsl x1, x22, #3")      // old size = oldcap*8
+	g.emit("    add x1, x1, #8")       // + refcount prefix
+	g.emit("    bl _sl_heap_free")
+	g.emit("_sl_vec_push_gset:")
+	g.emit("    str x23, [x19, #16]")  // header.data = newbuf
+	g.emit("    str x24, [x19, #8]")   // header.cap = newcap
+	g.emit("    b _sl_vec_push_append")
+	// ---- room (not full): uniquify if shared ----
+	g.emit("_sl_vec_push_room:")
+	g.emit("    mov x0, x19")
+	g.emit("    bl _sl_vec_uniquify")  // ensure private (header.data may change)
+	g.emit("_sl_vec_push_append:")
+	g.emit("    ldr x23, [x19, #16]")  // data (now private)
+	g.emit("    ldr x21, [x19]")       // len
+	g.emit("    add x9, x23, #8")      // elems base (skip refcount)
+	g.emit("    add x9, x9, x21, lsl #3") // &elems[len]
+	g.emit("    str x20, [x9]")
+	g.emit("    add x21, x21, #1")
+	g.emit("    str x21, [x19]")       // header.len = len+1
+	g.emit("    ldp x23, x24, [sp], #16")
+	g.emit("    ldp x21, x22, [sp], #16")
+	g.emit("    ldp x19, x20, [sp], #16")
+	g.emit("    ldp x29, x30, [sp], #16")
+	g.emit("    ret")
+	g.emit("")
+
+	// ---- _sl_vec_copy (x0 = src header) -> x0 = shared retain (CoW) ----
+	// Clone the header (per-binding) and retain the shared data buffer. O(1).
+	g.emit("// vec copy (x0 = src) -> x0 = new header sharing the buffer (refcount++)")
+	g.emit("_sl_vec_copy:")
+	g.emit("    stp x29, x30, [sp, #-16]!")
+	g.emit("    mov x29, sp")
+	g.emit("    stp x19, x20, [sp, #-16]!")
+	g.emit("    mov x19, x0")          // src header
+	g.emit("    mov x0, #24")
+	g.emit("    bl _sl_heap_alloc")    // x0 = new header
+	g.emit("    ldr x9, [x19]")        // len
+	g.emit("    str x9, [x0]")
+	g.emit("    ldr x9, [x19, #8]")    // cap
+	g.emit("    str x9, [x0, #8]")
+	g.emit("    ldr x9, [x19, #16]")   // data
+	g.emit("    str x9, [x0, #16]")
+	g.emit("    cbz x9, _sl_vec_copy_done") // empty buffer -> nothing to retain
+	g.emit("    ldr x10, [x9]")        // refcount
+	g.emit("    add x10, x10, #1")
+	g.emit("    str x10, [x9]")        // retain
+	g.emit("_sl_vec_copy_done:")
+	g.emit("    ldp x19, x20, [sp], #16")
+	g.emit("    ldp x29, x30, [sp], #16")
+	g.emit("    ret")
+	g.emit("")
+
+	// ---- _sl_vec_free (x0 = header); release buffer, free header ----
+	g.emit("// vec free (x0 = header); release the shared buffer, free the header")
+	g.emit("_sl_vec_free:")
+	g.emit("    stp x29, x30, [sp, #-16]!")
+	g.emit("    mov x29, sp")
+	g.emit("    stp x19, x20, [sp, #-16]!")
+	g.emit("    mov x19, x0")          // header ptr
+	g.emit("    bl _sl_find_arena")    // x0 = arena or 0 (reads x0)
+	g.emit("    cbz x0, _sl_vec_free_done") // not heap -> no-op
+	g.emit("    ldr x20, [x19, #16]")  // data
+	g.emit("    cbz x20, _sl_vec_free_hdr")
+	g.emit("    ldr x9, [x20]")        // refcount
+	g.emit("    sub x9, x9, #1")
+	g.emit("    str x9, [x20]")        // release
+	g.emit("    cbnz x9, _sl_vec_free_hdr") // still referenced -> keep buffer
+	g.emit("    ldr x9, [x19, #8]")    // cap
+	g.emit("    lsl x1, x9, #3")       // size = cap*8
+	g.emit("    add x1, x1, #8")       // + refcount prefix
+	g.emit("    mov x0, x20")          // buffer ptr
+	g.emit("    bl _sl_heap_free")
+	g.emit("_sl_vec_free_hdr:")
+	g.emit("    mov x0, x19")
+	g.emit("    mov x1, #24")
+	g.emit("    bl _sl_heap_free")
+	g.emit("_sl_vec_free_done:")
+	g.emit("    ldp x19, x20, [sp], #16")
+	g.emit("    ldp x29, x30, [sp], #16")
+	g.emit("    ret")
+	g.emit("")
+}
+
 func (g *generator) emitPanicHelper() {
 	// _sl_panic: x0 = error message ptr, x1 = error msg len, x2 = func name ptr, x3 = func name len
 	g.emit("// Panic helper - prints error to stderr and exits with code 1")
@@ -1204,16 +1410,34 @@ func (g *generator) emitPrologue() {
 	// Allocate stack space for locals
 	g.emitSpAdjust("sub", g.layout.Size)
 
-	// Store parameters to stack. All values, including nullables, are 8 bytes.
+	// Store parameters to stack. A multi-word value (flat nullable) arrives as a
+	// pointer to the caller's slot and is copied into this frame's slot so the
+	// body sees a uniform flat local; all other params occupy one register.
 	regIdx := 0
 	for _, param := range g.fn.Params {
 		offset := g.stackOffset(param)
+		r := reprOf(param.Type)
 		if regIdx < 8 {
-			g.emit("    str x%d, [x29, #%d]", regIdx, offset)
+			if r.multiWord() {
+				g.emit("    mov x10, x%d", regIdx) // pointer to caller's value
+				for o := 0; o < r.bytes(); o += 8 {
+					g.emit("    ldr x9, [x10, #%d]", o)
+					g.storeToStack("x9", offset+o)
+				}
+			} else {
+				g.emit("    str x%d, [x29, #%d]", regIdx, offset)
+			}
 		} else {
 			callerOffset := 16 + (regIdx-8)*8
-			g.emit("    ldr x9, [x29, #%d]", callerOffset)
-			g.storeToStack("x9", offset)
+			g.emit("    ldr x10, [x29, #%d]", callerOffset)
+			if r.multiWord() {
+				for o := 0; o < r.bytes(); o += 8 {
+					g.emit("    ldr x9, [x10, #%d]", o)
+					g.storeToStack("x9", offset+o)
+				}
+			} else {
+				g.storeToStack("x10", offset)
+			}
 		}
 		regIdx++
 	}
@@ -1241,6 +1465,16 @@ func (g *generator) emitReturnValue(block *ir.Block) {
 	}
 
 	if retVal == nil || len(retVal.Args) == 0 {
+		return
+	}
+
+	// A multi-word value (flat nullable) is returned by value in a register
+	// tuple: word 0 (the tag) in x0, payload words in x1, x2, ...
+	if r := reprOf(retVal.Args[0].Type); r.multiWord() {
+		off := g.stackOffset(retVal.Args[0])
+		for i := 0; i < r.words; i++ {
+			g.loadFromStack(fmt.Sprintf("x%d", i), off+i*8)
+		}
 		return
 	}
 
@@ -1276,20 +1510,41 @@ func ComputeStackLayout(fn *ir.Function) *StackLayout {
 	offsets := make(map[*ir.Value]int)
 	offset := -16 // Start below saved x29, x30
 
-	// Allocate space for parameters (every value is 8 bytes wide, including nullables).
+	// Allocate space for parameters. A flat-nullable param needs its full
+	// tag+payload width (the body sees it as a flat local after copy-in); every
+	// other param is 8 bytes.
 	for _, param := range fn.Params {
-		offset -= 8
+		sz := 8
+		if param.Type != nil {
+			if s := param.Type.Size(); s > sz {
+				sz = s
+			}
+		}
+		offset -= sz
 		offsets[param] = offset
 	}
 
 	// Allocate space for all values that need stack storage
+	maxPhiWords := 0
 	for _, block := range fn.Blocks {
 		for _, v := range block.Values {
 			if needsStackSlot(v) {
 				offset -= valueSize(v)
 				offsets[v] = offset
 			}
+			if v.Op == ir.OpPhi {
+				if r := reprOf(v.Type); r.multiWord() && r.bytes() > maxPhiWords {
+					maxPhiWords = r.bytes()
+				}
+			}
 		}
+	}
+
+	// Reserve a scratch region for breaking multi-word phi cycles.
+	phiSpill := 0
+	if maxPhiWords > 0 {
+		offset -= maxPhiWords
+		phiSpill = offset
 	}
 
 	// Calculate size: offset is negative, we need -offset bytes below x29
@@ -1302,8 +1557,9 @@ func ComputeStackLayout(fn *ir.Function) *StackLayout {
 	}
 
 	return &StackLayout{
-		Size:    size,
-		Offsets: offsets,
+		Size:     size,
+		Offsets:  offsets,
+		PhiSpill: phiSpill,
 	}
 }
 
@@ -1429,6 +1685,20 @@ func (g *generator) generateValue(v *ir.Value) error {
 		return g.genStrCopy(v)
 	case ir.OpStrFree:
 		return g.genStrFree(v)
+	case ir.OpVecNew:
+		return g.genVecNew(v)
+	case ir.OpVecPush:
+		return g.genVecPush(v)
+	case ir.OpVecGet:
+		return g.genVecGet(v)
+	case ir.OpVecSet:
+		return g.genVecSet(v)
+	case ir.OpVecLen:
+		return g.genVecLen(v)
+	case ir.OpVecCopy:
+		return g.genVecCopy(v)
+	case ir.OpVecFree:
+		return g.genVecFree(v)
 	case ir.OpIsNull:
 		return g.genIsNull(v)
 	case ir.OpUnwrap:
@@ -1853,6 +2123,17 @@ func (g *generator) genLoad(v *ir.Value) error {
 	// Load pointer
 	g.loadValue(v.Args[0], "x10")
 
+	// Multi-word value (e.g. a flat nullable): copy the whole aggregate from
+	// memory, word by word.
+	if r := reprOf(v.Type); r.multiWord() {
+		dstOff := g.stackOffset(v)
+		for o := 0; o < r.bytes(); o += 8 {
+			g.emit("    ldr x9, [x10, #%d]", o)
+			g.storeToStack("x9", dstOff+o)
+		}
+		return nil
+	}
+
 	// Use appropriate load instruction based on type size
 	if v.Type != nil {
 		signed := false
@@ -1920,6 +2201,18 @@ func (g *generator) genStore(v *ir.Value) error {
 	g.loadValue(v.Args[0], "x10") // pointer
 
 	valueType := v.Args[1].Type
+
+	// Multi-word value (e.g. a flat nullable): copy the whole aggregate to
+	// memory, word by word.
+	if r := reprOf(valueType); r.multiWord() {
+		srcOff := g.stackOffset(v.Args[1])
+		for o := 0; o < r.bytes(); o += 8 {
+			g.loadFromStack("x9", srcOff+o)
+			g.emit("    str x9, [x10, #%d]", o)
+		}
+		return nil
+	}
+
 	g.loadValue(v.Args[1], "x9") // value
 
 	// Use appropriate store instruction based on type size
@@ -2185,6 +2478,84 @@ func (g *generator) genStringLen(v *ir.Value) error {
 	return nil
 }
 
+func (g *generator) genVecNew(v *ir.Value) error {
+	g.emit("    bl _sl_vec_new")
+	g.storeToStack("x0", g.stackOffset(v))
+	return nil
+}
+
+func (g *generator) genVecPush(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x0") // vec
+	g.loadValue(v.Args[1], "x1") // value
+	g.emit("    bl _sl_vec_push")
+	return nil
+}
+
+// genVecGet reads vec[index] inline with a runtime bounds check against len.
+// Header layout: [+0]=len, [+8]=cap, [+16]=data (a pointer to len/cap s64 slots).
+// genVecGet reads vec[index]; data buffer has an 8-byte refcount prefix, so
+// elements start at data+8. Read-only, so no copy-on-write needed.
+func (g *generator) genVecGet(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x10") // vec header
+	g.loadValue(v.Args[1], "x11") // index
+	g.emitVecBoundsCheck()
+	g.emit("    ldr x10, [x10, #16]")      // data ptr
+	g.emit("    add x10, x10, #8")         // skip refcount prefix
+	g.emit("    add x9, x10, x11, lsl #3") // &elems[index]
+	g.emit("    ldr x9, [x9]")
+	g.storeToStack("x9", g.stackOffset(v))
+	return nil
+}
+
+// genVecSet writes vec[index] = value. It mutates, so it first uniquifies the
+// buffer (copy-on-write) in case it is shared with another binding.
+func (g *generator) genVecSet(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x0") // header
+	g.emit("    bl _sl_vec_uniquify") // private-copy the buffer if shared
+	g.loadValue(v.Args[0], "x10") // header (stable pointer; data may have moved)
+	g.loadValue(v.Args[1], "x11") // index
+	g.loadValue(v.Args[2], "x13") // value
+	g.emitVecBoundsCheck()
+	g.emit("    ldr x10, [x10, #16]")      // data ptr (now private)
+	g.emit("    add x10, x10, #8")         // skip refcount prefix
+	g.emit("    add x9, x10, x11, lsl #3") // &elems[index]
+	g.emit("    str x13, [x9]")
+	return nil
+}
+
+// emitVecBoundsCheck panics if x11 (index) is out of [0, len) where len = [x10].
+func (g *generator) emitVecBoundsCheck() {
+	label := g.labels.NextLabel()
+	g.emit("    ldr x12, [x10]") // len
+	g.emit("    cmp x11, #0")
+	g.emit("    blt _sl_bounds_fail_%d", label)
+	g.emit("    cmp x11, x12")
+	g.emit("    blt _sl_bounds_ok_%d", label)
+	g.emit("_sl_bounds_fail_%d:", label)
+	g.emitPanic(PanicBounds)
+	g.emit("_sl_bounds_ok_%d:", label)
+}
+
+func (g *generator) genVecLen(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x10")
+	g.emit("    ldr x9, [x10]") // len is the first word of the header
+	g.storeToStack("x9", g.stackOffset(v))
+	return nil
+}
+
+func (g *generator) genVecCopy(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x0")
+	g.emit("    bl _sl_vec_copy")
+	g.storeToStack("x0", g.stackOffset(v))
+	return nil
+}
+
+func (g *generator) genVecFree(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x0")
+	g.emit("    bl _sl_vec_free")
+	return nil
+}
+
 // genStringIndex loads a byte from a string at the given index, with runtime bounds check.
 // Header layout: [ptr+0]=length (8 bytes), [ptr+8..]=bytes.
 func (g *generator) genStringIndex(v *ir.Value) error {
@@ -2227,10 +2598,18 @@ func (g *generator) genIsNull(v *ir.Value) error {
 }
 
 func (g *generator) genUnwrap(v *ir.Value) error {
-	// All nullables are pointers. For reference nullables, the unwrapped
-	// value is the pointer itself. For value-type nullables, dereference
-	// the pointer to load the underlying value.
+	// Flat value-nullables store the payload at offset 8 of their slot.
 	nullType, isNullable := v.Args[0].Type.(*ir.NullableType)
+	if isNullable && nullType.IsFlat() {
+		off := g.stackOffset(v.Args[0])
+		g.loadFromStack("x9", off+ir.NullablePayloadOffset)
+		g.storeToStack("x9", g.stackOffset(v))
+		return nil
+	}
+
+	// All other nullables are pointers. For reference nullables, the unwrapped
+	// value is the pointer itself. For legacy boxed value-type nullables,
+	// dereference the pointer to load the underlying value.
 	if !isNullable || nullType.IsReferenceNullable() {
 		g.loadValue(v.Args[0], "x9")
 		g.storeToStack("x9", g.stackOffset(v))
@@ -2260,9 +2639,6 @@ func (g *generator) genUnwrap(v *ir.Value) error {
 }
 
 func (g *generator) genWrap(v *ir.Value) error {
-	// All nullables are 8-byte pointers. For reference nullables, the
-	// underlying value is already a pointer; just copy it. For value-type
-	// nullables, allocate a heap slot, store the value, and use the pointer.
 	nullType, ok := v.Type.(*ir.NullableType)
 	if !ok {
 		g.loadValue(v.Args[0], "x9")
@@ -2270,6 +2646,19 @@ func (g *generator) genWrap(v *ir.Value) error {
 		return nil
 	}
 
+	// Flat value-nullable: write tag=present at offset 0 and the payload at
+	// offset 8 of this value's slot. No heap allocation.
+	if nullType.IsFlat() {
+		off := g.stackOffset(v)
+		g.loadValue(v.Args[0], "x9")
+		g.emit("    mov x10, #%d", ir.NullableTagPresent)
+		g.storeToStack("x10", off+ir.NullableTagOffset)
+		g.storeToStack("x9", off+ir.NullablePayloadOffset)
+		return nil
+	}
+
+	// Reference nullables carry the pointer through; legacy boxed value-type
+	// nullables (string?, array?) allocate a heap slot.
 	if nullType.IsReferenceNullable() {
 		g.loadValue(v.Args[0], "x9")
 		g.storeToStack("x9", g.stackOffset(v))
@@ -2306,7 +2695,15 @@ func (g *generator) genWrap(v *ir.Value) error {
 }
 
 func (g *generator) genWrapNull(v *ir.Value) error {
-	// Null is a zero pointer for every nullable type.
+	// Flat value-nullable: tag=null at offset 0, payload zeroed at offset 8.
+	if nt, ok := v.Type.(*ir.NullableType); ok && nt.IsFlat() {
+		off := g.stackOffset(v)
+		g.emit("    mov x9, xzr")
+		g.storeToStack("x9", off+ir.NullableTagOffset)
+		g.storeToStack("x9", off+ir.NullablePayloadOffset)
+		return nil
+	}
+	// Every other nullable represents null as a zero pointer.
 	g.emit("    mov x9, xzr")
 	g.storeToStack("x9", g.stackOffset(v))
 	return nil
@@ -2330,19 +2727,33 @@ func (g *generator) genCall(v *ir.Value) error {
 		return g.genAssert(v)
 	}
 
-	// Regular function call. Every argument, including nullables, occupies one register.
+	// Regular function call. A single-word argument is passed by value in one
+	// register; a multi-word argument (flat nullable) is passed as a pointer to
+	// its slot, which the callee copies in.
 	for regIdx, arg := range v.Args {
 		if regIdx < 8 {
-			g.loadValue(arg, fmt.Sprintf("x%d", regIdx))
+			if reprOf(arg.Type).multiWord() {
+				g.slotAddress(fmt.Sprintf("x%d", regIdx), g.stackOffset(arg))
+			} else {
+				g.loadValue(arg, fmt.Sprintf("x%d", regIdx))
+			}
 		}
 	}
 
 	// Call function
 	g.emit("    bl _%s", funcName)
 
-	// Store return value if any.
+	// Store return value if any. A multi-word result comes back in a register
+	// tuple (x0..xN); a single-word result in x0.
 	if v.Type != nil && !v.Type.Equal(ir.TypeVoid) {
-		g.storeToStack("x0", g.stackOffset(v))
+		if r := reprOf(v.Type); r.multiWord() {
+			off := g.stackOffset(v)
+			for i := 0; i < r.words; i++ {
+				g.storeToStack(fmt.Sprintf("x%d", i), off+i*8)
+			}
+		} else {
+			g.storeToStack("x0", g.stackOffset(v))
+		}
 	}
 
 	return nil
@@ -2606,6 +3017,27 @@ func (g *generator) emitPhiCopies(from *ir.Block, to *ir.Block) {
 	}
 
 	emitMove := func(src, dst phiLoc) {
+		// Determine the value being shuffled (the non-temp endpoint) so we can
+		// size multi-word (flat nullable) moves.
+		real := dst.val
+		if dst.temp {
+			real = src.val
+		}
+		if r := reprOf(real.Type); r.multiWord() {
+			sz := r.bytes()
+			switch {
+			case dst.temp:
+				if src.temp {
+					return
+				}
+				g.copyStackToStack(g.layout.PhiSpill, g.stackOffset(src.val), sz)
+			case src.temp:
+				g.copyStackToStack(g.stackOffset(dst.val), g.layout.PhiSpill, sz)
+			default:
+				g.copyStackToStack(g.stackOffset(dst.val), g.stackOffset(src.val), sz)
+			}
+			return
+		}
 		switch {
 		case dst.temp:
 			if src.temp {
@@ -2789,6 +3221,33 @@ func (g *generator) loadFromStack(reg string, offset int) {
 		g.loadImmediate(int64(offset), "x8")
 		g.emit("    add x8, x29, x8")
 		g.emit("    ldr %s, [x8]", reg)
+	}
+}
+
+// copyStackToStack copies size bytes (rounded up to a multiple of 8) between two
+// x29-relative stack slots, one word at a time. Used to move multi-word values
+// (flat nullables) that don't fit in a single register.
+func (g *generator) copyStackToStack(dstOff, srcOff, size int) {
+	for o := 0; o < size; o += 8 {
+		g.loadFromStack("x9", srcOff+o)
+		g.storeToStack("x9", dstOff+o)
+	}
+}
+
+// slotAddress computes the address of an x29-relative stack slot into reg.
+// Used to pass a multi-word value (flat nullable) by pointer.
+func (g *generator) slotAddress(reg string, offset int) {
+	switch {
+	case offset >= 0 && offset <= 4095:
+		g.emit("    add %s, x29, #%d", reg, offset)
+	case offset < 0 && -offset <= 4095:
+		g.emit("    sub %s, x29, #%d", reg, -offset)
+	case offset < 0:
+		g.loadImmediate(int64(-offset), reg)
+		g.emit("    sub %s, x29, %s", reg, reg)
+	default:
+		g.loadImmediate(int64(offset), reg)
+		g.emit("    add %s, x29, %s", reg, reg)
 	}
 }
 

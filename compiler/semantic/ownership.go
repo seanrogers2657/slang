@@ -4,175 +4,16 @@ import (
 	"github.com/seanrogers2657/slang/compiler/ast"
 )
 
-// OwnershipState represents the current ownership state of a variable
-type OwnershipState int
-
-const (
-	// StateOwned indicates the variable currently owns its value
-	StateOwned OwnershipState = iota
-	// StateMoved indicates the variable's value has been moved elsewhere
-	StateMoved
-	// StateBorrowed indicates the variable is currently borrowed (not yet used)
-	StateBorrowed
-)
-
-func (s OwnershipState) String() string {
-	switch s {
-	case StateOwned:
-		return "owned"
-	case StateMoved:
-		return "moved"
-	case StateBorrowed:
-		return "borrowed"
-	default:
-		return "unknown"
-	}
-}
-
-// MoveInfo records where and how a variable was moved
-type MoveInfo struct {
-	MovedTo  string       // name of variable it was moved to (or "<param>" for function param)
-	Location ast.Position // position where the move occurred
-}
-
-// OwnershipInfo tracks the ownership state of a single variable
-type OwnershipInfo struct {
-	State    OwnershipState
-	Type     Type     // the variable's type
-	MoveInfo MoveInfo // info about where it was moved (if State == StateMoved)
-}
-
-// OwnershipScope tracks ownership within a lexical scope
-type OwnershipScope struct {
-	parent    *OwnershipScope
-	ownership map[string]OwnershipInfo
-	inLoop    bool // true if this scope is inside a loop body
-}
-
-// newOwnershipScope creates a new ownership scope
-func newOwnershipScope(parent *OwnershipScope) *OwnershipScope {
-	return &OwnershipScope{
-		parent:    parent,
-		ownership: make(map[string]OwnershipInfo),
-	}
-}
-
-// declare adds a new variable to ownership tracking
-func (s *OwnershipScope) declare(name string, typ Type) {
-	s.ownership[name] = OwnershipInfo{
-		State: StateOwned,
-		Type:  typ,
-	}
-}
-
-// lookup finds ownership info for a variable in this scope or parent scopes
-func (s *OwnershipScope) lookup(name string) (OwnershipInfo, bool) {
-	if info, exists := s.ownership[name]; exists {
-		return info, true
-	}
-	if s.parent != nil {
-		return s.parent.lookup(name)
-	}
-	return OwnershipInfo{}, false
-}
-
-// markMoved marks a variable as moved
-func (s *OwnershipScope) markMoved(name string, movedTo string, location ast.Position) bool {
-	// First check this scope
-	if info, exists := s.ownership[name]; exists {
-		info.State = StateMoved
-		info.MoveInfo = MoveInfo{MovedTo: movedTo, Location: location}
-		s.ownership[name] = info
-		return true
-	}
-	// Check parent scopes
-	if s.parent != nil {
-		return s.parent.markMoved(name, movedTo, location)
-	}
-	return false
-}
-
-// restoreOwned marks a previously moved variable as owned again
-// This is used when a moved variable is reassigned a new value
-func (s *OwnershipScope) restoreOwned(name string) bool {
-	// First check this scope
-	if info, exists := s.ownership[name]; exists {
-		info.State = StateOwned
-		info.MoveInfo = MoveInfo{} // clear move info
-		s.ownership[name] = info
-		return true
-	}
-	// Check parent scopes
-	if s.parent != nil {
-		return s.parent.restoreOwned(name)
-	}
-	return false
-}
-
-// isInLoop returns true if this scope or any parent is inside a loop
-func (s *OwnershipScope) isInLoop() bool {
-	if s.inLoop {
-		return true
-	}
-	if s.parent != nil {
-		return s.parent.isInLoop()
-	}
-	return false
-}
-
-// snapshotParentState captures the current state of variables from parent scopes
-// Returns a map of variable name -> ownership info for all variables in parent scopes
-func (s *OwnershipScope) snapshotParentState() map[string]OwnershipInfo {
-	snapshot := make(map[string]OwnershipInfo)
-	for scope := s.parent; scope != nil; scope = scope.parent {
-		for name, info := range scope.ownership {
-			// Don't overwrite if we already have this variable (inner scope wins)
-			if _, exists := snapshot[name]; !exists {
-				snapshot[name] = info
-			}
-		}
-	}
-	return snapshot
-}
-
-// getMovedVars returns a list of variable names that were moved in this scope
-// (either in this scope's map or promoted to parent)
-func (s *OwnershipScope) getMovedVars(beforeSnapshot map[string]OwnershipInfo) []string {
-	var moved []string
-
-	// Check parent scopes for variables that changed state
-	for scope := s; scope != nil; scope = scope.parent {
-		for name, info := range scope.ownership {
-			if info.State == StateMoved {
-				// Check if it was owned before
-				if before, existed := beforeSnapshot[name]; existed && before.State == StateOwned {
-					moved = append(moved, name)
-				}
-			}
-		}
-	}
-
-	return moved
-}
-
-// getMoveInfo gets the move info for a moved variable
-func (s *OwnershipScope) getMoveInfo(name string) (MoveInfo, bool) {
-	info, found := s.lookup(name)
-	if found && info.State == StateMoved {
-		return info.MoveInfo, true
-	}
-	return MoveInfo{}, false
-}
-
-// IsCopyable returns true if a type can be implicitly copied (not moved).
-// Primitives and references are copyable; Own<T> and structs containing Own<T> are move-only.
+// IsCopyable returns true if a type can be implicitly copied. Primitives and
+// references are copyable; owned pointers (*T) and aggregates containing them
+// are not (they are single-owner under the scope-frees-it model).
 func IsCopyable(t Type) bool {
 	switch tt := t.(type) {
 	// Primitive types are always copyable
 	case S8Type, S16Type, S32Type, S64Type, S128Type,
 		U8Type, U16Type, U32Type, U64Type, U128Type,
 		F32Type, F64Type,
-		BooleanType, StringType:
+		BooleanType, StringType, VecType:
 		return true
 
 	// Void and error types are trivially copyable
@@ -183,7 +24,7 @@ func IsCopyable(t Type) bool {
 	case RefPointerType:
 		return true
 
-	// Owned pointers are NOT copyable (they're move-only)
+	// Owned pointers are NOT copyable (single-owner, scope-freed)
 	case OwnedPointerType:
 		return false
 
@@ -214,9 +55,72 @@ func IsCopyable(t Type) bool {
 	}
 }
 
-// IsMoveOnly returns true if a type must be moved (cannot be implicitly copied)
-func IsMoveOnly(t Type) bool {
+// IsNonCopyable returns true if a type cannot be implicitly copied. Under the
+// scope-frees-it model these values — owned pointers (*T), aggregates that
+// contain one, and classes — are single-owner: they may not be aliased to a
+// second binding (no implicit copy, and no moves either).
+func IsNonCopyable(t Type) bool {
 	return !IsCopyable(t)
+}
+
+// ownsHeap reports whether a type is an owned heap pointer (*T or *T?). These are
+// the only heap-owning, single-owner category permitted by the scope-frees-it
+// ownership model, and they are restricted to local bindings (never returns,
+// fields, or params).
+func ownsHeap(t Type) bool {
+	return IsOwnedPointer(t) || IsNullableOwnedPointer(t)
+}
+
+// isValueType reports whether a type has pure value semantics: it is not a borrow
+// (&T/&&T) and owns no heap that a second binding could alias. Value types are exactly what
+// may be returned from a function, stored in a field, and freely copied.
+//
+// This is the allow-list at the heart of the scope-frees-it ownership model: we
+// define what a value type *is* and restrict the non-value categories to specific
+// positions (borrows: parameters only; owned pointers: local bindings only).
+// Anything not enumerated here is, by default, not a value type.
+func isValueType(t Type) bool {
+	switch tt := t.(type) {
+	// Primitives and strings are values. (string is heap-backed but copyable with
+	// value semantics — see the string memory model.)
+	case S8Type, S16Type, S32Type, S64Type, S128Type,
+		U8Type, U16Type, U32Type, U64Type, U128Type,
+		F32Type, F64Type,
+		BooleanType, StringType, VecType:
+		return true
+
+	// Void/error/nothing are trivially value-like (and harmless in these positions).
+	case VoidType, ErrorType, NothingType:
+		return true
+
+	// Nullable is a value type iff its payload is.
+	case NullableType:
+		return isValueType(tt.InnerType)
+
+	// Aggregates are values iff every component is a value (no owned-pointer fields,
+	// no nested borrows).
+	case StructType:
+		for _, field := range tt.Fields {
+			if !isValueType(field.Type) {
+				return false
+			}
+		}
+		return true
+	case ClassType:
+		for _, field := range tt.Fields {
+			if !isValueType(field.Type) {
+				return false
+			}
+		}
+		return true
+	case ArrayType:
+		return isValueType(tt.ElementType)
+
+	default:
+		// Borrows (&T/&&T), owned pointers (*T/*T?), functions, namespaces, etc.
+		// are not value types.
+		return false
+	}
 }
 
 // ContainsOwnedPointer returns true if a type contains any Own<T> fields (recursively)

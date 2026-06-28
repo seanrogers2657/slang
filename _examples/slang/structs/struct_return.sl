@@ -1,7 +1,7 @@
 // @test: exit_code=0
 // @test: stdout=3\n2\n3\n2\n5\n
 // Tests returning a struct by value from a function: directly as a literal,
-// via a local variable, and consuming the returned struct in another call.
+// via a local variable, and passing the returned struct into another call.
 Pair = struct {
     val quotient: s64
     val remainder: s64

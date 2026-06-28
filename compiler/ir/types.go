@@ -238,7 +238,45 @@ func (t *NullableType) String() string {
 	return t.Elem.String() + "?"
 }
 
+// Flat value-nullable layout (the consistent, repeatable tag+payload format).
+// A flat nullable is a by-value aggregate with the tag at byte 0 and the payload
+// at byte 8 — identical in stack slots, struct fields, args, and returns.
+const (
+	NullableTagOffset     = 0 // tag word: byte 0
+	NullablePayloadOffset = 8 // payload: byte 8
+	NullableTagNull       = 0 // tag value meaning "null / absent"
+	NullableTagPresent    = 1 // tag value meaning "present"
+)
+
+// IsFlat reports whether this nullable uses the flat tag+payload value
+// representation (no heap, no drop). Flat applies to pure-value scalars
+// (integers and bool); pointer-represented elements use the null-pointer niche
+// (IsReferenceNullable), and string/array elements keep the legacy boxed form.
+func (t *NullableType) IsFlat() bool {
+	switch t.Elem.(type) {
+	case *IntType, *BoolType:
+		return true
+	default:
+		return false
+	}
+}
+
+// FlatSize returns the byte size of the flat tag+payload representation for a
+// flat nullable (tag word + payload rounded up to 8).
+func (t *NullableType) FlatSize() int {
+	payload := t.Elem.Size()
+	if payload < 8 {
+		payload = 8
+	} else if payload%8 != 0 {
+		payload += 8 - (payload % 8)
+	}
+	return NullablePayloadOffset + payload
+}
+
 func (t *NullableType) Size() int {
+	if t.IsFlat() {
+		return t.FlatSize()
+	}
 	return 8
 }
 
@@ -334,3 +372,22 @@ func (t *StringType) irType() {}
 
 // TypeString is the singleton string type.
 var TypeString = &StringType{}
+
+// VecType represents the built-in growable vector (vec). The value is an 8-byte
+// pointer to a heap header {len, cap, data}; like a string, it is heap-backed
+// with copy-on-store and freed at scope exit.
+type VecType struct{}
+
+func (t *VecType) String() string { return "vec" }
+func (t *VecType) Size() int      { return 8 }
+func (t *VecType) Align() int     { return 8 }
+
+func (t *VecType) Equal(other Type) bool {
+	_, ok := other.(*VecType)
+	return ok
+}
+
+func (t *VecType) irType() {}
+
+// TypeVec is the singleton vec type.
+var TypeVec = &VecType{}

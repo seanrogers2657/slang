@@ -745,9 +745,9 @@ func (g *Generator) generateFieldAssign(fa *semantic.TypedFieldAssignStmt) error
 	fieldPtr.AuxInt = int64(offset)
 
 	// Free whatever the field currently owns before overwriting. Skips when
-	// the field type does not own heap storage. String fields own a heap
+	// the field type does not own heap storage. String and vec fields own a heap
 	// buffer separate from the struct, so free them here too.
-	if fieldSemType != nil && (fieldOwnsHeap(fieldSemType) || isStringType(fieldSemType)) {
+	if fieldSemType != nil && (fieldOwnsHeap(fieldSemType) || isStringType(fieldSemType) || isVecType(fieldSemType)) {
 		oldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
 		g.emitFreeOwnedValue(oldVal, fieldSemType)
 	}
@@ -937,9 +937,9 @@ func (g *Generator) generateIndexAssign(ia *semantic.TypedIndexAssignStmt) error
 	elemPtr.AddArg(arr)
 	elemPtr.AddArg(idx)
 
-	// Free whatever the element currently owns before overwriting. String
-	// elements own a heap buffer, so free them here too.
-	if elemSemType != nil && (fieldOwnsHeap(elemSemType) || isStringType(elemSemType)) {
+	// Free whatever the element currently owns before overwriting. String and
+	// vec elements own a heap buffer, so free them here too.
+	if elemSemType != nil && (fieldOwnsHeap(elemSemType) || isStringType(elemSemType) || isVecType(elemSemType)) {
 		oldVal := g.block.NewValue(OpLoad, elemIRType, elemPtr)
 		g.emitFreeOwnedValue(oldVal, elemSemType)
 	}
@@ -2827,6 +2827,11 @@ func (g *Generator) generateCopy(mc *semantic.TypedMethodCallExpr) (*Value, erro
 	// free) and mutations would leak across. Only applies to a plain *T object
 	// (.copy() is rejected on anything but an owned pointer); a nullable *T? could
 	// be null, so skip the fixup there and leave the existing behavior.
+	//
+	// TODO(scope-frees): a?.copy() on a nullable owned pointer is mishandled —
+	// copying through null dereferences it (crash) and the safe-nav result's heap
+	// fields are not reliably freed. Needs dedicated safe-nav result-lifetime work
+	// before fixups can be applied here. Tracked separately.
 	objType := mc.Object.GetType()
 	if !isNullableOwnedType(objType) {
 		if elemSem, _ := g.getOwnedPointerInfo(objType); elemSem != nil {
@@ -3178,6 +3183,11 @@ func (g *Generator) emitNullCheckedFree(ptr *Value, size int) {
 func (g *Generator) emitFreeOwnedValue(val *Value, semType semantic.Type) {
 	if isStringType(semType) {
 		g.builder().StrFree(val)
+		return
+	}
+
+	if isVecType(semType) {
+		g.builder().VecFree(val)
 		return
 	}
 

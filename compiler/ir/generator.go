@@ -2765,14 +2765,14 @@ func (g *Generator) emitDeepCopyFixups(dst *Value, semType semantic.Type) {
 		return
 	}
 
-	if st := g.getSemanticStructType(semType); st != nil {
+	if st := g.getSemanticAggregateType(semType); st != nil {
 		for _, field := range st.Fields {
 			offset := int64(st.FieldOffset(field.Name))
 			fieldIRType := g.convertType(field.Type)
 
-			// Embedded struct field: its bytes were already copied in place;
+			// Embedded aggregate field: its bytes were already copied in place;
 			// fix up its heap-referencing fields through the embedded region.
-			if g.getSemanticStructType(field.Type) != nil {
+			if g.getSemanticAggregateType(field.Type) != nil {
 				fieldPtr := b.FieldPtr(dst, fieldIRType, offset)
 				g.emitDeepCopyFixups(fieldPtr, field.Type)
 				continue
@@ -2816,9 +2816,23 @@ func (g *Generator) generateCopy(mc *semantic.TypedMethodCallExpr) (*Value, erro
 		return nil, err
 	}
 
-	// Create deep copy
+	// Create deep copy. OpCopy shallow-copies the aggregate and deep-copies any
+	// owned-pointer fields, but it leaves heap-backed value fields (string, vec,
+	// value-type nullables, nested aggregates) aliasing the source's buffers.
 	copy := g.block.NewValue(OpCopy, obj.Type)
 	copy.AddArg(obj)
+
+	// Fix up those heap-backed fields so the copy owns independent storage —
+	// otherwise both the copy and the source would free the same buffer (a double
+	// free) and mutations would leak across. Only applies to a plain *T object
+	// (.copy() is rejected on anything but an owned pointer); a nullable *T? could
+	// be null, so skip the fixup there and leave the existing behavior.
+	objType := mc.Object.GetType()
+	if !isNullableOwnedType(objType) {
+		if elemSem, _ := g.getOwnedPointerInfo(objType); elemSem != nil {
+			g.emitDeepCopyFixups(copy, elemSem)
+		}
+	}
 
 	return copy, nil
 }
@@ -3252,6 +3266,10 @@ func (g *Generator) emitRecursiveFreeWithVisited(ptr *Value, elemType semantic.T
 						g.block = continueBlock
 						g.sealBlock(continueBlock)
 					}
+				} else if ownedElem, ownedSize := g.getOwnedPointerInfo(at.ElementType); ownedElem != nil {
+					// Owned-pointer element: free the pointee, recursing into its
+					// own heap-owning fields, then free the pointee allocation.
+					g.emitRecursiveFreeWithVisited(elemVal, ownedElem, ownedSize, visiting)
 				} else {
 					g.emitRecursiveFreeWithVisited(elemVal, at.ElementType, elemSize, visiting)
 				}
@@ -3262,102 +3280,117 @@ func (g *Generator) emitRecursiveFreeWithVisited(ptr *Value, elemType semantic.T
 		return
 	}
 
-	// First, recursively free any owned pointer fields in this struct
-	if st := g.getSemanticStructType(elemType); st != nil {
-		// Check if this is a self-referential type (already being processed)
-		typeName := st.Name
-		if visiting[typeName] {
-			// Self-referential type - generate a runtime loop instead of compile-time recursion
+	// Recursively free any heap-owning fields in this aggregate (struct or
+	// class), then free the aggregate's own allocation.
+	if st := g.getSemanticAggregateType(elemType); st != nil {
+		// Self-referential type already being processed: emit a runtime loop
+		// instead of unbounded compile-time recursion.
+		if visiting[st.Name] {
 			g.emitRuntimeFreeLoop(ptr, st, size)
 			return
 		}
+		visiting[st.Name] = true
+		g.emitFreeAggregateFields(ptr, st, visiting)
+		delete(visiting, st.Name)
+	}
 
-		// Mark as visiting
-		visiting[typeName] = true
-		defer func() { delete(visiting, typeName) }()
+	// Free the aggregate's (or opaque region's) own allocation.
+	freeVal := g.block.NewValue(OpFree, nil, ptr)
+	freeVal.AuxInt = int64(size)
+}
 
-		for _, field := range st.Fields {
-			// String field: load the buffer pointer and free it (no-op for
-			// constant pointers).
-			if isStringType(field.Type) {
-				offset := st.FieldOffset(field.Name)
-				fieldIRType := g.convertType(field.Type)
-				fieldPtr := g.block.NewValue(OpFieldPtr, &PtrType{Elem: fieldIRType}, ptr)
-				fieldPtr.AuxInt = int64(offset)
-				fieldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
-				g.builder().StrFree(fieldVal)
-				continue
+// emitFreeAggregateFields frees every heap-owning field of an aggregate (struct
+// or class) stored at ptr, WITHOUT freeing the aggregate's own allocation. It
+// handles string, vec, value-type nullable, owned-pointer, and embedded
+// aggregate-value fields. An embedded aggregate's heap fields live inside this
+// aggregate's allocation, so it is recursed into but never separately freed.
+// visiting guards against self-referential owned-pointer chains.
+func (g *Generator) emitFreeAggregateFields(ptr *Value, st *semantic.StructType, visiting map[string]bool) {
+	for _, field := range st.Fields {
+		offset := st.FieldOffset(field.Name)
+		fieldIRType := g.convertType(field.Type)
+
+		// String field: load the buffer pointer and free it (no-op for
+		// constant pointers).
+		if isStringType(field.Type) {
+			fieldPtr := g.block.NewValue(OpFieldPtr, &PtrType{Elem: fieldIRType}, ptr)
+			fieldPtr.AuxInt = int64(offset)
+			fieldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
+			g.builder().StrFree(fieldVal)
+			continue
+		}
+
+		// Vec field: load the header pointer and free it (no-op for non-heap).
+		if isVecType(field.Type) {
+			fieldPtr := g.block.NewValue(OpFieldPtr, &PtrType{Elem: fieldIRType}, ptr)
+			fieldPtr.AuxInt = int64(offset)
+			fieldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
+			g.builder().VecFree(fieldVal)
+			continue
+		}
+
+		// Value-type nullable field: load the pointer, null-check, free.
+		if inner := nullableValueInner(field.Type); inner != nil {
+			fieldPtr := g.block.NewValue(OpFieldPtr, &PtrType{Elem: fieldIRType}, ptr)
+			fieldPtr.AuxInt = int64(offset)
+			fieldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
+			g.emitNullCheckedFree(fieldVal, g.nullableValueAllocSize(inner))
+			continue
+		}
+
+		// Embedded aggregate value field (a struct/class held inline): its heap
+		// fields live inside this aggregate's allocation. Free those fields
+		// through the embedded region, but never free the region itself.
+		if innerSt := g.getSemanticAggregateType(field.Type); innerSt != nil {
+			fieldPtr := g.block.NewValue(OpFieldPtr, &PtrType{Elem: fieldIRType}, ptr)
+			fieldPtr.AuxInt = int64(offset)
+			if !visiting[innerSt.Name] {
+				visiting[innerSt.Name] = true
+				g.emitFreeAggregateFields(fieldPtr, innerSt, visiting)
+				delete(visiting, innerSt.Name)
 			}
+			continue
+		}
 
-			// Vec field: load the header pointer and free it (no-op for non-heap).
-			if isVecType(field.Type) {
-				offset := st.FieldOffset(field.Name)
-				fieldIRType := g.convertType(field.Type)
-				fieldPtr := g.block.NewValue(OpFieldPtr, &PtrType{Elem: fieldIRType}, ptr)
-				fieldPtr.AuxInt = int64(offset)
-				fieldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
-				g.builder().VecFree(fieldVal)
-				continue
-			}
+		if ownedElemType, fieldSize := g.getOwnedPointerInfo(field.Type); ownedElemType != nil {
+			// This field is an owned pointer - need to free it
+			irElemType := g.convertType(ownedElemType)
 
-			// Value-type nullable field: load the pointer, null-check, free.
-			if inner := nullableValueInner(field.Type); inner != nil {
-				offset := st.FieldOffset(field.Name)
-				fieldIRType := g.convertType(field.Type)
-				fieldPtrType := &PtrType{Elem: fieldIRType}
-				fieldPtr := g.block.NewValue(OpFieldPtr, fieldPtrType, ptr)
-				fieldPtr.AuxInt = int64(offset)
-				fieldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
-				g.emitNullCheckedFree(fieldVal, g.nullableValueAllocSize(inner))
-				continue
-			}
+			// Get pointer to the field
+			fieldPtr := g.block.NewValue(OpFieldPtr, &PtrType{Elem: fieldIRType}, ptr)
+			fieldPtr.AuxInt = int64(offset)
 
-			if ownedElemType, fieldSize := g.getOwnedPointerInfo(field.Type); ownedElemType != nil {
-				// This field is an owned pointer - need to free it
-				offset := st.FieldOffset(field.Name)
-				irElemType := g.convertType(ownedElemType)
+			// Load the field value
+			fieldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
 
-				// Get pointer to the field
-				fieldPtrType := &PtrType{Elem: g.convertType(field.Type)}
-				fieldPtr := g.block.NewValue(OpFieldPtr, fieldPtrType, ptr)
-				fieldPtr.AuxInt = int64(offset)
+			// Check if this is a nullable owned pointer
+			if isNullableOwnedType(field.Type) {
+				// Need to check for null before freeing
+				freeFieldBlock := g.fn.NewBlock(BlockPlain)
+				continueFieldBlock := g.fn.NewBlock(BlockPlain)
 
-				// Load the field value
-				fieldVal := g.block.NewValue(OpLoad, g.convertType(field.Type), fieldPtr)
+				isNull := g.block.NewValue(OpIsNull, TypeBool, fieldVal)
+				g.block.Kind = BlockIf
+				g.block.Control = isNull
+				g.block.AddSucc(continueFieldBlock) // null -> skip
+				g.block.AddSucc(freeFieldBlock)     // not null -> free
 
-				// Check if this is a nullable owned pointer
-				if isNullableOwnedType(field.Type) {
-					// Need to check for null before freeing
-					freeFieldBlock := g.fn.NewBlock(BlockPlain)
-					continueFieldBlock := g.fn.NewBlock(BlockPlain)
+				// Free field block
+				g.block = freeFieldBlock
+				unwrapped := g.block.NewValue(OpUnwrap, &PtrType{Elem: irElemType}, fieldVal)
+				g.emitRecursiveFreeWithVisited(unwrapped, ownedElemType, fieldSize, visiting)
+				g.block.AddSucc(continueFieldBlock)
+				g.sealBlock(freeFieldBlock)
 
-					isNull := g.block.NewValue(OpIsNull, TypeBool, fieldVal)
-					g.block.Kind = BlockIf
-					g.block.Control = isNull
-					g.block.AddSucc(continueFieldBlock) // null -> skip
-					g.block.AddSucc(freeFieldBlock)     // not null -> free
-
-					// Free field block
-					g.block = freeFieldBlock
-					unwrapped := g.block.NewValue(OpUnwrap, &PtrType{Elem: irElemType}, fieldVal)
-					g.emitRecursiveFreeWithVisited(unwrapped, ownedElemType, fieldSize, visiting)
-					g.block.AddSucc(continueFieldBlock)
-					g.sealBlock(freeFieldBlock)
-
-					// Continue block
-					g.block = continueFieldBlock
-					g.sealBlock(continueFieldBlock)
-				} else {
-					// Non-nullable owned pointer field - just free it
-					g.emitRecursiveFreeWithVisited(fieldVal, ownedElemType, fieldSize, visiting)
-				}
+				// Continue block
+				g.block = continueFieldBlock
+				g.sealBlock(continueFieldBlock)
+			} else {
+				// Non-nullable owned pointer field - just free it
+				g.emitRecursiveFreeWithVisited(fieldVal, ownedElemType, fieldSize, visiting)
 			}
 		}
 	}
-
-	// Now free the struct itself
-	freeVal := g.block.NewValue(OpFree, nil, ptr)
-	freeVal.AuxInt = int64(size)
 }
 
 // emitRuntimeFreeLoop generates a runtime loop to free a self-referential linked structure.
@@ -3488,6 +3521,27 @@ func (g *Generator) getSemanticStructType(t semantic.Type) *semantic.StructType 
 		return ty
 	case semantic.StructType:
 		return &ty
+	default:
+		return nil
+	}
+}
+
+// getSemanticAggregateType returns a StructType view of t for walking an
+// aggregate's fields (deep free and deep-copy fixups). It matches structs AND
+// classes — a class has the same field layout as a struct (FieldOffset/Size both
+// delegate to the shared field list), so the two can be walked uniformly. Unlike
+// getSemanticStructType this also matches classes; it must only be used where we
+// iterate fields to free/copy heap storage, never to decide copyability (classes
+// remain non-copyable values).
+func (g *Generator) getSemanticAggregateType(t semantic.Type) *semantic.StructType {
+	if st := g.getSemanticStructType(t); st != nil {
+		return st
+	}
+	switch ty := t.(type) {
+	case *semantic.ClassType:
+		return &semantic.StructType{Name: ty.Name, PackagePath: ty.PackagePath, Fields: ty.Fields}
+	case semantic.ClassType:
+		return &semantic.StructType{Name: ty.Name, PackagePath: ty.PackagePath, Fields: ty.Fields}
 	default:
 		return nil
 	}

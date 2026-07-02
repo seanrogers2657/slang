@@ -4247,6 +4247,18 @@ func (a *Analyzer) analyzeSelfExpr(self *ast.SelfExpr) TypedExpression {
 // move. Called with the initializer/right-hand side when the destination type is
 // non-copyable.
 func (a *Analyzer) rejectOwnedAlias(expr ast.Expression) {
+	a.rejectOwnedAliasRec(expr, false)
+}
+
+// rejectOwnedAliasRec is the recursive body of rejectOwnedAlias. It sees
+// through expression wrappers that merely forward another expression's value —
+// parentheses, elvis operands, and if/when branch results — so an alias cannot
+// be smuggled past the check as `(p)`, `p ?: q`, or `if c { p } else { q }`.
+// fromBranch is true when expr is the result of an if/when branch (or elvis
+// operand): there an identifier may name a branch-local no longer in scope, but
+// it is still an alias — the destination type is non-copyable (the caller's
+// precondition), so a type-compatible identifier result always names an owner.
+func (a *Analyzer) rejectOwnedAliasRec(expr ast.Expression, fromBranch bool) {
 	if expr == nil {
 		return
 	}
@@ -4256,7 +4268,7 @@ func (a *Analyzer) rejectOwnedAlias(expr ast.Expression) {
 		// Binding `val q = p` where p owns heap would create two owners of the
 		// same allocation, leading to a double free at scope exit.
 		info, found := a.currentScope.lookup(e.Name)
-		if found && IsNonCopyable(info.Type) {
+		if (found && IsNonCopyable(info.Type)) || (!found && fromBranch) {
 			a.addError(
 				fmt.Sprintf("cannot bind owned value '%s' to another variable; there can be only one owner", e.Name),
 				e.StartPos, e.EndPos,
@@ -4276,6 +4288,47 @@ func (a *Analyzer) rejectOwnedAlias(expr ast.Expression) {
 			"cannot take ownership of a struct field; the struct still owns it",
 			e.Pos(), e.End(),
 		).WithHint("field access does not transfer ownership; use .copy() or borrow instead")
+
+	case *ast.GroupingExpr:
+		a.rejectOwnedAliasRec(e.Expr, fromBranch)
+
+	case *ast.BinaryExpr:
+		// Elvis: either operand may become the stored value.
+		if e.Op == "?:" {
+			a.rejectOwnedAliasRec(e.Left, true)
+			a.rejectOwnedAliasRec(e.Right, true)
+		}
+
+	case *ast.IfStmt:
+		// If-expression: each branch's result value reaches the destination.
+		a.rejectOwnedAliasBlockResult(e.ThenBranch)
+		switch eb := e.ElseBranch.(type) {
+		case *ast.BlockStmt:
+			a.rejectOwnedAliasBlockResult(eb)
+		case *ast.IfStmt:
+			a.rejectOwnedAliasRec(eb, true)
+		}
+
+	case *ast.WhenExpr:
+		for i := range e.Cases {
+			switch b := e.Cases[i].Body.(type) {
+			case *ast.ExprStmt:
+				a.rejectOwnedAliasRec(b.Expr, true)
+			case *ast.BlockStmt:
+				a.rejectOwnedAliasBlockResult(b)
+			}
+		}
+	}
+}
+
+// rejectOwnedAliasBlockResult applies the owned-alias check to a block-valued
+// branch's result — the block's trailing expression statement.
+func (a *Analyzer) rejectOwnedAliasBlockResult(b *ast.BlockStmt) {
+	if b == nil || len(b.Statements) == 0 {
+		return
+	}
+	if es, ok := b.Statements[len(b.Statements)-1].(*ast.ExprStmt); ok {
+		a.rejectOwnedAliasRec(es.Expr, true)
 	}
 }
 

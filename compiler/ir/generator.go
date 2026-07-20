@@ -569,6 +569,12 @@ func (g *Generator) generateStatement(stmt semantic.TypedStatement) error {
 		if isOwnedVecTemp(s.Expr) {
 			g.builder().VecFree(v)
 		}
+		// A discarded boxed string?/vec? call result or unbound .copy() has
+		// no owner; free it (box+contents / recursive) so it doesn't leak.
+		if isOwningTemp(s.Expr) &&
+			(nullableHeapInner(s.Expr.GetType()) != nil || isOwnedPointerTemp(g, s.Expr)) {
+			freeOwningTemp(g, v, s.Expr.GetType())
+		}
 		return nil
 
 	case *semantic.TypedVarDeclStmt:
@@ -813,6 +819,11 @@ func (g *Generator) generateFieldAssign(fa *semantic.TypedFieldAssignStmt) error
 		if err != nil {
 			return err
 		}
+		// Boxed string?/vec? values read from a binding or container are
+		// copied (box and contents) so the field owns independent storage.
+		if shouldCopyOnReturn(fa.Value) || isNullableHeapBorrow(fa.Value) {
+			val = g.copyNullableValue(val, fa.Value.GetType())
+		}
 		// Borrowed string values are copied so the field owns its own buffer.
 		val = g.maybeCopyString(val, fa.Value)
 		val = g.maybeCopyVec(val, fa.Value)
@@ -955,7 +966,7 @@ func isOwnedStringTemp(expr semantic.TypedExpression) bool {
 	if !isStringType(expr.GetType()) {
 		return false
 	}
-	switch expr.(type) {
+	switch e := expr.(type) {
 	case *semantic.TypedInterpolatedStringExpr,
 		*semantic.TypedCallExpr,
 		*semantic.TypedMethodCallExpr:
@@ -964,6 +975,9 @@ func isOwnedStringTemp(expr semantic.TypedExpression) bool {
 		// Branch expressions always yield an owned result: borrowed branch
 		// values are copied at the branch, fresh ones pass through.
 		return true
+	case *semantic.TypedBinaryExpr:
+		// Elvis yields an owned result: both edges copy borrows.
+		return e.Op == "?:"
 	}
 	return false
 }
@@ -975,7 +989,7 @@ func isOwnedVecTemp(expr semantic.TypedExpression) bool {
 	if !isVecType(expr.GetType()) {
 		return false
 	}
-	switch expr.(type) {
+	switch e := expr.(type) {
 	case *semantic.TypedCallExpr,
 		*semantic.TypedMethodCallExpr:
 		return true
@@ -983,6 +997,9 @@ func isOwnedVecTemp(expr semantic.TypedExpression) bool {
 		// Branch expressions always yield an owned result: borrowed branch
 		// values are copied at the branch, fresh ones pass through.
 		return true
+	case *semantic.TypedBinaryExpr:
+		// Elvis yields an owned result: both edges copy borrows.
+		return e.Op == "?:"
 	}
 	return false
 }
@@ -1022,6 +1039,11 @@ func (g *Generator) generateIndexAssign(ia *semantic.TypedIndexAssignStmt) error
 		val, err = g.generateExpr(ia.Value)
 		if err != nil {
 			return err
+		}
+		// Boxed string?/vec? values read from a binding or container are
+		// copied (box and contents) so the element owns independent storage.
+		if shouldCopyOnReturn(ia.Value) || isNullableHeapBorrow(ia.Value) {
+			val = g.copyNullableValue(val, ia.Value.GetType())
 		}
 		// Borrowed string values are copied so the element owns its own buffer.
 		val = g.maybeCopyString(val, ia.Value)
@@ -1786,14 +1808,17 @@ func (g *Generator) generateNullableToStr(part semantic.TypedExpression) (*Value
 	innerIR := g.convertType(nt.InnerType)
 	unwrapped := g.block.NewValue(OpUnwrap, innerIR)
 	unwrapped.AddArg(val)
-	// Free a temporary heap slot if the nullable came from an owning temporary
-	// (e.g. a function returning T?), mirroring generateElvis.
-	if isOwningTemp(part) {
-		freeOwningTemp(g, val, part.GetType())
-	}
 	converted, err := g.convertScalarToStr(unwrapped, nt.InnerType)
 	if err != nil {
 		return nil, err
+	}
+	// Free a temporary heap slot if the nullable came from an owning temporary
+	// (e.g. a function returning T?), mirroring generateElvis. This must run
+	// AFTER convertScalarToStr: a boxed string? owns its buffer, and the
+	// conversion copies the unwrapped inner — freeing first would copy freed
+	// memory into the output.
+	if isOwningTemp(part) {
+		freeOwningTemp(g, val, part.GetType())
 	}
 	valEnd := g.block
 	valEnd.AddSucc(mergeBlock)
@@ -2009,12 +2034,15 @@ func (g *Generator) generateElvis(be *semantic.TypedBinaryExpr) (*Value, error) 
 	g.sealBlock(rightBlock)
 	g.sealBlock(notNullBlock)
 
-	// Right operand on the null edge
+	// Right operand on the null edge. A borrowed string/vec default is copied
+	// so the elvis result is uniformly an owned value on both edges.
 	g.block = rightBlock
 	right, err := g.generateExpr(be.Right)
 	if err != nil {
 		return nil, err
 	}
+	right = g.maybeCopyString(right, be.Right)
+	right = g.maybeCopyVec(right, be.Right)
 	rightBlock = g.block // may have changed during generation
 	rightBlock.AddSucc(mergeBlock)
 
@@ -2023,10 +2051,21 @@ func (g *Generator) generateElvis(be *semantic.TypedBinaryExpr) (*Value, error) 
 	g.block = notNullBlock
 	unwrapped := g.block.NewValue(OpUnwrap, resultType)
 	unwrapped.AddArg(left)
+	// A boxed string?/vec? owns its contents: the unwrapped inner is the
+	// box's buffer, which the box's owner (a binding at scope exit, or the
+	// temp free just below) will release. Copy it so the elvis result owns
+	// independent storage.
+	if inner := nullableHeapInner(be.Left.GetType()); inner != nil {
+		if isStringType(inner) {
+			unwrapped = g.builder().StrCopy(unwrapped)
+		} else {
+			unwrapped = g.builder().VecCopy(unwrapped)
+		}
+	}
 	// If the LHS produced a temporary heap allocation that no variable owns
 	// (e.g., a function call returning T?, a wrap from safe navigation),
-	// the heap slot would otherwise leak. Free it after the unwrap, before
-	// the value is returned.
+	// the heap slot would otherwise leak. Free it after the unwrap (and after
+	// the copy above), before the value is returned.
 	if isOwningTemp(be.Left) {
 		freeOwningTemp(g, left, be.Left.GetType())
 	}
@@ -2159,6 +2198,14 @@ func (g *Generator) generateCall(ce *semantic.TypedCallExpr) (*Value, error) {
 		} else if isOwnedVecTemp(arg) {
 			// Vecs are borrowed by callees too; a fresh vec temporary passed as
 			// an argument has no owner to free it at scope exit.
+			aggTempFrees = append(aggTempFrees, aggTemp{val: v, sem: arg.GetType()})
+		} else if isOwningTemp(arg) && nullableHeapInner(arg.GetType()) != nil {
+			// A boxed string?/vec? call-result temp: the callee borrows it,
+			// so the caller frees box and contents after the call.
+			aggTempFrees = append(aggTempFrees, aggTemp{val: v, sem: arg.GetType()})
+		} else if isOwningTemp(arg) && isOwnedPointerTemp(g, arg) {
+			// An unbound .copy() result passed as a borrow: nothing else owns
+			// the copy, so the caller recursively frees it after the call.
 			aggTempFrees = append(aggTempFrees, aggTemp{val: v, sem: arg.GetType()})
 		} else if isOwningTemp(arg) && isHeapValueType(arg.GetType()) {
 			// Struct/class/array values are borrowed by callees (parameters
@@ -2359,7 +2406,8 @@ func (g *Generator) generateArrayLiteral(al *semantic.TypedArrayLiteralExpr) (*V
 		// it isn't double-freed at scope exit. Strings use copy semantics
 		// (handled below) and container reads are copied, not aliased.
 		if ident, ok := elemExpr.(*semantic.TypedIdentifierExpr); ok {
-			if varOwnsHeap(ident.Type) && !isStringType(ident.Type) {
+			if varOwnsHeap(ident.Type) && !isStringType(ident.Type) &&
+				nullableHeapInner(ident.Type) == nil {
 				g.markHeapAliased(ident.Name)
 			}
 		}
@@ -2370,9 +2418,10 @@ func (g *Generator) generateArrayLiteral(al *semantic.TypedArrayLiteralExpr) (*V
 		}
 
 		// Container-read elements alias the source — copy so the array owns
-		// its own heap slot. copyNullableValue introduces new blocks, so
+		// its own heap slot. Boxed string?/vec? bindings copy too
+		// (copy-on-store). copyNullableValue introduces new blocks, so
 		// refresh the builder before emitting the element store.
-		if shouldCopyOnReturn(elemExpr) {
+		if shouldCopyOnReturn(elemExpr) || isNullableHeapBorrow(elemExpr) {
 			elem = g.copyNullableValue(elem, elemExpr.GetType())
 			b = g.builder()
 		}
@@ -2428,6 +2477,13 @@ func (g *Generator) generateStructLiteral(sl *semantic.TypedStructLiteralExpr) (
 				b = g.builder()
 			}
 		} else {
+			// Boxed string?/vec? values read from a binding or container are
+			// copied (box and contents) so the field owns independent storage.
+			// copyNullableValue splits blocks; refresh the builder after it.
+			if shouldCopyOnReturn(argExpr) || isNullableHeapBorrow(argExpr) {
+				arg = g.copyNullableValue(arg, argExpr.GetType())
+				b = g.builder()
+			}
 			// Borrowed string/vec fields must be copied so the struct owns its
 			// own buffer (value semantics); fresh values transfer ownership.
 			arg = g.maybeCopyString(arg, argExpr)
@@ -2514,6 +2570,13 @@ func (g *Generator) generateClassLiteral(cl *semantic.TypedClassLiteralExpr) (*V
 				b = g.builder()
 			}
 		} else {
+			// Boxed string?/vec? values read from a binding or container are
+			// copied (box and contents) so the field owns independent storage.
+			// copyNullableValue splits blocks; refresh the builder after it.
+			if shouldCopyOnReturn(argExpr) || isNullableHeapBorrow(argExpr) {
+				arg = g.copyNullableValue(arg, argExpr.GetType())
+				b = g.builder()
+			}
 			// Borrowed string/vec fields must be copied so the class owns its
 			// own buffer (value semantics); fresh values transfer ownership.
 			arg = g.maybeCopyString(arg, argExpr)
@@ -2905,9 +2968,12 @@ func (g *Generator) emitDeepCopyAggregate(src *Value, semType semantic.Type) *Va
 // emitDeepCopyFixups walks a freshly shallow-copied aggregate at dst and
 // replaces fields/elements that reference heap storage owned by the source
 // with independent copies.
+//
+// deepCopiedValue can split the current block (copyNullableValue branches on
+// null), so every emission below reads g.block / g.builder() at the point of
+// use — a builder captured up front would emit stores into a stale block that
+// reference merge-block phis before their definition.
 func (g *Generator) emitDeepCopyFixups(dst *Value, semType semantic.Type) {
-	b := g.builder()
-
 	if at, ok := asSemanticArrayType(semType); ok {
 		elemSem := at.ElementType
 		if !isStringType(elemSem) && !isVecType(elemSem) && !isHeapValueType(elemSem) &&
@@ -2920,7 +2986,8 @@ func (g *Generator) emitDeepCopyFixups(dst *Value, semType semantic.Type) {
 			idx.AuxInt = int64(i)
 			elemPtr := g.block.NewValue(OpIndexPtr, &PtrType{Elem: elemIRType}, dst, idx)
 			elemVal := g.block.NewValue(OpLoad, elemIRType, elemPtr)
-			b.Store(elemPtr, g.deepCopiedValue(elemVal, elemSem))
+			copied := g.deepCopiedValue(elemVal, elemSem)
+			g.builder().Store(elemPtr, copied)
 		}
 		return
 	}
@@ -2935,16 +3002,17 @@ func (g *Generator) emitDeepCopyFixups(dst *Value, semType semantic.Type) {
 			// Embedded aggregate field: its bytes were already copied in place;
 			// fix up its heap-referencing fields through the embedded region.
 			if g.getSemanticAggregateType(field.Type) != nil {
-				fieldPtr := b.FieldPtr(dst, fieldIRType, offset)
+				fieldPtr := g.builder().FieldPtr(dst, fieldIRType, offset)
 				g.emitDeepCopyFixups(fieldPtr, field.Type)
 				continue
 			}
 
 			if isStringType(field.Type) || isVecType(field.Type) ||
 				nullableValueInner(field.Type) != nil || isHeapValueType(field.Type) {
-				fieldPtr := b.FieldPtr(dst, fieldIRType, offset)
+				fieldPtr := g.builder().FieldPtr(dst, fieldIRType, offset)
 				fieldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
-				b.Store(fieldPtr, g.deepCopiedValue(fieldVal, field.Type))
+				copied := g.deepCopiedValue(fieldVal, field.Type)
+				g.builder().Store(fieldPtr, copied)
 			}
 		}
 	}
@@ -3907,6 +3975,14 @@ func isNullableHeapBorrow(expr semantic.TypedExpression) bool {
 	}
 	_, ok := expr.(*semantic.TypedIdentifierExpr)
 	return ok
+}
+
+// isOwnedPointerTemp reports whether expr is an owned-pointer-typed expression
+// (in practice a .copy() result — functions cannot return *T). Such a temp has
+// no binding to free it at scope exit.
+func isOwnedPointerTemp(g *Generator, expr semantic.TypedExpression) bool {
+	elemType, _ := g.getOwnedPointerInfo(expr.GetType())
+	return elemType != nil
 }
 
 // isFlatNullableInner reports whether a nullable with this inner type uses the

@@ -4322,13 +4322,20 @@ func (a *Analyzer) rejectOwnedAliasRec(expr ast.Expression, fromBranch bool) {
 }
 
 // rejectOwnedAliasBlockResult applies the owned-alias check to a block-valued
-// branch's result — the block's trailing expression statement.
+// branch's result — the block's trailing statement. That is usually an
+// expression statement, but a nested if/when expression ends the block as its
+// own statement node, and its branch results reach the destination too.
 func (a *Analyzer) rejectOwnedAliasBlockResult(b *ast.BlockStmt) {
 	if b == nil || len(b.Statements) == 0 {
 		return
 	}
-	if es, ok := b.Statements[len(b.Statements)-1].(*ast.ExprStmt); ok {
-		a.rejectOwnedAliasRec(es.Expr, true)
+	switch last := b.Statements[len(b.Statements)-1].(type) {
+	case *ast.ExprStmt:
+		a.rejectOwnedAliasRec(last.Expr, true)
+	case *ast.IfStmt:
+		a.rejectOwnedAliasRec(last, true)
+	case *ast.WhenExpr:
+		a.rejectOwnedAliasRec(last, true)
 	}
 }
 

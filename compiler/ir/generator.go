@@ -429,6 +429,14 @@ func (g *Generator) generateMethod(className string, md *semantic.TypedMethodDec
 	g.ssa.Reset()
 	g.ssa.SetFunction(g.fn)
 
+	// Reset owned-variable scope tracking for this method, exactly like
+	// generateFunction — without a scope on the stack, trackOwnedVar is a
+	// no-op and method locals that own heap (strings, vecs, boxed nullables)
+	// are never freed at return.
+	g.ownedVarScopes = nil
+	g.aliasedHeapVars = make(map[string]bool)
+	g.pushScope()
+
 	// Create entry block
 	g.block = g.fn.NewBlock(BlockPlain)
 
@@ -453,6 +461,8 @@ func (g *Generator) generateMethod(className string, md *semantic.TypedMethodDec
 
 	// Add void return if needed
 	if g.fn.IsVoid() && g.block != nil && g.block.Kind == BlockPlain {
+		// Clean up all owned locals before the implicit return
+		g.emitAllScopesCleanup("")
 		g.addReturn(nil)
 	}
 
@@ -1836,7 +1846,16 @@ func (g *Generator) generateNullableToStr(part semantic.TypedExpression) (*Value
 // generateIdentifier generates IR for an identifier expression.
 func (g *Generator) generateIdentifier(ie *semantic.TypedIdentifierExpr) (*Value, error) {
 	// readVariable handles prefixing/mangling automatically
-	return g.readVariable(ie.Name, g.block), nil
+	val := g.readVariable(ie.Name, g.block)
+	// Inside an unsealed (loop) block, the read may return an incomplete phi
+	// whose Type is still nil. Type it from the semantic type now: downstream
+	// code dispatches on val.Type (wrapIfNeeded, nullable arg wrapping,
+	// .copy()), and a nil type there mis-wraps an already-boxed nullable or
+	// produces untyped IR values.
+	if val != nil && val.Type == nil {
+		val.Type = g.convertSSAType(ie.Type)
+	}
+	return val, nil
 }
 
 // generateBinary generates IR for a binary expression.
@@ -1908,6 +1927,13 @@ func (g *Generator) tryGenerateNullComparison(be *semantic.TypedBinaryExpr) (*Va
 
 	b := g.builder()
 	isNullVal := b.IsNull(val)
+
+	// A temporary produced for the comparison (e.g. a string?-returning call)
+	// has no owner; free it now that the null test has read it.
+	if isOwningTemp(testExpr) {
+		freeOwningTemp(g, val, testExpr.GetType())
+		b = g.builder()
+	}
 
 	if be.Op == "!=" {
 		return b.Not(isNullVal), true, nil
@@ -2416,6 +2442,9 @@ func (g *Generator) generateArrayLiteral(al *semantic.TypedArrayLiteralExpr) (*V
 		if err != nil {
 			return nil, err
 		}
+		// Element generation can split blocks; refresh the builder so the
+		// element store lands in the current block.
+		b = g.builder()
 
 		// Container-read elements alias the source — copy so the array owns
 		// its own heap slot. Boxed string?/vec? bindings copy too
@@ -2451,11 +2480,15 @@ func (g *Generator) generateStructLiteral(sl *semantic.TypedStructLiteralExpr) (
 		fieldType := structType.Fields[i].Type
 		fieldOffset := int64(structType.Fields[i].Offset)
 
-		// Generate field value with null/nullable handling
+		// Generate field value with null/nullable handling. Generating the
+		// argument can split blocks (a nested literal copying a boxed
+		// nullable, an if-expression, ...) — refresh the builder so the
+		// stores below land in the current block.
 		arg, err := g.generateTypedValue(argExpr, fieldType)
 		if err != nil {
 			return nil, err
 		}
+		b = g.builder()
 
 		fieldPtr := b.FieldPtr(alloc, fieldType, fieldOffset)
 
@@ -2544,11 +2577,15 @@ func (g *Generator) generateClassLiteral(cl *semantic.TypedClassLiteralExpr) (*V
 		fieldType := classType.Fields[i].Type
 		fieldOffset := int64(classType.Fields[i].Offset)
 
-		// Generate field value with null/nullable handling
+		// Generate field value with null/nullable handling. Generating the
+		// argument can split blocks (a nested literal copying a boxed
+		// nullable, an if-expression, ...) — refresh the builder so the
+		// stores below land in the current block.
 		arg, err := g.generateTypedValue(argExpr, fieldType)
 		if err != nil {
 			return nil, err
 		}
+		b = g.builder()
 
 		fieldPtr := b.FieldPtr(alloc, fieldType, fieldOffset)
 
@@ -2606,8 +2643,18 @@ func (g *Generator) generateMethodCall(mc *semantic.TypedMethodCallExpr) (*Value
 		return nil, err
 	}
 
-	// Generate other arguments
+	// Generate other arguments. Methods borrow their arguments just like free
+	// functions, so fresh temporaries (interpolated strings, vecs, boxed
+	// string?/vec? call results, unbound .copy() results, aggregate literals)
+	// have no owner to free them at scope exit — the caller frees them after
+	// the call. Mirrors the triage in generateCall.
 	var args []*Value
+	var strTempFrees []*Value
+	type aggTemp struct {
+		val *Value
+		sem semantic.Type
+	}
+	var aggTempFrees []aggTemp
 	if mc.ResolvedMethod != nil && !mc.ResolvedMethod.IsStatic {
 		args = append(args, obj)
 	}
@@ -2617,6 +2664,14 @@ func (g *Generator) generateMethodCall(mc *semantic.TypedMethodCallExpr) (*Value
 			return nil, err
 		}
 		args = append(args, v)
+
+		if isOwnedStringTemp(arg) {
+			strTempFrees = append(strTempFrees, v)
+		} else if isOwnedVecTemp(arg) ||
+			(isOwningTemp(arg) && (nullableHeapInner(arg.GetType()) != nil ||
+				isOwnedPointerTemp(g, arg) || isHeapValueType(arg.GetType()))) {
+			aggTempFrees = append(aggTempFrees, aggTemp{val: v, sem: arg.GetType()})
+		}
 	}
 
 	// Determine mangled function name (include param count for overloading)
@@ -2628,6 +2683,14 @@ func (g *Generator) generateMethodCall(mc *semantic.TypedMethodCallExpr) (*Value
 	call.AuxString = mangledName
 	for _, arg := range args {
 		call.AddArg(arg)
+	}
+
+	// Free fresh argument temporaries now that the callee has used them.
+	for _, sv := range strTempFrees {
+		g.builder().StrFree(sv)
+	}
+	for _, at := range aggTempFrees {
+		freeOwningTemp(g, at.val, at.sem)
 	}
 
 	// Receivers that own heap but aren't bound to a name are temporaries:
@@ -2651,6 +2714,10 @@ func isOwningTemp(expr semantic.TypedExpression) bool {
 	switch expr.(type) {
 	case *semantic.TypedMethodCallExpr, *semantic.TypedCallExpr:
 		return varOwnsHeap(expr.GetType())
+	case *semantic.TypedNewExpr:
+		// A `new` expression not bound to a variable (passed directly as a
+		// borrow argument, or a bare statement) is an unowned allocation.
+		return true
 	}
 	return false
 }

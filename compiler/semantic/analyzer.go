@@ -2279,8 +2279,12 @@ func (a *Analyzer) analyzeWhileStatement(stmt *ast.WhileStmt) TypedStatement {
 	// Enter loop context for break/continue validation
 	a.loopDepth++
 
-	// Analyze body
+	// Analyze body in its own scope, like if/for bodies — otherwise a `val`
+	// declared in one while body collides with the same name in a sibling
+	// loop (and stays visible after the loop).
+	a.enterScope()
 	typedBody := a.analyzeBlockStmt(stmt.Body)
+	a.exitScope()
 
 	// Exit loop context
 	a.loopDepth--

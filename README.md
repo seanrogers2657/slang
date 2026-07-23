@@ -68,6 +68,49 @@ main = () {
 Explore the `_examples/slang/` folder to learn more about how the language works.
 You'll find additional advanced examples in `_programs/`.
 
+## Memory & Ownership
+[`_programs/ownership/main.sl`](_programs/ownership/main.sl)
+
+Slang manages memory with a **scope-frees-it** model — no garbage collector and
+no manual `free`. A value created with `new` is owned by the scope it was created
+in and freed automatically when that scope exits. Ownership never moves: instead
+of transferring a value, you lend it out with a **borrow** (`&T` to read, `&&T`
+to mutate), and the owner keeps using it. Functions that produce new data return
+a value (copied to the caller), and `.copy()` makes an independent deep copy.
+
+```slang
+Point = struct {
+    var x: s64
+    var y: s64
+}
+
+// Borrow to read: &T is a read-only reference. The caller keeps ownership.
+sum = (p: &Point) -> s64 {
+    return p.x + p.y
+}
+
+// Borrow to mutate: &&T can change var fields through the reference.
+scale = (p: &&Point, factor: s64) {
+    p.x = p.x * factor
+    p.y = p.y * factor
+}
+
+main = () {
+    // Freed automatically at the end of this scope — no manual free.
+    val p = new Point{ 10, 20 }
+    print(sum(p))       // 30 — *Point auto-borrows to &Point; p is still usable
+
+    val q = p.copy()    // an independent deep copy
+    scale(p, 10)        // mutate through &&Point
+    print(p.x)          // 100
+    print(q.x)          // 10 — the copy is unaffected by changes to p
+}
+```
+
+`string` and `vec` (the growable built-in) are copyable value types with the same
+model: each binding owns its buffer, and assigning one to another copies it, so
+there is no aliasing to reason about.
+
 ## Getting Started
 
 ### Requirements

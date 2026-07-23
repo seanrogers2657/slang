@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/seanrogers2657/slang/assembler/slasm/codesign"
 )
@@ -478,27 +479,56 @@ func (w *MachOWriter) WriteExecutable(outputPath string, code []byte, data []byt
 	// Build load commands
 	cmds := w.buildLoadCommands(layout, code, data, entryPointOffset)
 
-	// Create file
-	file, err := os.Create(outputPath)
+	// Write to a fresh temp file in the destination directory, then atomically
+	// rename it over outputPath. Overwriting an existing executable in place
+	// (os.Create truncates the same inode) leaves macOS's per-vnode code-
+	// signing cache pointing at the previous binary's signature, so the newly
+	// written — and differently hashed — content is killed on exec (SIGKILL /
+	// "Code Signature Invalid"). Renaming a new inode over the target replaces
+	// the vnode, so the ad-hoc signature written below is the one the kernel
+	// validates, with no external codesign step or re-run needed.
+	dir := filepath.Dir(outputPath)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(outputPath)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	tmpPath := tmp.Name()
+	// Clean up the temp file on any failure before the rename succeeds.
+	committed := false
+	defer func() {
+		tmp.Close()
+		if !committed {
+			os.Remove(tmpPath)
+		}
+	}()
 
 	// Write header and load commands
-	if err := w.writeHeaderAndCommands(file, layout, cmds); err != nil {
+	if err := w.writeHeaderAndCommands(tmp, layout, cmds); err != nil {
 		return err
 	}
 
 	// Write segment data
-	if err := w.writeSegmentData(file, layout, code, data, relocations, entryPointOffset); err != nil {
+	if err := w.writeSegmentData(tmp, layout, code, data, relocations, entryPointOffset); err != nil {
 		return err
 	}
 
 	// Generate and write code signature
-	if err := w.writeCodeSignature(file, layout); err != nil {
+	if err := w.writeCodeSignature(tmp, layout); err != nil {
 		return err
 	}
+
+	// Finalize: the executable bit must be set before the rename so the file is
+	// runnable the instant it appears at its final path.
+	if err := tmp.Chmod(0o755); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, outputPath); err != nil {
+		return err
+	}
+	committed = true
 
 	// Log structure info
 	w.logLayout(layout)

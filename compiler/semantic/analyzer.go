@@ -61,6 +61,24 @@ func (s *Scope) lookup(name string) (VariableInfo, bool) {
 	return VariableInfo{}, false
 }
 
+// shadowsEnclosingLocal reports whether name is already declared in an
+// enclosing LOCAL scope (a strict ancestor other than the global scope). The
+// global scope (parent == nil) holds top-level functions, types, and globals,
+// which locals may legitimately shadow; but two same-named locals in nested
+// blocks of one function cannot coexist. The IR generator keys SSA variables by
+// bare name and cannot tell the inner binding from the outer, so it silently
+// collapses them — a wrong value, a heap leak/crash for heap-owning types, or
+// an IR-validation failure when their types differ. Rejecting the shadow keeps
+// the language honest until scope-qualified SSA names exist.
+func (s *Scope) shadowsEnclosingLocal(name string) bool {
+	for p := s.parent; p != nil && p.parent != nil; p = p.parent {
+		if _, exists := p.variables[name]; exists {
+			return true
+		}
+	}
+	return false
+}
+
 // FunctionInfo holds information about a declared function
 type FunctionInfo struct {
 	ParamTypes []Type
@@ -1426,12 +1444,19 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 			stmt.TypePos, stmt.TypePos)
 	}
 
-	// Check for duplicate declaration in the current scope
+	// Check for duplicate declaration in the current scope, and for shadowing
+	// of a variable in an enclosing local scope (unsupported — see
+	// shadowsEnclosingLocal).
 	if !a.currentScope.declare(stmt.Name, declaredType, stmt.Mutable) {
 		a.addError(
 			fmt.Sprintf("variable '%s' is already declared in this scope", stmt.Name),
 			stmt.NamePos, stmt.NamePos,
 		)
+	} else if a.currentScope.shadowsEnclosingLocal(stmt.Name) {
+		a.addError(
+			fmt.Sprintf("variable '%s' shadows a variable declared in an enclosing scope", stmt.Name),
+			stmt.NamePos, stmt.NamePos,
+		).WithHint("shadowing is not supported; rename this variable or the outer one")
 	}
 
 	// Single ownership: an owned-pointer binding's initializer must produce a fresh

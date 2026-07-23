@@ -2456,18 +2456,6 @@ func (g *Generator) generateArrayLiteral(al *semantic.TypedArrayLiteralExpr) (*V
 
 	// Store each element
 	for i, elemExpr := range al.Elements {
-		// An identifier element that owns a heap slot (value-type nullable, or a
-		// struct/array value) aliases that slot into the array. These are
-		// copyable types, so semantic allows the alias; mark the source aliased so
-		// it isn't double-freed at scope exit. Strings use copy semantics
-		// (handled below) and container reads are copied, not aliased.
-		if ident, ok := elemExpr.(*semantic.TypedIdentifierExpr); ok {
-			if varOwnsHeap(ident.Type) && !isStringType(ident.Type) &&
-				nullableHeapInner(ident.Type) == nil {
-				g.markHeapAliased(ident.Name)
-			}
-		}
-
 		elem, err := g.generateExpr(elemExpr)
 		if err != nil {
 			return nil, err
@@ -2476,18 +2464,22 @@ func (g *Generator) generateArrayLiteral(al *semantic.TypedArrayLiteralExpr) (*V
 		// element store lands in the current block.
 		b = g.builder()
 
-		// Container-read elements alias the source — copy so the array owns
-		// its own heap slot. Boxed string?/vec? bindings copy too
-		// (copy-on-store). copyNullableValue introduces new blocks, so
-		// refresh the builder before emitting the element store.
+		// Every heap-owning element takes value semantics: the array owns an
+		// independent copy so it never shares (and later double-frees) storage
+		// with the source. This matches variable, field, and index-assignment
+		// stores. A boxed nullable / container read copies box and contents; a
+		// borrowed string or vec copies its buffer; a copyable aggregate read
+		// from a binding or field (including a nested field like h.b, which is
+		// not a plain identifier and so could not be alias-marked) is
+		// deep-copied. Fresh temporaries (literals, calls) pass through.
 		if shouldCopyOnReturn(elemExpr) || isNullableHeapBorrow(elemExpr) {
 			elem = g.copyNullableValue(elem, elemExpr.GetType())
 			b = g.builder()
 		}
-
-		// Borrowed string elements must be copied so the array owns its own
-		// buffer (value semantics).
 		elem = g.maybeCopyString(elem, elemExpr)
+		elem = g.maybeCopyVec(elem, elemExpr)
+		elem = g.bindAggregateValue(elem, elemExpr)
+		b = g.builder()
 
 		idx := b.ConstInt(TypeS64, int64(i))
 		elemPtr := b.IndexPtr(alloc, idx, elemType)
@@ -2675,6 +2667,33 @@ func (g *Generator) generateMethodCall(mc *semantic.TypedMethodCallExpr) (*Value
 	// Determine mangled function name (include param count for overloading)
 	mangledName := g.mangleMethodName(mc.Object.GetType(), mc)
 
+	// Wrap args to match nullable parameter types, exactly as generateCall
+	// does. Passing a non-nullable value to a T? parameter without wrapping
+	// hands the callee a bare value where it expects a box; unwrapping it
+	// dereferences a non-pointer and crashes. The method function's params
+	// include self at index 0, matching args. A freshly wrapped boxed nullable
+	// is a caller-owned temp freed after the call.
+	var wrappedTemps []*Value
+	if targetFn := g.prog.FunctionByName(mangledName); targetFn != nil {
+		for i, arg := range args {
+			if i < len(targetFn.Params) {
+				paramType := targetFn.Params[i].Type
+				if _, isNullable := paramType.(*NullableType); isNullable {
+					if arg.Op == OpWrapNull {
+						arg.Type = paramType
+					} else if _, argIsNullable := arg.Type.(*NullableType); !argIsNullable {
+						wrap := g.block.NewValue(OpWrap, paramType)
+						wrap.AddArg(arg)
+						args[i] = wrap
+						if nt, ok := paramType.(*NullableType); ok && !nt.IsReferenceNullable() && !nt.IsFlat() {
+							wrappedTemps = append(wrappedTemps, wrap)
+						}
+					}
+				}
+			}
+		}
+	}
+
 	resultType := g.convertSSAType(mc.Type)
 
 	call := g.block.NewValue(OpCall, resultType)
@@ -2683,7 +2702,16 @@ func (g *Generator) generateMethodCall(mc *semantic.TypedMethodCallExpr) (*Value
 		call.AddArg(arg)
 	}
 
-	// Free fresh argument temporaries now that the callee has used them.
+	// Free freshly wrapped boxed-nullable temps, then fresh argument
+	// temporaries now that the callee has used them.
+	for _, wrap := range wrappedTemps {
+		nt := wrap.Type.(*NullableType)
+		size := 8
+		if elemSize := nt.Elem.Size(); elemSize > 8 {
+			size = elemSize
+		}
+		g.emitNullCheckedFree(wrap, size)
+	}
 	for _, sv := range strTempFrees {
 		g.builder().StrFree(sv)
 	}

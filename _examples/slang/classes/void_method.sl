@@ -4,8 +4,8 @@
 Logger = class {
     var last_value: s64
 
-    create = () -> *Logger {
-        return new Logger{ 0 }
+    create = () -> Logger {
+        return Logger{ 0 }
     }
 
     // Void method with explicit void return type

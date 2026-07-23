@@ -5,8 +5,8 @@
 Door = class {
     var state: s64
 
-    create = () -> *Door {
-        return new Door{ 1 }
+    create = () -> Door {
+        return Door{ 1 }
     }
 
     unlock = (self: &&Door) -> bool {

@@ -5,8 +5,8 @@ Point = class {
     var x: s64
     var y: s64
 
-    create = (x: s64, y: s64) -> *Point {
-        return new Point{ x, y }
+    create = (x: s64, y: s64) -> Point {
+        return Point{ x, y }
     }
 
     get_x = (self: &Point) -> s64 {
@@ -36,8 +36,8 @@ add_points = (p1: &Point, p2: &Point) -> s64 {
 }
 
 main = () {
-    val p1 = Point.create(10, 20)
-    val p2 = Point.create(5, 5)
+    val p1 = new Point{ 10, 20 }
+    val p2 = new Point{ 5, 5 }
 
     // Use free function with class parameters
     val sum = add_points(p1, p2)  // 10 + 20 + 5 + 5 = 40

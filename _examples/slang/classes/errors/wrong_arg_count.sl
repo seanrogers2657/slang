@@ -6,16 +6,12 @@
 Counter = class {
     var count: s64
 
-    create = () -> *Counter {
-        return new Counter{ 0 }
-    }
-
     add = (self: &&Counter, x: s64) {
         self.count = self.count + x
     }
 }
 
 main = () {
-    val c = Counter.create()
+    val c = new Counter{ 0 }
     c.add()  // ERROR: missing argument
 }

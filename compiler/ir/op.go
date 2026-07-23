@@ -44,6 +44,15 @@ const (
 	OpStrCopy     // deep-copy a string to a fresh heap allocation (Args[0] = string) -> string
 	OpStrFree     // free a heap string (Args[0] = string); no-op for non-heap (constant) pointers
 
+	// Vec operations (built-in growable vector of s64)
+	OpVecNew  // allocate an empty vec -> vec
+	OpVecPush // append (Args[0] = vec, Args[1] = s64); mutates in place, no result
+	OpVecGet  // bounds-checked read (Args[0] = vec, Args[1] = index) -> s64
+	OpVecSet  // bounds-checked write (Args[0] = vec, Args[1] = index, Args[2] = s64)
+	OpVecLen  // length (Args[0] = vec) -> s64
+	OpVecCopy // deep-copy a vec to a fresh heap allocation (Args[0] = vec) -> vec
+	OpVecFree // free a heap vec (Args[0] = vec); no-op for non-heap pointers
+
 	// Memory operations
 	OpAlloc    // allocate memory (AuxInt = size), returns pointer
 	OpFree     // free memory (Args[0] = ptr, AuxInt = size)
@@ -137,6 +146,20 @@ func (op Op) String() string {
 		return "StrCopy"
 	case OpStrFree:
 		return "StrFree"
+	case OpVecNew:
+		return "VecNew"
+	case OpVecPush:
+		return "VecPush"
+	case OpVecGet:
+		return "VecGet"
+	case OpVecSet:
+		return "VecSet"
+	case OpVecLen:
+		return "VecLen"
+	case OpVecCopy:
+		return "VecCopy"
+	case OpVecFree:
+		return "VecFree"
 	case OpAlloc:
 		return "Alloc"
 	case OpFree:
@@ -206,7 +229,8 @@ func (op Op) IsTerminator() bool {
 // and cannot be eliminated even if its result is unused.
 func (op Op) HasSideEffects() bool {
 	switch op {
-	case OpStore, OpFree, OpStrFree, OpCall, OpReturn, OpExit:
+	case OpStore, OpFree, OpStrFree, OpCall, OpReturn, OpExit,
+		OpVecPush, OpVecSet, OpVecFree:
 		return true
 	default:
 		return false

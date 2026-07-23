@@ -5,8 +5,8 @@ Point = class {
     val x: s64   // immutable
     val y: s64   // immutable
 
-    create = (x: s64, y: s64) -> *Point {
-        return new Point{ x, y }
+    create = (x: s64, y: s64) -> Point {
+        return Point{ x, y }
     }
 
     // Can read val fields

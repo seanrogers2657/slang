@@ -6,8 +6,8 @@ Point = class {
     var x: s64
     var y: s64
 
-    create = (x: s64, y: s64) -> *Point {
-        return new Point{ x, y }
+    create = (x: s64, y: s64) -> Point {
+        return Point{ x, y }
     }
 
     get_x = (self: &Point) -> s64 {
@@ -23,8 +23,8 @@ Point = class {
 Line = class {
     var length: s64
 
-    create = (len: s64) -> *Line {
-        return new Line{ len }
+    create = (len: s64) -> Line {
+        return Line{ len }
     }
 
     get_length = (self: &Line) -> s64 {
@@ -33,7 +33,7 @@ Line = class {
 }
 
 // Free function using multiple classes
-compute_distance = (p1: &Point, p2: &Point) -> s64 {
+compute_distance = (p1: Point, p2: Point) -> s64 {
     val dx = p2.get_x() - p1.get_x()
     val dy = p2.get_y() - p1.get_y()
     val abs_dx = if dx < 0 { 0 - dx } else { dx }

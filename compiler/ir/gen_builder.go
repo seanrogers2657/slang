@@ -252,6 +252,57 @@ func (vb *ValueBuilder) StrFree(val *Value) *Value {
 	return v
 }
 
+// VecNew allocates an empty growable vec.
+func (vb *ValueBuilder) VecNew() *Value {
+	return vb.block.NewValue(OpVecNew, TypeVec)
+}
+
+// VecPush appends value to vec in place (mutates the vec's header).
+func (vb *ValueBuilder) VecPush(vec, value *Value) *Value {
+	v := vb.block.NewValue(OpVecPush, nil)
+	v.AddArg(vec)
+	v.AddArg(value)
+	return v
+}
+
+// VecGet reads vec[index] with a runtime bounds check.
+func (vb *ValueBuilder) VecGet(vec, index *Value) *Value {
+	v := vb.block.NewValue(OpVecGet, TypeS64)
+	v.AddArg(vec)
+	v.AddArg(index)
+	return v
+}
+
+// VecSet writes vec[index] = value with a runtime bounds check.
+func (vb *ValueBuilder) VecSet(vec, index, value *Value) *Value {
+	v := vb.block.NewValue(OpVecSet, nil)
+	v.AddArg(vec)
+	v.AddArg(index)
+	v.AddArg(value)
+	return v
+}
+
+// VecLen returns the number of elements in vec.
+func (vb *ValueBuilder) VecLen(vec *Value) *Value {
+	v := vb.block.NewValue(OpVecLen, TypeS64)
+	v.AddArg(vec)
+	return v
+}
+
+// VecCopy deep-copies a vec into a fresh heap allocation owned by the result.
+func (vb *ValueBuilder) VecCopy(val *Value) *Value {
+	v := vb.block.NewValue(OpVecCopy, TypeVec)
+	v.AddArg(val)
+	return v
+}
+
+// VecFree frees a heap vec (no-op for non-heap pointers).
+func (vb *ValueBuilder) VecFree(val *Value) *Value {
+	v := vb.block.NewValue(OpVecFree, nil)
+	v.AddArg(val)
+	return v
+}
+
 // =============================================================================
 // Control Flow
 // =============================================================================

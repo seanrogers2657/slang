@@ -4,10 +4,6 @@
 Counter = class {
     var value: s64
 
-    create = (initial: s64) -> *Counter {
-        return new Counter{ initial }
-    }
-
     // Void method - modifies state
     increment = (self: &&Counter) {
         self.value = self.value + 1
@@ -24,7 +20,7 @@ main = () {
     null_counter?.increment()  // Should do nothing, not crash
 
     // Test: Safe call on non-null with void method should work
-    val counter: *Counter? = Counter.create(10)
+    val counter: *Counter? = new Counter{ 10 }
     counter?.increment()  // Should increment to 11
     counter?.increment()  // Should increment to 12
 

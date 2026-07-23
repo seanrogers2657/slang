@@ -5,8 +5,8 @@ Calculator = class {
     var value: s64
 
     // Static factory
-    create = () -> *Calculator {
-        return new Calculator{ 0 }
+    create = () -> Calculator {
+        return Calculator{ 0 }
     }
 
     // Overload 1: no args - returns current value

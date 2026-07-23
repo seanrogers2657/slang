@@ -5,8 +5,8 @@ Calculator = class {
     var a: s64
     var b: s64
 
-    create = (a: s64, b: s64) -> *Calculator {
-        return new Calculator{ a, b }
+    create = (a: s64, b: s64) -> Calculator {
+        return Calculator{ a, b }
     }
 
     // Method with complex arithmetic expression

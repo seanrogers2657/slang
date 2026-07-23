@@ -5,13 +5,9 @@
 
 Counter = class {
     var count: s64
-
-    create = () -> *Counter {
-        return new Counter{ 0 }
-    }
 }
 
 main = () {
-    val c = Counter.create()
+    val c = new Counter{ 0 }
     c.increment()  // ERROR: undefined method 'increment'
 }

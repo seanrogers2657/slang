@@ -74,6 +74,25 @@ func (r *BuiltinRegistry) registerDefaults() {
 		ReturnType: TypeVoid,
 		NoReturn:   false,
 	})
+	// Growable vector (vec) built-ins. vec() makes an empty vec; push/get/set
+	// operate on it (get/set are bounds-checked at runtime). len() also accepts a
+	// vec (handled via IsArrayLen).
+	r.Register("vec", BuiltinFunc{
+		ParamTypes: []Type{},
+		ReturnType: TypeVec,
+	})
+	r.Register("push", BuiltinFunc{
+		ParamTypes: []Type{TypeVec, TypeS64}, // vec, value
+		ReturnType: TypeVoid,
+	})
+	r.Register("get", BuiltinFunc{
+		ParamTypes: []Type{TypeVec, TypeS64}, // vec, index
+		ReturnType: TypeS64,
+	})
+	r.Register("set", BuiltinFunc{
+		ParamTypes: []Type{TypeVec, TypeS64, TypeS64}, // vec, index, value
+		ReturnType: TypeVoid,
+	})
 }
 
 // defaultBuiltinRegistry is the shared default registry

@@ -72,6 +72,8 @@ func (tc *TypeConverter) convertPrimitive(t semantic.Type) Type {
 		return TypeBool
 	case semantic.StringType:
 		return TypeString
+	case semantic.VecType:
+		return TypeVec
 	case semantic.VoidType:
 		return TypeVoid
 

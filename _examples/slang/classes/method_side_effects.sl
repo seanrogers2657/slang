@@ -6,8 +6,8 @@ State = class {
     var y: s64
     var z: s64
 
-    create = () -> *State {
-        return new State{ 0, 0, 0 }
+    create = () -> State {
+        return State{ 0, 0, 0 }
     }
 
     // Method modifying multiple fields

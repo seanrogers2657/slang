@@ -175,10 +175,6 @@ func (at *analyzerTest) withScope() *analyzerTest {
 
 func (at *analyzerTest) declare(name string, typ Type, mutable bool) *analyzerTest {
 	at.analyzer.currentScope.declare(name, typ, mutable)
-	// Also track ownership for move-only types
-	if IsMoveOnly(typ) {
-		at.analyzer.ownershipScope.declare(name, typ)
-	}
 	return at
 }
 

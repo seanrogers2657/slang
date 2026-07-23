@@ -128,6 +128,20 @@ func (t StringType) Equals(other Type) bool {
 	return ok
 }
 
+// VecType represents the built-in growable vector type `vec` (a dynamic list of
+// s64). Like string, it is a heap-backed copyable value type: a binding owns its
+// buffer and frees it at scope exit, with copy-on-store semantics.
+type VecType struct{}
+
+func (t VecType) String() string {
+	return "vec"
+}
+
+func (t VecType) Equals(other Type) bool {
+	_, ok := other.(VecType)
+	return ok
+}
+
 // BooleanType represents the boolean type (for comparison results)
 type BooleanType struct{}
 
@@ -452,7 +466,7 @@ func (t OwnedPointerType) Equals(other Type) bool {
 	return t.ElementType.Equals(o.ElementType)
 }
 
-// IsCopyable returns false for owned pointers (they are move-only)
+// IsCopyable returns false for owned pointers (single-owner, not copyable)
 func (t OwnedPointerType) IsCopyable() bool {
 	return false
 }
@@ -739,6 +753,7 @@ var (
 	// Default types
 	TypeInteger = S64Type{} // default integer (s64)
 	TypeString  = StringType{}
+	TypeVec     = VecType{}
 	TypeBoolean = BooleanType{}
 	TypeVoid    = VoidType{}
 	TypeError   = ErrorType{}
@@ -788,6 +803,7 @@ func init() {
 	RegisterPrimitiveType("f32", TypeFloat32)
 	RegisterPrimitiveType("f64", TypeFloat64)
 	RegisterPrimitiveType("string", TypeString)
+	RegisterPrimitiveType("vec", TypeVec)
 	RegisterPrimitiveType("bool", TypeBoolean)
 	RegisterPrimitiveType("void", TypeVoid)
 }

@@ -4,10 +4,6 @@
 Counter = class {
     var value: s64
 
-    create = (initial: s64) -> *Counter {
-        return new Counter{ initial }
-    }
-
     // Method with argument
     add = (self: &&Counter, x: s64) {
         self.value = self.value + x
@@ -29,7 +25,7 @@ main = () {
     null_counter?.add(100)  // Should do nothing
 
     // Test: Safe call on non-null with args should work
-    val counter: *Counter? = Counter.create(10)
+    val counter: *Counter? = new Counter{ 10 }
     counter?.add(5)         // 10 + 5 = 15
     counter?.add_two(10, 10) // 15 + 10 + 10 = 35
 

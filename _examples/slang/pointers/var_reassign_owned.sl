@@ -1,8 +1,10 @@
-// @test: exit_code=0
-// @test: stdout=2\n
-// Reassigning a var of owned-pointer type from another owned-pointer
-// variable transfers ownership: the source must not double-free at scope
-// exit, and the old destination value must be released.
+// @test: expect_error=true
+// @test: error_stage=semantic
+// @test: error_contains=cannot bind owned value
+// Single ownership: reassigning an owned-pointer variable from another
+// owned-pointer variable (a = b) would create two owners of the same
+// allocation, so it is rejected. Reassign from a fresh value (new / .copy())
+// instead — see heap_reassign.sl for the allowed `p = new ...` form.
 
 Box = struct {
     val v: s64
@@ -11,6 +13,6 @@ Box = struct {
 main = () {
     var a = new Box{ 1 }
     var b = new Box{ 2 }
-    a = b
+    a = b        // Error: cannot alias owned pointer 'b'
     print(a.v)
 }

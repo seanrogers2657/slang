@@ -5,8 +5,8 @@ Range = class {
     var min: s64
     var max: s64
 
-    create = (min: s64, max: s64) -> *Range {
-        return new Range{ min, max }
+    create = (min: s64, max: s64) -> Range {
+        return Range{ min, max }
     }
 
     // Method returning bool

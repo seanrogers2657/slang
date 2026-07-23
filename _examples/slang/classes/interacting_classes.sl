@@ -5,8 +5,8 @@
 Wallet = class {
     var balance: s64
 
-    create = (initial: s64) -> *Wallet {
-        return new Wallet{ initial }
+    create = (initial: s64) -> Wallet {
+        return Wallet{ initial }
     }
 
     deposit = (self: &&Wallet, amount: s64) -> bool {
@@ -37,8 +37,8 @@ transfer = (from: &&Wallet, to: &&Wallet, amount: s64) -> bool {
 }
 
 main = () {
-    val alice = Wallet.create(100)
-    val bob = Wallet.create(200)
+    val alice = new Wallet{ 100 }
+    val bob = new Wallet{ 200 }
 
     val ok = transfer(bob, alice, 50)
     assert(ok, "transfer should succeed")

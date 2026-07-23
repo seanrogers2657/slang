@@ -4,8 +4,8 @@
 Validator = class {
     var threshold: s64
 
-    create = (threshold: s64) -> *Validator {
-        return new Validator{ threshold }
+    create = (threshold: s64) -> Validator {
+        return Validator{ threshold }
     }
 
     // Method with early return

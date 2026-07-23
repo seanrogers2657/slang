@@ -739,13 +739,9 @@ func TestGenerateSafeNavigation(t *testing.T) {
 					getValue = (self: &Box) -> s64 {
 						return self.value
 					}
-
-					create = (v: s64) -> *Box {
-						return new Box{ v }
-					}
 				}
 				main = () {
-					val b: *Box? = Box.create(42)
+					val b: *Box? = new Box{ 42 }
 					val v = b?.getValue()
 				}
 			`,

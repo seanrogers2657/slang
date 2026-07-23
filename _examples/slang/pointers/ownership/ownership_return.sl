@@ -1,13 +1,14 @@
 // @test: exit_code=0
 // @test: stdout=100\n200\n
-// Test: Returning *T from a function transfers ownership to caller
+// Test: a factory returns a Point by value — the result is copied to the caller
+// (owned heap cannot be returned).
 Point = struct {
     val x: s64
     val y: s64
 }
 
-createPoint = (x: s64, y: s64) -> *Point {
-    return new Point{ x, y }
+createPoint = (x: s64, y: s64) -> Point {
+    return Point{ x, y }
 }
 
 main = () {

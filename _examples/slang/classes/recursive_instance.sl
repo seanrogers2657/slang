@@ -5,8 +5,8 @@ Node = class {
     var value: s64
     var depth: s64
 
-    create = (value: s64, depth: s64) -> *Node {
-        return new Node{ value, depth }
+    create = (value: s64, depth: s64) -> Node {
+        return Node{ value, depth }
     }
 
     // Recursive instance method using iteration instead

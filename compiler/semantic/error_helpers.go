@@ -137,22 +137,6 @@ func (a *Analyzer) errTypeNameConflict(name, existingKind string, pos ast.Positi
 // Ownership errors
 // ============================================================================
 
-// errUsedAfterMove reports use of a value after it has been moved
-func (a *Analyzer) errUsedAfterMove(name, movedTo string, usePos ast.Position) *errors.CompilerError {
-	return a.addError(
-		fmt.Sprintf("use of moved value '%s'", name),
-		usePos, usePos,
-	).WithHint(fmt.Sprintf("value was moved to '%s'", movedTo))
-}
-
-// errCannotMoveInLoop reports that a move cannot occur inside a loop
-func (a *Analyzer) errCannotMoveInLoop(name string, pos ast.Position) *errors.CompilerError {
-	return a.addError(
-		fmt.Sprintf("cannot move '%s' inside a loop", name),
-		pos, pos,
-	).WithHint("use .copy() to create a copy, or move the value before the loop")
-}
-
 // ============================================================================
 // Method errors
 // ============================================================================

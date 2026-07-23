@@ -61,6 +61,24 @@ func (s *Scope) lookup(name string) (VariableInfo, bool) {
 	return VariableInfo{}, false
 }
 
+// shadowsEnclosingLocal reports whether name is already declared in an
+// enclosing LOCAL scope (a strict ancestor other than the global scope). The
+// global scope (parent == nil) holds top-level functions, types, and globals,
+// which locals may legitimately shadow; but two same-named locals in nested
+// blocks of one function cannot coexist. The IR generator keys SSA variables by
+// bare name and cannot tell the inner binding from the outer, so it silently
+// collapses them — a wrong value, a heap leak/crash for heap-owning types, or
+// an IR-validation failure when their types differ. Rejecting the shadow keeps
+// the language honest until scope-qualified SSA names exist.
+func (s *Scope) shadowsEnclosingLocal(name string) bool {
+	for p := s.parent; p != nil && p.parent != nil; p = p.parent {
+		if _, exists := p.variables[name]; exists {
+			return true
+		}
+	}
+	return false
+}
+
 // FunctionInfo holds information about a declared function
 type FunctionInfo struct {
 	ParamTypes []Type
@@ -72,7 +90,6 @@ type Analyzer struct {
 	filename          string
 	errors            []*errors.CompilerError
 	currentScope      *Scope
-	ownershipScope    *OwnershipScope         // tracks ownership state for move semantics
 	functions         map[string]FunctionInfo // function registry
 	TypeRegistry      *TypeRegistry           // centralized struct/class/object registry
 	currentReturnType  Type                    // return type of current function being analyzed
@@ -89,7 +106,6 @@ func NewAnalyzer(filename string) *Analyzer {
 		filename:          filename,
 		errors:            make([]*errors.CompilerError, 0),
 		currentScope:      newScope(nil),           // global scope
-		ownershipScope:    newOwnershipScope(nil),  // global ownership scope
 		functions:         make(map[string]FunctionInfo),
 		TypeRegistry:      NewTypeRegistry(),
 		currentReturnType: nil,
@@ -102,100 +118,12 @@ func NewAnalyzer(filename string) *Analyzer {
 // enterScope creates a new nested scope
 func (a *Analyzer) enterScope() {
 	a.currentScope = newScope(a.currentScope)
-	a.ownershipScope = newOwnershipScope(a.ownershipScope)
 }
 
 // exitScope returns to the parent scope
 func (a *Analyzer) exitScope() {
 	if a.currentScope.parent != nil {
 		a.currentScope = a.currentScope.parent
-	}
-	if a.ownershipScope.parent != nil {
-		a.ownershipScope = a.ownershipScope.parent
-	}
-}
-
-// moveRecord tracks a variable that was moved in a branch
-type moveRecord struct {
-	name     string
-	moveInfo MoveInfo
-}
-
-// snapshotOwnershipState captures the current ownership state of all tracked variables
-func (a *Analyzer) snapshotOwnershipState() map[string]OwnershipInfo {
-	snapshot := make(map[string]OwnershipInfo)
-	for scope := a.ownershipScope; scope != nil; scope = scope.parent {
-		for name, info := range scope.ownership {
-			// Don't overwrite - inner scope takes precedence
-			if _, exists := snapshot[name]; !exists {
-				snapshot[name] = info
-			}
-		}
-	}
-	return snapshot
-}
-
-// restoreOwnershipState resets tracked variables back to a previously captured
-// snapshot. This is used between mutually-exclusive branches (if/else, when
-// cases) so that a move performed in one branch does not leak into the analysis
-// of a sibling branch and cause a spurious use-after-move error. The union of
-// moves across branches is re-applied afterward via mergeConditionalMoves.
-func (a *Analyzer) restoreOwnershipState(snapshot map[string]OwnershipInfo) {
-	seen := make(map[string]bool)
-	for scope := a.ownershipScope; scope != nil; scope = scope.parent {
-		for name := range scope.ownership {
-			// Restore only the innermost occurrence of each name, matching
-			// how snapshotOwnershipState captured it.
-			if seen[name] {
-				continue
-			}
-			seen[name] = true
-			if info, ok := snapshot[name]; ok {
-				scope.ownership[name] = info
-			}
-		}
-	}
-}
-
-// collectBranchMoves returns variables that were moved since the snapshot was taken
-func (a *Analyzer) collectBranchMoves(beforeSnapshot map[string]OwnershipInfo) []moveRecord {
-	var moves []moveRecord
-
-	// Check all scopes for moved variables
-	for scope := a.ownershipScope; scope != nil; scope = scope.parent {
-		for name, info := range scope.ownership {
-			if info.State == StateMoved {
-				// Was it owned before?
-				if before, existed := beforeSnapshot[name]; existed && before.State == StateOwned {
-					moves = append(moves, moveRecord{
-						name:     name,
-						moveInfo: info.MoveInfo,
-					})
-				}
-			}
-		}
-	}
-
-	return moves
-}
-
-// mergeConditionalMoves marks variables as moved if they were moved in any branch
-func (a *Analyzer) mergeConditionalMoves(thenMoves, elseMoves []moveRecord) {
-	// Combine all moves from both branches
-	allMoves := make(map[string]MoveInfo)
-	for _, m := range thenMoves {
-		allMoves[m.name] = m.moveInfo
-	}
-	for _, m := range elseMoves {
-		// If already moved in then branch, keep that info
-		if _, exists := allMoves[m.name]; !exists {
-			allMoves[m.name] = m.moveInfo
-		}
-	}
-
-	// Mark each variable as moved in the current ownership scope
-	for name, moveInfo := range allMoves {
-		a.ownershipScope.markMoved(name, moveInfo.MovedTo, moveInfo.Location)
 	}
 }
 
@@ -476,16 +404,17 @@ func (a *Analyzer) registerFunction(fn *ast.FunctionDecl) {
 			}
 		}
 
+		// A parameter must be a value type or a borrow (never an owned pointer).
+		a.requireParamType(paramType, param.TypePos)
+
 		paramTypes[i] = paramType
 	}
 
 	// Convert return type (supports both primitive and struct types)
 	returnType := a.resolveTypeName(fn.ReturnType, fn.ReturnPos)
 
-	// References cannot be used as return type
-	if IsAnyRefPointer(returnType) {
-		a.addError("references cannot be used as return types; use *T instead", fn.ReturnPos, fn.ReturnPos)
-	}
+	// A function returns a value, copied to the caller.
+	a.requireValueType(returnType, fn.ReturnPos, "a return type")
 
 	a.functions[fn.Name] = FunctionInfo{
 		ParamTypes: paramTypes,
@@ -520,10 +449,9 @@ func (a *Analyzer) resolveStructFields(s *ast.StructDecl) {
 	for i, field := range s.Fields {
 		fieldType := a.resolveTypeName(field.TypeName, field.TypePos)
 
-		// Ref<T> cannot be used as struct field type
-		if IsRefPointer(fieldType) {
-			a.addError("&T cannot be used as a struct field type; use *T instead", field.TypePos, field.TypePos)
-		}
+		// A field is stored inline and must be a value type (no borrows, no owned
+		// pointers — a struct cannot own heap that outlives its own scope).
+		a.requireValueType(fieldType, field.TypePos, "a struct field")
 
 		fields[i] = StructFieldInfo{
 			Name:    field.Name,
@@ -594,10 +522,9 @@ func (a *Analyzer) resolveClassFieldsAndMethods(c *ast.ClassDecl) {
 	for i, field := range c.Fields {
 		fieldType := a.resolveTypeName(field.TypeName, field.TypePos)
 
-		// Ref<T> cannot be used as class field type
-		if IsRefPointer(fieldType) {
-			a.addError("&T cannot be used as a class field type; use *T instead", field.TypePos, field.TypePos)
-		}
+		// A field is stored inline and must be a value type (no borrows, no owned
+		// pointers — a class cannot own heap that outlives its own scope).
+		a.requireValueType(fieldType, field.TypePos, "a class field")
 
 		fields[i] = StructFieldInfo{
 			Name:    field.Name,
@@ -714,6 +641,9 @@ func (a *Analyzer) resolveMethodDeclCore(ownerName string, method *ast.MethodDec
 				// 'self' must be the first parameter
 				a.addError("'self' must be the first parameter", param.NamePos, param.NamePos)
 			}
+		} else {
+			// A non-self parameter must be a value type or a borrow.
+			a.requireParamType(paramType, param.TypePos)
 		}
 
 		paramTypes[i] = paramType
@@ -725,10 +655,8 @@ func (a *Analyzer) resolveMethodDeclCore(ownerName string, method *ast.MethodDec
 		returnType = a.resolveTypeName(method.ReturnType, method.ReturnPos)
 	}
 
-	// References cannot be used as return type
-	if IsAnyRefPointer(returnType) {
-		a.addError("references cannot be used as return types; use *T instead", method.ReturnPos, method.ReturnPos)
-	}
+	// A method returns a value, copied to the caller.
+	a.requireValueType(returnType, method.ReturnPos, "a return type")
 
 	return &MethodInfo{
 		Name:       method.Name,
@@ -750,9 +678,15 @@ func (a *Analyzer) validateSelfType(className string, selfType Type, pos ast.Pos
 	case MutRefPointerType:
 		elementType = t.ElementType
 	case OwnedPointerType:
-		elementType = t.ElementType
+		// A consuming receiver (self: *T) would take ownership of the receiver into
+		// the method and free it there — not permitted. Methods borrow their receiver.
+		a.addError(
+			fmt.Sprintf("'self' cannot take ownership (self: *%s); consuming methods are not allowed", className),
+			pos, pos,
+		).WithHint(fmt.Sprintf("use self: &%s to read or self: &&%s to mutate", className, className))
+		return false
 	default:
-		a.addError(fmt.Sprintf("'self' must have a pointer type (&%s, &&%s, or *%s)", className, className, className), pos, pos)
+		a.addError(fmt.Sprintf("'self' must be a borrow (&%s or &&%s)", className, className), pos, pos)
 		return false
 	}
 
@@ -780,6 +714,50 @@ func (a *Analyzer) validateSelfType(className string, selfType Type, pos ast.Pos
 	}
 
 	return true
+}
+
+// requireValueType enforces the scope-frees-it allow-list for positions that may
+// only hold a value type: return types and struct/class fields. The result of a
+// function is copied to the caller, and a field is stored inline, so neither may
+// be a borrow (a borrow cannot outlive its referent) nor an owned pointer (which
+// is freed at the end of its creating scope). `role` names the position for the
+// error message, e.g. "a return type" or "a struct field".
+func (a *Analyzer) requireValueType(t Type, pos ast.Position, role string) {
+	if isValueType(t) {
+		return
+	}
+	if IsAnyRefPointer(t) {
+		a.addError(
+			fmt.Sprintf("references (&T/&&T) cannot be used as %s; borrows are only valid as parameters", role),
+			pos, pos,
+		)
+		return
+	}
+	if ownsHeap(t) {
+		a.addError(
+			fmt.Sprintf("owned pointers (*T) cannot be used as %s; they are freed at the end of their creating scope", role),
+			pos, pos,
+		).WithHint("return or store a value (it is copied to the caller), or use an arena index (s64) for recursive data")
+		return
+	}
+	a.addError(fmt.Sprintf("%s must be a value type", role), pos, pos)
+}
+
+// requireParamType enforces the allow-list for parameter position: a parameter may
+// be a value type (passed by copy) or a borrow (&T/&&T). It may not be an owned
+// pointer, because passing one would let it escape its scope into the callee.
+func (a *Analyzer) requireParamType(t Type, pos ast.Position) {
+	if isValueType(t) || IsAnyRefPointer(t) {
+		return
+	}
+	if ownsHeap(t) {
+		a.addError(
+			"owned pointers (*T) cannot be parameters; passing one would let it escape its scope into the callee",
+			pos, pos,
+		).WithHint("borrow with &T to read or &&T to mutate; the caller keeps ownership")
+		return
+	}
+	a.addError("invalid parameter type", pos, pos)
 }
 
 // resolveTypeName converts a type name string to a Type, checking both primitive types and structs.
@@ -1223,10 +1201,6 @@ func (a *Analyzer) analyzeFunctionDecl(fn *ast.FunctionDecl) TypedDeclaration {
 		if !a.currentScope.declare(param.Name, paramType, false) {
 			a.addError(fmt.Sprintf("parameter '%s' is already declared", param.Name), param.NamePos, param.NamePos)
 		}
-		// Track ownership for Own<T> parameters
-		if IsMoveOnly(paramType) {
-			a.ownershipScope.declare(param.Name, paramType)
-		}
 	}
 
 	// Analyze the function body
@@ -1322,7 +1296,11 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) TypedStatement {
 	case *ast.ExprStmt:
 		return a.analyzeExprStatement(s)
 	case *ast.BlockStmt:
-		return a.analyzeBlockStmt(s)
+		// A bare block introduces its own lexical scope.
+		a.enterScope()
+		typed := a.analyzeBlockStmt(s)
+		a.exitScope()
+		return typed
 	case *ast.VarDeclStmt:
 		return a.analyzeVarDeclStatement(s)
 	case *ast.AssignStmt:
@@ -1466,19 +1444,25 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 			stmt.TypePos, stmt.TypePos)
 	}
 
-	// Check for duplicate declaration in the current scope
+	// Check for duplicate declaration in the current scope, and for shadowing
+	// of a variable in an enclosing local scope (unsupported — see
+	// shadowsEnclosingLocal).
 	if !a.currentScope.declare(stmt.Name, declaredType, stmt.Mutable) {
 		a.addError(
 			fmt.Sprintf("variable '%s' is already declared in this scope", stmt.Name),
 			stmt.NamePos, stmt.NamePos,
 		)
+	} else if a.currentScope.shadowsEnclosingLocal(stmt.Name) {
+		a.addError(
+			fmt.Sprintf("variable '%s' shadows a variable declared in an enclosing scope", stmt.Name),
+			stmt.NamePos, stmt.NamePos,
+		).WithHint("shadowing is not supported; rename this variable or the outer one")
 	}
 
-	// Track ownership for move-only types and handle moves from initializer
-	if IsMoveOnly(declaredType) {
-		a.ownershipScope.declare(stmt.Name, declaredType)
-		// Check if initializer is a variable being moved
-		a.checkAndRecordMove(stmt.Initializer, stmt.Name, stmt.NamePos)
+	// Single ownership: an owned-pointer binding's initializer must produce a fresh
+	// owned value (new/.copy()), not alias an existing owner.
+	if IsNonCopyable(declaredType) {
+		a.rejectOwnedAlias(stmt.Initializer)
 	}
 
 	return &TypedVarDeclStmt{
@@ -1716,18 +1700,11 @@ func (a *Analyzer) analyzeAssignStatement(stmt *ast.AssignStmt) TypedStatement {
 		).WithHint("consider using 'var' instead of 'val' if you need to reassign")
 	}
 
-	// Check for direct self-assignment of move-only types: p = p
-	// This would move p and then try to use it, which is invalid
-	// Only check for direct identifier assignment, not field access like p = p.x
-	if IsMoveOnly(info.Type) {
-		if valueIdent, ok := stmt.Value.(*ast.IdentifierExpr); ok {
-			if valueIdent.Name == stmt.Name {
-				a.addError(
-					fmt.Sprintf("cannot assign '%s' to itself", stmt.Name),
-					stmt.NamePos, stmt.Value.End(),
-				).WithHint("self-assignment of move-only types is not allowed")
-			}
-		}
+	// Single ownership: reassigning an owned-pointer variable accepts only a
+	// freshly produced value (new/.copy()), never an alias of an existing owner
+	// (including self-assignment p = p). This is the same rule as binding.
+	if IsNonCopyable(info.Type) {
+		a.rejectOwnedAlias(stmt.Value)
 	}
 
 	// Analyze the value expression
@@ -1737,12 +1714,6 @@ func (a *Analyzer) analyzeAssignStatement(stmt *ast.AssignStmt) TypedStatement {
 	// Type check using the same rules as variable declaration
 	// This handles: null -> T?, T -> T?, exact match, etc.
 	a.checkTypeCompatibility(info.Type, valueType, typedValue, stmt.Value.Pos())
-
-	// Reassigning to a moved variable restores its ownership
-	// Example: list = prepend(list, 1) - list is moved, then receives new value
-	if IsMoveOnly(info.Type) {
-		a.ownershipScope.restoreOwned(stmt.Name)
-	}
 
 	return &TypedAssignStmt{
 		Name:    stmt.Name,
@@ -1854,16 +1825,16 @@ func (a *Analyzer) analyzeFieldAssignStatement(stmt *ast.FieldAssignStmt) TypedS
 		).WithHint("consider using 'var' instead of 'val' in the struct definition")
 	}
 
-	// Check for self-referential assignment of move-only types: n.next = n
+	// Check for self-referential assignment of owned types: n.next = n
 	// This would create a cycle or cause ownership issues
-	if IsMoveOnly(fieldInfo.Type) {
+	if IsNonCopyable(fieldInfo.Type) {
 		targetRoot := GetRootVarName(stmt.Object)
 		valueRoot := GetRootVarName(stmt.Value)
 		if targetRoot != "" && targetRoot == valueRoot {
 			a.addError(
 				fmt.Sprintf("cannot assign '%s' to a field of itself", valueRoot),
 				stmt.Object.Pos(), stmt.Value.End(),
-			).WithHint("self-referential assignment of move-only types creates ownership cycles")
+			).WithHint("self-referential assignment of owned types creates ownership cycles")
 		}
 	}
 
@@ -1961,6 +1932,14 @@ func (a *Analyzer) analyzeIndexAssignStatement(stmt *ast.IndexAssignStmt) TypedS
 	// This handles: null -> T?, T -> T?, exact match, etc.
 	a.checkTypeCompatibility(arrType.ElementType, valueType, typedValue, stmt.Value.Pos())
 
+	// Single ownership: assigning into an owned-element slot accepts only a
+	// freshly produced value (new/.copy()), never an alias of an existing owner.
+	// Aliasing would leave both the element slot and the source binding freeing
+	// the same allocation at scope exit (a double free).
+	if IsNonCopyable(arrType.ElementType) {
+		a.rejectOwnedAlias(stmt.Value)
+	}
+
 	return &TypedIndexAssignStmt{
 		Array:        typedArray,
 		LeftBracket:  stmt.LeftBracket,
@@ -2034,6 +2013,16 @@ func (a *Analyzer) analyzeArrayLiteral(expr *ast.ArrayLiteralExpr) TypedExpressi
 	arrayType := ArrayType{
 		ElementType: elementType,
 		Size:        len(expr.Elements),
+	}
+
+	// Single ownership: an owned-pointer array literal may only contain freshly
+	// produced elements (new/.copy()), never aliases of existing owners. The
+	// array becomes the sole owner of each slot; aliasing an owner in would make
+	// both the slot and the source binding free the same allocation.
+	if IsNonCopyable(elementType) {
+		for _, el := range expr.Elements {
+			a.rejectOwnedAlias(el)
+		}
 	}
 
 	return &TypedArrayLiteralExpr{
@@ -2167,11 +2156,8 @@ func (a *Analyzer) analyzeReturnStatement(stmt *ast.ReturnStmt) TypedStatement {
 			}
 		}
 
-		// Record move for return value if it's a move-only type
-		// Returning a variable moves it out of the function
-		if IsMoveOnly(valueType) {
-			a.checkAndRecordMove(stmt.Value, "<return>", stmt.Value.Pos())
-		}
+		// Owned pointers can never be a return type (rejected at the signature), so
+		// a non-copyable return value is already a reported error; nothing to do here.
 	} else {
 		// No return value
 		if _, isVoid := a.currentReturnType.(VoidType); !isVoid {
@@ -2213,24 +2199,10 @@ func (a *Analyzer) analyzeIfStatement(stmt *ast.IfStmt) TypedStatement {
 	// Analyze and validate the condition
 	typedCond := a.analyzeIfCondition(stmt.Condition)
 
-	// Snapshot ownership state before branches
-	// We need to track which variables are moved in any branch
-	beforeSnapshot := a.snapshotOwnershipState()
-
 	// Analyze the then branch (with its own scope)
 	a.enterScope()
 	typedThenBranch := a.analyzeBlockStmt(stmt.ThenBranch)
-	thenMoves := a.collectBranchMoves(beforeSnapshot)
 	a.exitScope()
-
-	// Restore ownership to the pre-branch state so the else branch is analyzed
-	// independently. The then and else branches are mutually exclusive, so a
-	// move in the then branch must not make a use in the else branch look like
-	// a use-after-move. The union of moves is re-applied below.
-	a.restoreOwnershipState(beforeSnapshot)
-
-	// Collect moves from else branch
-	var elseMoves []moveRecord
 
 	// Analyze the else branch if present
 	var typedElseBranch TypedStatement
@@ -2239,22 +2211,15 @@ func (a *Analyzer) analyzeIfStatement(stmt *ast.IfStmt) TypedStatement {
 		case *ast.IfStmt:
 			// else if: recursively analyze (no extra scope needed, the if will create its own)
 			typedElseBranch = a.analyzeIfStatement(elseBranch)
-			// The nested if statement handles its own move merging
-			elseMoves = a.collectBranchMoves(beforeSnapshot)
 		case *ast.BlockStmt:
 			// else block: create scope
 			a.enterScope()
 			typedElseBranch = a.analyzeBlockStmt(elseBranch)
-			elseMoves = a.collectBranchMoves(beforeSnapshot)
 			a.exitScope()
 		default:
 			a.addError("unexpected else branch type", stmt.ElseBranch.Pos(), stmt.ElseBranch.End())
 		}
 	}
-
-	// Merge moves from both branches: if a variable was moved in ANY branch,
-	// it must be considered moved after the if statement
-	a.mergeConditionalMoves(thenMoves, elseMoves)
 
 	return &TypedIfStmt{
 		IfKeyword:   stmt.IfKeyword,
@@ -2299,9 +2264,8 @@ func (a *Analyzer) analyzeForStatement(stmt *ast.ForStmt) TypedStatement {
 		typedUpdate = a.analyzeStatement(stmt.Update)
 	}
 
-	// Enter loop context for break/continue validation and ownership tracking
+	// Enter loop context for break/continue validation
 	a.loopDepth++
-	a.ownershipScope.inLoop = true
 
 	// Analyze body
 	typedBody := a.analyzeBlockStmt(stmt.Body)
@@ -2337,12 +2301,15 @@ func (a *Analyzer) analyzeWhileStatement(stmt *ast.WhileStmt) TypedStatement {
 		}
 	}
 
-	// Enter loop context for break/continue validation and ownership tracking
+	// Enter loop context for break/continue validation
 	a.loopDepth++
-	a.ownershipScope.inLoop = true
 
-	// Analyze body
+	// Analyze body in its own scope, like if/for bodies — otherwise a `val`
+	// declared in one while body collides with the same name in a sibling
+	// loop (and stays visible after the loop).
+	a.enterScope()
 	typedBody := a.analyzeBlockStmt(stmt.Body)
+	a.exitScope()
 
 	// Exit loop context
 	a.loopDepth--
@@ -2397,18 +2364,11 @@ func (a *Analyzer) analyzeIfExpression(stmt *ast.IfStmt) TypedExpression {
 		}
 	}
 
-	// Snapshot ownership state before branches for conditional move tracking
-	beforeSnapshot := a.snapshotOwnershipState()
-
 	// Analyze the then branch (with its own scope)
 	a.enterScope()
 	typedThenBranch := a.analyzeBlockStmtForExpression(stmt.ThenBranch)
 	thenType := a.getBlockResultType(typedThenBranch)
-	thenMoves := a.collectBranchMoves(beforeSnapshot)
 	a.exitScope()
-
-	// Collect moves from else branch
-	var elseMoves []moveRecord
 
 	// Analyze the else branch
 	var typedElseBranch TypedStatement
@@ -2420,24 +2380,17 @@ func (a *Analyzer) analyzeIfExpression(stmt *ast.IfStmt) TypedExpression {
 		typedElseExpr := a.analyzeIfExpression(elseBranch)
 		typedElseBranch = typedElseExpr.(*TypedIfStmt)
 		elseType = typedElseExpr.GetType()
-		// The nested if expression handles its own move merging
-		elseMoves = a.collectBranchMoves(beforeSnapshot)
 	case *ast.BlockStmt:
 		// else block: create scope
 		a.enterScope()
 		typedBlock := a.analyzeBlockStmtForExpression(elseBranch)
 		typedElseBranch = typedBlock
 		elseType = a.getBlockResultType(typedBlock)
-		elseMoves = a.collectBranchMoves(beforeSnapshot)
 		a.exitScope()
 	default:
 		a.addError("unexpected else branch type", stmt.ElseBranch.Pos(), stmt.ElseBranch.End())
 		elseType = TypeError
 	}
-
-	// Merge moves from both branches: if a variable was moved in ANY branch,
-	// it must be considered moved after the if expression
-	a.mergeConditionalMoves(thenMoves, elseMoves)
 
 	// Check that both branches have the same type
 	var resultType Type = thenType
@@ -2678,12 +2631,10 @@ func (a *Analyzer) analyzeCallExpr(call *ast.CallExpr) TypedExpression {
 						i+1, paramType.String(), argType.String()),
 					arg.Pos(), arg.End(),
 				)
-			} else {
-				// If passing an owned pointer (to Own<T> or Own<T>? param), ownership moves
-				if IsOwnedPointer(argType) || IsNullableOwnedPointer(argType) {
-					a.checkAndRecordMove(arg, "<param>", arg.Pos())
-				}
 			}
+			// Parameters are values or borrows (never owned), so passing an argument
+			// never takes ownership of it: an owned pointer auto-borrows to &T/&&T
+			// and the caller keeps ownership.
 		}
 	}
 
@@ -2809,10 +2760,20 @@ func (a *Analyzer) analyzeLenBuiltin(call *ast.CallExpr) TypedExpression {
 			RightParen: call.RightParen,
 		}
 	}
+	if _, isVec := argType.(VecType); isVec {
+		return &TypedLenExpr{
+			Type:       TypeS64,
+			Array:      typedArg,
+			ArraySize:  ArraySizeUnknown,
+			NamePos:    call.NamePos,
+			LeftParen:  call.LeftParen,
+			RightParen: call.RightParen,
+		}
+	}
 
 	if _, isErr := argType.(ErrorType); !isErr {
 		a.addError(
-			fmt.Sprintf("len() argument must be an array or string, got '%s'", argType.String()),
+			fmt.Sprintf("len() argument must be an array, string, or vec, got '%s'", argType.String()),
 			call.Arguments[0].Pos(), call.Arguments[0].End(),
 		)
 	}
@@ -3725,12 +3686,8 @@ func (a *Analyzer) tryAnalyzeInstanceMethodCall(typedObject TypedExpression, obj
 		// Error already reported by checkReceiverCompatibility
 	}
 
-	// If the method consumes its receiver by value (self: *T), calling it moves
-	// the receiver, exactly like passing an owned pointer to a free function.
-	// Record the move so a subsequent use is reported as use-after-move.
-	if IsOwnedPointer(selfType) {
-		a.checkAndRecordMove(expr.Object, "<method receiver>", expr.Object.Pos())
-	}
+	// Consuming receivers (self: *T) are rejected at the method signature, so a
+	// method call never takes ownership of its receiver: it auto-borrows to &T/&&T.
 
 	// Determine result type: for safe navigation, wrap non-void return types in nullable
 	resultType := methodInfo.ReturnType
@@ -4273,22 +4230,6 @@ func (a *Analyzer) analyzeIdentifier(ident *ast.IdentifierExpr) TypedExpression 
 				EndPos:   ident.EndPos,
 			}
 		}
-		// Check for use-after-move
-		if ownerInfo, tracked := a.ownershipScope.lookup(ident.Name); tracked {
-			if ownerInfo.State == StateMoved {
-				err := a.addError(
-					fmt.Sprintf("use of moved value '%s'", ident.Name),
-					ident.StartPos, ident.EndPos,
-				)
-				if ownerInfo.MoveInfo.MovedTo != "" {
-					if ownerInfo.MoveInfo.MovedTo == "<param>" {
-						err.WithHint("value was moved when passed as function argument")
-					} else {
-						err.WithHint(fmt.Sprintf("value was moved to '%s'", ownerInfo.MoveInfo.MovedTo))
-					}
-				}
-			}
-		}
 	}
 
 	return &TypedIdentifierExpr{
@@ -4327,56 +4268,103 @@ func (a *Analyzer) analyzeSelfExpr(self *ast.SelfExpr) TypedExpression {
 	}
 }
 
-// checkAndRecordMove checks if an expression is a variable being moved and records the move
-func (a *Analyzer) checkAndRecordMove(expr ast.Expression, movedTo string, location ast.Position) {
+// rejectOwnedAlias enforces single ownership: a non-copyable value (an owned
+// pointer *T, or an aggregate that contains one) may be bound or assigned only
+// from an expression that *produces* a fresh value — `new` or `.copy()` — never
+// by aliasing an existing owner. Under the scope-frees-it model ownership never
+// transfers, so any attempt to create a second owner is an error rather than a
+// move. Called with the initializer/right-hand side when the destination type is
+// non-copyable.
+func (a *Analyzer) rejectOwnedAlias(expr ast.Expression) {
+	a.rejectOwnedAliasRec(expr, false)
+}
+
+// rejectOwnedAliasRec is the recursive body of rejectOwnedAlias. It sees
+// through expression wrappers that merely forward another expression's value —
+// parentheses, elvis operands, and if/when branch results — so an alias cannot
+// be smuggled past the check as `(p)`, `p ?: q`, or `if c { p } else { q }`.
+// fromBranch is true when expr is the result of an if/when branch (or elvis
+// operand): there an identifier may name a branch-local no longer in scope, but
+// it is still an alias — the destination type is non-copyable (the caller's
+// precondition), so a type-compatible identifier result always names an owner.
+func (a *Analyzer) rejectOwnedAliasRec(expr ast.Expression, fromBranch bool) {
 	if expr == nil {
 		return
 	}
 
-	// Handle identifier expressions - direct variable moves
-	if ident, ok := expr.(*ast.IdentifierExpr); ok {
-		// Look up the variable type to see if it's move-only
-		info, found := a.currentScope.lookup(ident.Name)
-		if found && IsMoveOnly(info.Type) {
-			// Check if already moved
-			if ownerInfo, tracked := a.ownershipScope.lookup(ident.Name); tracked {
-				if ownerInfo.State == StateMoved {
-					// Already reported as use-after-move in analyzeIdentifier
-					return
-				}
-			}
-
-			// Check if we're inside a loop - moves inside loops are not allowed
-			// because the loop might execute multiple times, causing double-move
-			if a.ownershipScope.isInLoop() {
-				a.addError(
-					fmt.Sprintf("cannot move '%s' inside a loop", ident.Name),
-					ident.StartPos, ident.EndPos,
-				).WithHint("moves inside loops would cause double-move on second iteration; consider using .copy() or restructuring")
-				return
-			}
-
-			// Mark as moved
-			a.ownershipScope.markMoved(ident.Name, movedTo, location)
-		}
-		return
-	}
-
-	// Moving an owned value out of an array element or struct field would leave
-	// the container still owning (and later freeing) the same pointer, causing
-	// a double free. Disallow it; the container should be borrowed or the value
-	// explicitly copied.
 	switch e := expr.(type) {
+	case *ast.IdentifierExpr:
+		// Binding `val q = p` where p owns heap would create two owners of the
+		// same allocation, leading to a double free at scope exit.
+		info, found := a.currentScope.lookup(e.Name)
+		if (found && IsNonCopyable(info.Type)) || (!found && fromBranch) {
+			a.addError(
+				fmt.Sprintf("cannot bind owned value '%s' to another variable; there can be only one owner", e.Name),
+				e.StartPos, e.EndPos,
+			).WithHint(fmt.Sprintf("use %s.copy() for an independent copy, or borrow %s with &T/&&T", e.Name, e.Name))
+		}
+
 	case *ast.IndexExpr:
+		// Aliasing an owned element out of its array leaves the array still owning
+		// (and later freeing) the same pointer.
 		a.addError(
-			"cannot move an owned value out of an array element",
+			"cannot take ownership of an array element; the array still owns it",
 			e.Pos(), e.End(),
 		).WithHint("index access does not transfer ownership; use .copy() or borrow instead")
+
 	case *ast.FieldAccessExpr:
 		a.addError(
-			"cannot move an owned value out of a struct field",
+			"cannot take ownership of a struct field; the struct still owns it",
 			e.Pos(), e.End(),
 		).WithHint("field access does not transfer ownership; use .copy() or borrow instead")
+
+	case *ast.GroupingExpr:
+		a.rejectOwnedAliasRec(e.Expr, fromBranch)
+
+	case *ast.BinaryExpr:
+		// Elvis: either operand may become the stored value.
+		if e.Op == "?:" {
+			a.rejectOwnedAliasRec(e.Left, true)
+			a.rejectOwnedAliasRec(e.Right, true)
+		}
+
+	case *ast.IfStmt:
+		// If-expression: each branch's result value reaches the destination.
+		a.rejectOwnedAliasBlockResult(e.ThenBranch)
+		switch eb := e.ElseBranch.(type) {
+		case *ast.BlockStmt:
+			a.rejectOwnedAliasBlockResult(eb)
+		case *ast.IfStmt:
+			a.rejectOwnedAliasRec(eb, true)
+		}
+
+	case *ast.WhenExpr:
+		for i := range e.Cases {
+			switch b := e.Cases[i].Body.(type) {
+			case *ast.ExprStmt:
+				a.rejectOwnedAliasRec(b.Expr, true)
+			case *ast.BlockStmt:
+				a.rejectOwnedAliasBlockResult(b)
+			}
+		}
+	}
+}
+
+// rejectOwnedAliasBlockResult applies the owned-alias check to a block-valued
+// branch's result — the block's trailing statement. That is usually an
+// expression statement, but a nested if/when expression ends the block as its
+// own statement node, and its branch results reach the destination too.
+func (a *Analyzer) rejectOwnedAliasBlockResult(b *ast.BlockStmt) {
+	if b == nil || len(b.Statements) == 0 {
+		return
+	}
+	switch last := b.Statements[len(b.Statements)-1].(type) {
+	case *ast.ExprStmt:
+		a.rejectOwnedAliasRec(last.Expr, true)
+	case *ast.IfStmt:
+		a.rejectOwnedAliasRec(last, true)
+	case *ast.WhenExpr:
+		a.rejectOwnedAliasRec(last, true)
 	}
 }
 
@@ -4445,9 +4433,9 @@ func (a *Analyzer) analyzeInterpolatedString(e *ast.InterpolatedStringExpr) Type
 
 // analyzeBinaryExpression analyzes a binary expression
 func (a *Analyzer) analyzeBinaryExpression(expr *ast.BinaryExpr) TypedExpression {
-	// Short-circuit operators (&&, ||) need special handling for ownership:
-	// The right operand might not be evaluated, so moves in the right operand
-	// are conditional and should be treated like moves in an if branch.
+	// Short-circuit operators (&&, ||) evaluate the right operand conditionally
+	// (only if the left operand doesn't already decide the result), so they get
+	// their own analysis path.
 	if expr.Op == "&&" || expr.Op == "||" {
 		return a.analyzeShortCircuitExpression(expr)
 	}
@@ -4473,35 +4461,18 @@ func (a *Analyzer) analyzeBinaryExpression(expr *ast.BinaryExpr) TypedExpression
 	}
 }
 
-// analyzeShortCircuitExpression handles && and || with proper ownership tracking.
+// analyzeShortCircuitExpression handles && and ||.
 // The right operand of short-circuit operators may not be evaluated:
 // - For &&: right only evaluates if left is true
 // - For ||: right only evaluates if left is false
-// Any moves in the right operand should be treated as conditional moves.
 func (a *Analyzer) analyzeShortCircuitExpression(expr *ast.BinaryExpr) TypedExpression {
 	// Analyze left operand (always evaluated)
 	left := a.analyzeExpression(expr.Left)
 	leftType := left.GetType()
 
-	// Snapshot ownership state before evaluating right operand
-	beforeSnapshot := a.snapshotOwnershipState()
-
 	// Analyze right operand (conditionally evaluated)
 	right := a.analyzeExpression(expr.Right)
 	rightType := right.GetType()
-
-	// Collect any moves that occurred in the right operand
-	rightMoves := a.collectBranchMoves(beforeSnapshot)
-
-	// If there were moves in the right operand, they are conditional.
-	// We treat this like an if statement where one branch has the moves
-	// and the other branch has no moves (short-circuit case).
-	// Result: the variable is considered "possibly moved" after the expression.
-	if len(rightMoves) > 0 {
-		// Merge with empty moves from the "short-circuit" branch
-		var emptyMoves []moveRecord
-		a.mergeConditionalMoves(rightMoves, emptyMoves)
-	}
 
 	// Determine the result type and check type compatibility
 	resultType := a.checkBinaryOperation(expr.Op, leftType, rightType, expr.LeftPos, expr.RightPos)
@@ -4944,26 +4915,15 @@ func (a *Analyzer) analyzeWhenExpression(when *ast.WhenExpr) TypedExpression {
 
 // analyzeWhen is the core when analysis, handling both statement and expression contexts
 func (a *Analyzer) analyzeWhen(when *ast.WhenExpr, isExpression bool) *TypedWhenExpr {
-	// Snapshot ownership state before any cases for conditional move tracking
-	beforeSnapshot := a.snapshotOwnershipState()
-
 	// Analyze cases
 	typedCases := make([]TypedWhenCase, len(when.Cases))
 	var hasElse bool
 	var hasTrueCondition bool
-	var branchTypes []Type  // For expression type checking
-	var allMoves []moveRecord // Collect moves from all branches
+	var branchTypes []Type // For expression type checking
 
 	for i, wcase := range when.Cases {
 		typedCase := a.analyzeWhenCase(wcase, isExpression)
 		typedCases[i] = typedCase
-
-		// Collect moves from this case, then restore the pre-case ownership
-		// state so the next case is analyzed independently (cases are mutually
-		// exclusive). The union of moves is re-applied after the loop.
-		caseMoves := a.collectBranchMoves(beforeSnapshot)
-		allMoves = append(allMoves, caseMoves...)
-		a.restoreOwnershipState(beforeSnapshot)
 
 		if wcase.IsElse {
 			hasElse = true
@@ -4982,12 +4942,6 @@ func (a *Analyzer) analyzeWhen(when *ast.WhenExpr, isExpression bool) *TypedWhen
 			branchTypes = append(branchTypes, a.getWhenCaseResultType(typedCase.Body))
 		}
 	}
-
-	// Merge moves from all cases: if a variable was moved in ANY case,
-	// it must be considered moved after the when expression
-	// We use empty moves for the "no case matched" scenario (implicit else)
-	var emptyMoves []moveRecord
-	a.mergeConditionalMoves(allMoves, emptyMoves)
 
 	// Exhaustiveness checking
 	a.checkWhenExhaustiveness(when, hasElse, hasTrueCondition)

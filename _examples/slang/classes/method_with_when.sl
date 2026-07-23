@@ -4,8 +4,8 @@
 Classifier = class {
     var threshold: s64
 
-    create = (threshold: s64) -> *Classifier {
-        return new Classifier{ threshold }
+    create = (threshold: s64) -> Classifier {
+        return Classifier{ threshold }
     }
 
     // Method with if-else chain

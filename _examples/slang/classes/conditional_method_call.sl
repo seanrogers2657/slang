@@ -4,8 +4,8 @@
 Ops = class {
     var value: s64
 
-    create = (v: s64) -> *Ops {
-        return new Ops{ v }
+    create = (v: s64) -> Ops {
+        return Ops{ v }
     }
 
     add = (self: &&Ops, n: s64) {

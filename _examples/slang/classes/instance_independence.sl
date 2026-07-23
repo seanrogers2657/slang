@@ -4,8 +4,8 @@
 Counter = class {
     var count: s64
 
-    create = (initial: s64) -> *Counter {
-        return new Counter{ initial }
+    create = (initial: s64) -> Counter {
+        return Counter{ initial }
     }
 
     increment = (self: &&Counter) {

@@ -4,10 +4,6 @@
 Counter = class {
     var value: s64
 
-    create = (v: s64) -> *Counter {
-        return new Counter{ v }
-    }
-
     get_value = (self: &Counter) -> s64 {
         return self.value
     }
@@ -15,7 +11,7 @@ Counter = class {
 
 main = () {
     // Elvis with safe method call on non-null
-    val c1: *Counter? = Counter.create(10)
+    val c1: *Counter? = new Counter{ 10 }
     val v1 = c1?.get_value() ?: 0   // 10
 
     // Elvis with safe method call on null

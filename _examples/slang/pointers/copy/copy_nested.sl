@@ -1,31 +1,22 @@
 // @test: exit_code=0
-// @test: stdout=5\n42\n99\n42\n
-Point = struct {
-    var x: s64
-    var y: s64
-}
-
-Container = struct {
-    val id: s64
-    var inner: *Point
+// @test: stdout=5\n1\n99\n
+// Regression: .copy() must recurse into a nested aggregate VALUE field so the
+// copy owns independent storage at every level. Mutating the original's nested
+// field after the copy must not be visible through the copy.
+Inner = struct { var cost: s64 }
+Outer = struct {
+    var inner: Inner
+    var tag: s64
 }
 
 main = () {
-    var c1 = new Container{ 5, new Point{ 42, 100 } }
-    val c2 = c1.copy()
+    var p = new Outer{ Inner{ 5 }, 1 }
+    val q = p.copy()       // deep copy: recurses into the nested Inner field
 
-    // Modify c1's nested pointer
-    c1.inner.x = 99
+    p.inner.cost = 99      // mutate the original's nested field
+    p.tag = 88
 
-    // Print id (should be same in both)
-    print(c2.id)
-
-    // c2's inner should still have original value
-    print(c2.inner.x)
-
-    // c1's inner should have new value
-    print(c1.inner.x)
-
-    // c2's inner.x should still be 42 (independent copy)
-    print(c2.inner.x)
+    print(q.inner.cost)    // 5  — copy is independent at the nested level
+    print(q.tag)           // 1
+    print(p.inner.cost)    // 99 — original sees its own mutation
 }

@@ -4,14 +4,14 @@
 Builder = class {
     var value: s64
 
-    create = () -> *Builder {
-        return new Builder{ 0 }
+    create = () -> Builder {
+        return Builder{ 0 }
     }
 
-    // Methods that return self for chaining
-    add = (self: &&Builder, x: s64) -> *Builder {
+    // Methods that return a new Builder for chaining
+    add = (self: &&Builder, x: s64) -> Builder {
         self.value = self.value + x
-        return new Builder{ self.value }
+        return Builder{ self.value }
     }
 
     get_value = (self: &Builder) -> s64 {

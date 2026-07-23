@@ -568,13 +568,13 @@ main = () {
 
 ### Pointer Syntax (*T, &T, &&T)
 
-Slang uses an ownership-based memory model with three pointer types:
+Slang uses a **scope-frees-it** ownership model with three pointer types:
 
-- `*T` - Owned pointer with unique ownership (move semantics)
+- `*T` - Owned pointer. The heap allocation is freed at the end of the scope that created it. Ownership never transfers — there are no moves.
 - `&T` - Immutable borrowed reference (read-only access)
 - `&&T` - Mutable borrowed reference (can mutate var fields)
 
-**Key principle**: `val`/`var` controls **reassignability** only. `&T` vs `&&T` controls **borrow mutability**.
+**Key principle**: ownership is **lexical** — a `*T` value is owned by the scope where `new` ran and freed when that scope exits. It cannot escape that scope (no returning, passing by ownership, storing in a field, or aliasing). `val`/`var` controls **reassignability** only; `&T` vs `&&T` controls **borrow mutability**.
 
 ```slang
 Point = struct {
@@ -594,23 +594,37 @@ main = () {
 }
 ```
 
-**Ownership transfer (move semantics):**
+**Ownership does not transfer — borrow instead.** An owned pointer cannot escape
+the scope that created it, so you pass data down with borrows (`&T`/`&&T`) and the
+caller keeps ownership. A function that produces new data returns a **value**
+(copied to the caller), not a `*T`.
+
 ```slang
-// Passing *T to a function transfers ownership
-consume_point = (p: *Point) -> s64 {
+// Borrow to read (caller keeps ownership)
+sum_point = (p: &Point) -> s64 {
     return p.x + p.y
 }
 
-// Returning *T transfers ownership to caller
-create_point = (x: s64, y: s64) -> *Point {
-    return new Point{ x, y }
+// A factory returns a VALUE (copied to the caller) — *T cannot be returned
+make_point = (x: s64, y: s64) -> Point {
+    return Point{ x, y }
 }
 
 main = () {
-    val p = create_point(10, 20)
-    val sum = consume_point(p)  // p is moved
-    // print(p.x)  // Error: p was moved
+    val p = new Point{ 10, 20 }
+    val sum = sum_point(p)  // auto-borrow *Point -> &Point; p still usable
+    print(sum)              // 30
+    print(p.x)              // 10
 }
+```
+
+The following all escape an owned pointer from its scope and are **compile
+errors**:
+```slang
+bad_factory = () -> *Point { return new Point{ 1, 2 } }  // *T cannot be returned
+bad_consume = (p: *Point) -> s64 { return p.x }          // *T cannot be a parameter
+Bad = struct { var p: *Point }                           // *T cannot be a field
+main = () { val p = new Point{1,2}; val q = p }           // cannot alias an owner
 ```
 
 **Borrowing with &T and &&T:**
@@ -647,15 +661,21 @@ main = () {
 }
 ```
 
+**Recursive / linked data uses an arena, not owned-pointer fields.** Because a
+field cannot be `*T`, build trees, lists, and graphs as a flat array (the arena)
+with integer indices as links. One scope owns the slab and frees it in bulk at
+scope exit. See `_examples/slang/pointers/arena_linked_list.sl`.
+
 **Pointer rules:**
-- `*T` values are move-only (assignment moves, not copies)
-- Use `.copy()` to create an explicit deep copy
-- `&T` and `&&T` can only appear in function parameter position
-- `&T` is read-only; `&&T` can mutate var fields
-- Auto-borrow: `*T` automatically converts to `&T` or `&&T` when passed to functions
-- `val`/`var` only controls reassignability, not mutation through the pointer
-- Multiple immutable borrows are allowed; multiple mutable borrows are not
-- Memory is automatically freed when owned pointers go out of scope
+- A `*T` allocation is freed at the end of the scope where `new` created it; ownership never transfers (no moves).
+- `*T` cannot be returned, used as a parameter, stored in a field, or bound to a second variable. Borrow with `&T`/`&&T`, or duplicate with `.copy()`.
+- Reassigning a `*T` variable must use a fresh value (`new` / `.copy()`), not an alias of another owner; the old allocation is freed by the reassignment.
+- `&T` and `&&T` can only appear in function parameter position; `&T` is read-only, `&&T` can mutate var fields.
+- Auto-borrow: `*T` automatically converts to `&T` or `&&T` when passed to a function (a plain value does not auto-borrow).
+- Functions return values (copied to the caller); a factory returns `T`, not `*T`.
+- `val`/`var` only controls reassignability, not mutation through the pointer.
+- Multiple immutable borrows are allowed; multiple mutable borrows are not.
+- Recursive/linked structures use an arena (array + integer-index handles), not owned-pointer fields.
 
 ### Variable Syntax
 
@@ -947,7 +967,8 @@ main = () {
 
 **String memory model (important for compiler work):** `string` is a **copyable
 value type** (`IsCopyable(StringType)` is true — same bucket as primitives and
-copyable structs), **not** a move-only owned pointer like `*T`. Interpolation
+copyable structs), **not** an owned pointer like `*T` (which is single-owner and
+non-aliasable). Interpolation
 allocates heap strings, so `string` is also `varOwnsHeap`: a binding owns its
 heap buffer and frees it at scope exit, with **copy-on-store** semantics for
 borrowed strings (so `val b = a` gives `b` an independent buffer rather than
@@ -955,7 +976,8 @@ aliasing). Constant string literals live in `.data`; the `_sl_str_free` runtime
 helper no-ops on non-heap pointers, so freeing any string is uniformly safe.
 This is the same dual nature as a copyable struct — value semantics at the type
 level, heap-backed and scope-freed at the IR level — and is intentionally *not*
-the move-only enforcement applied to `*T`. The runtime asserts a balanced heap
+the single-owner, no-alias enforcement applied to `*T` (a string binding may be
+copied with `val b = a`; an owned pointer may not). The runtime asserts a balanced heap
 at exit, so any new code path that produces strings must respect these rules.
 Relevant ops/helpers: `OpStrConcat`, `OpIntToStr`, `OpBoolToStr`, `OpStrCopy`,
 `OpStrFree` and the `_sl_int_to_str` / `_sl_bool_to_str` / `_sl_str_concat` /

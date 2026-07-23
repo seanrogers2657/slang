@@ -5,8 +5,8 @@ Point = class {
     var x: s64
     var y: s64
 
-    create = (x: s64, y: s64) -> *Point {
-        return new Point{ x, y }
+    create = (x: s64, y: s64) -> Point {
+        return Point{ x, y }
     }
 
     set_x = (self: &&Point, newX: s64) {
@@ -19,7 +19,7 @@ Point = class {
 }
 
 main = () {
-    val original = Point.create(10, 5)
+    val original = new Point{ 10, 5 }
     val copied = original.copy()  // Deep copy
 
     // Modify original

@@ -768,11 +768,12 @@ func (g *Generator) generateAssign(as *semantic.TypedAssignStmt) error {
 	// If the RHS is an identifier whose heap slot is aliased into as.Name
 	// (value-type nullables: copyable, so semantic permits the alias), mark the
 	// source moved so its scope exit doesn't double-free the slot the
-	// destination now owns. Strings and copyable aggregates use copy semantics
-	// (handled below), so the source remains valid and must not be marked.
+	// destination now owns. Strings, vecs, and copyable aggregates use
+	// copy-on-store (handled below): the source keeps its own buffer and must
+	// NOT be marked, or its buffer leaks at scope exit.
 	if ident, ok := as.Value.(*semantic.TypedIdentifierExpr); ok {
 		if ident.Name != as.Name && varOwnsHeap(ident.Type) && !isStringType(ident.Type) &&
-			nullableHeapInner(ident.Type) == nil &&
+			!isVecType(ident.Type) && nullableHeapInner(ident.Type) == nil &&
 			!g.aggregateIsCopyable(ident.Type) {
 			g.markHeapAliased(ident.Name)
 		}

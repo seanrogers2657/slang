@@ -847,21 +847,21 @@ func (g *Generator) generateFieldAssign(fa *semantic.TypedFieldAssignStmt) error
 
 	// Embedded struct/class field: it lives inline in the enclosing allocation,
 	// so the value must be copied into the slot (MemCopy), not stored as a
-	// pointer. Free the old contents' heap sub-fields first, copy the new
-	// aggregate in, then give it independent heap: a fresh temp (literal/call)
-	// transfers its heap with the copy so only its shell is freed, while an
-	// existing binding is deep-copied so the two don't share (double-free).
+	// pointer. The source may alias this very field (o.inner = o.inner), so
+	// make it independent BEFORE freeing the old contents — bindAggregateValue
+	// deep-copies a borrowed source into a fresh allocation and passes an
+	// owning temp through unchanged. Freeing first would release the bytes the
+	// copy then reads (a hang on string, a double-free on vec). After the copy
+	// the source no longer aliases the field, so free the old heap, MemCopy the
+	// independent value in, and free its shell (its heap now lives in the field).
 	if st, isStruct := fieldIRType.(*StructType); isStruct && !isNullLiteral(fa.Value) {
+		val = g.bindAggregateValue(val, fa.Value)
 		if oldSt := g.getSemanticAggregateType(fieldSemType); oldSt != nil {
 			g.emitFreeAggregateFields(fieldPtr, oldSt, make(map[string]bool))
 		}
 		g.builder().MemCopy(fieldPtr, val, int64(st.Size()))
-		if isOwningTemp(fa.Value) {
-			freeVal := g.block.NewValue(OpFree, nil, val)
-			freeVal.AuxInt = int64(st.Size())
-		} else {
-			g.emitDeepCopyFixups(fieldPtr, fa.Value.GetType())
-		}
+		freeVal := g.block.NewValue(OpFree, nil, val)
+		freeVal.AuxInt = int64(st.Size())
 		return nil
 	}
 

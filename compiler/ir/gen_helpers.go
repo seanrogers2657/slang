@@ -37,21 +37,6 @@ func isNullLiteral(expr semantic.TypedExpression) bool {
 	return ok && lit.LitType == ast.LiteralTypeNull
 }
 
-// generateTypedValue generates a value for a target type, handling null literals
-// and automatic nullable wrapping.
-func (g *Generator) generateTypedValue(expr semantic.TypedExpression, targetType Type) (*Value, error) {
-	if isNullLiteral(expr) {
-		return g.block.NewValue(OpWrapNull, targetType), nil
-	}
-
-	val, err := g.generateExpr(expr)
-	if err != nil {
-		return nil, err
-	}
-
-	return g.wrapIfNeeded(val, targetType), nil
-}
-
 // =============================================================================
 // Type Assertion Helpers
 // =============================================================================

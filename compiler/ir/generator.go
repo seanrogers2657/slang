@@ -845,6 +845,26 @@ func (g *Generator) generateFieldAssign(fa *semantic.TypedFieldAssignStmt) error
 	fieldPtr.AddArg(obj)
 	fieldPtr.AuxInt = int64(offset)
 
+	// Embedded struct/class field: it lives inline in the enclosing allocation,
+	// so the value must be copied into the slot (MemCopy), not stored as a
+	// pointer. Free the old contents' heap sub-fields first, copy the new
+	// aggregate in, then give it independent heap: a fresh temp (literal/call)
+	// transfers its heap with the copy so only its shell is freed, while an
+	// existing binding is deep-copied so the two don't share (double-free).
+	if st, isStruct := fieldIRType.(*StructType); isStruct && !isNullLiteral(fa.Value) {
+		if oldSt := g.getSemanticAggregateType(fieldSemType); oldSt != nil {
+			g.emitFreeAggregateFields(fieldPtr, oldSt, make(map[string]bool))
+		}
+		g.builder().MemCopy(fieldPtr, val, int64(st.Size()))
+		if isOwningTemp(fa.Value) {
+			freeVal := g.block.NewValue(OpFree, nil, val)
+			freeVal.AuxInt = int64(st.Size())
+		} else {
+			g.emitDeepCopyFixups(fieldPtr, fa.Value.GetType())
+		}
+		return nil
+	}
+
 	// Free whatever the field currently owns before overwriting. Skips when
 	// the field type does not own heap storage. String and vec fields own a heap
 	// buffer separate from the struct, so free them here too.
@@ -1040,7 +1060,11 @@ func (g *Generator) generateIndexAssign(ia *semantic.TypedIndexAssignStmt) error
 	elemSemType := arrayElementSemType(ia.Array.GetType())
 	var elemIRType Type
 	if elemSemType != nil {
-		elemIRType = g.convertType(elemSemType)
+		// Use the SSA representation to match the array's slot layout and the
+		// index-read path: struct/class elements are stored as pointers (one
+		// word per slot), not inline, so the element pointer must stride by a
+		// word. convertType would size the stride by the whole struct.
+		elemIRType = g.convertSSAType(elemSemType)
 	}
 
 	var val *Value
@@ -1059,6 +1083,9 @@ func (g *Generator) generateIndexAssign(ia *semantic.TypedIndexAssignStmt) error
 		// Borrowed string values are copied so the element owns its own buffer.
 		val = g.maybeCopyString(val, ia.Value)
 		val = g.maybeCopyVec(val, ia.Value)
+		// A copyable aggregate read from a binding is deep-copied so the element
+		// owns independent storage; a fresh temp passes through unchanged.
+		val = g.bindAggregateValue(val, ia.Value)
 		if elemIRType != nil {
 			val = g.wrapIfNeeded(val, elemIRType)
 		}
@@ -1073,8 +1100,10 @@ func (g *Generator) generateIndexAssign(ia *semantic.TypedIndexAssignStmt) error
 	elemPtr.AddArg(idx)
 
 	// Free whatever the element currently owns before overwriting. String and
-	// vec elements own a heap buffer, so free them here too.
-	if elemSemType != nil && (fieldOwnsHeap(elemSemType) || isStringType(elemSemType) || isVecType(elemSemType)) {
+	// vec elements own a heap buffer; an aggregate element owns its (separately
+	// allocated) region and any nested heap, so free those here too.
+	if elemSemType != nil && (fieldOwnsHeap(elemSemType) || isStringType(elemSemType) ||
+		isVecType(elemSemType) || isHeapValueType(elemSemType)) {
 		oldVal := g.block.NewValue(OpLoad, elemIRType, elemPtr)
 		g.emitFreeOwnedValue(oldVal, elemSemType)
 	}
@@ -2480,53 +2509,62 @@ func (g *Generator) generateStructLiteral(sl *semantic.TypedStructLiteralExpr) (
 	for i, argExpr := range sl.Args {
 		fieldType := structType.Fields[i].Type
 		fieldOffset := int64(structType.Fields[i].Offset)
-
-		// Generate field value with null/nullable handling. Generating the
-		// argument can split blocks (a nested literal copying a boxed
-		// nullable, an if-expression, ...) — refresh the builder so the
-		// stores below land in the current block.
-		arg, err := g.generateTypedValue(argExpr, fieldType)
-		if err != nil {
+		if err := g.storeLiteralField(alloc, fieldType, fieldOffset, argExpr); err != nil {
 			return nil, err
-		}
-		b = g.builder()
-
-		fieldPtr := b.FieldPtr(alloc, fieldType, fieldOffset)
-
-		// For embedded struct fields, copy the data instead of storing a
-		// pointer. The source is then a temporary heap allocation that
-		// nothing references, so free it.
-		if _, isStruct := fieldType.(*StructType); isStruct {
-			b.MemCopy(fieldPtr, arg, int64(fieldType.Size()))
-			if isOwningTemp(argExpr) {
-				// Literal or call-result temp: its heap fields transferred into
-				// the embedded region with the byte copy; free only the shell.
-				freeVal := g.block.NewValue(OpFree, nil, arg)
-				freeVal.AuxInt = int64(fieldType.Size())
-			} else {
-				// The source is an existing binding: the raw byte copy aliased
-				// its string/vec/nullable heap fields into the embedded region.
-				// Deep-copy them so the two aggregates don't double-free.
-				g.emitDeepCopyFixups(fieldPtr, argExpr.GetType())
-				b = g.builder()
-			}
-		} else {
-			// Boxed string?/vec? values read from a binding or container are
-			// copied (box and contents) so the field owns independent storage.
-			// copyNullableValue splits blocks; refresh the builder after it.
-			if shouldCopyOnReturn(argExpr) || isNullableHeapBorrow(argExpr) {
-				arg = g.copyNullableValue(arg, argExpr.GetType())
-				b = g.builder()
-			}
-			// Borrowed string/vec fields must be copied so the struct owns its
-			// own buffer (value semantics); fresh values transfer ownership.
-			arg = g.maybeCopyString(arg, argExpr)
-			arg = g.maybeCopyVec(arg, argExpr)
-			b.Store(fieldPtr, arg)
 		}
 	}
 
 	return alloc, nil
+}
+
+// storeLiteralField generates and stores one field of a struct/class literal at
+// the given inline offset. It handles null, embedded aggregates (copied inline),
+// and copy-on-store for string/vec/boxed-nullable fields. Copy-on-store runs on
+// the RAW value before widening to the field type — copying a value that has
+// already been wrapped into a nullable would run the string/vec copy on the box
+// pointer (garbage / infinite loop).
+func (g *Generator) storeLiteralField(alloc *Value, fieldType Type, fieldOffset int64, argExpr semantic.TypedExpression) error {
+	if isNullLiteral(argExpr) {
+		fieldPtr := g.builder().FieldPtr(alloc, fieldType, fieldOffset)
+		g.builder().Store(fieldPtr, g.block.NewValue(OpWrapNull, fieldType))
+		return nil
+	}
+
+	// Generating the argument can split blocks (a nested literal copying a
+	// boxed nullable, an if-expression, ...) — read the builder after it.
+	arg, err := g.generateExpr(argExpr)
+	if err != nil {
+		return err
+	}
+	fieldPtr := g.builder().FieldPtr(alloc, fieldType, fieldOffset)
+
+	// Embedded struct/class field: copy the data inline instead of storing a
+	// pointer. The source is then a temporary heap allocation that nothing
+	// references, so free its shell; an existing binding's heap sub-fields are
+	// deep-copied so the two aggregates don't double-free.
+	if _, isStruct := fieldType.(*StructType); isStruct {
+		g.builder().MemCopy(fieldPtr, arg, int64(fieldType.Size()))
+		if isOwningTemp(argExpr) {
+			freeVal := g.block.NewValue(OpFree, nil, arg)
+			freeVal.AuxInt = int64(fieldType.Size())
+		} else {
+			g.emitDeepCopyFixups(fieldPtr, argExpr.GetType())
+		}
+		return nil
+	}
+
+	// Boxed string?/vec? read from a binding or container copy box and contents.
+	if shouldCopyOnReturn(argExpr) || isNullableHeapBorrow(argExpr) {
+		arg = g.copyNullableValue(arg, argExpr.GetType())
+	}
+	// Borrowed string/vec fields copy so the field owns its own buffer; fresh
+	// values transfer ownership. This must precede widening (wrapIfNeeded) —
+	// copying after the wrap would operate on the box, not the buffer.
+	arg = g.maybeCopyString(arg, argExpr)
+	arg = g.maybeCopyVec(arg, argExpr)
+	arg = g.wrapIfNeeded(arg, fieldType)
+	g.builder().Store(fieldPtr, arg)
+	return nil
 }
 
 // argTransfersOwnership reports whether passing an argument transfers ownership
@@ -2573,53 +2611,12 @@ func (g *Generator) generateClassLiteral(cl *semantic.TypedClassLiteralExpr) (*V
 	// Allocate space
 	alloc := b.Alloc(classType, int64(classType.Size()))
 
-	// Store each field
+	// Store each field (same inline layout and copy-on-store rules as a struct).
 	for i, argExpr := range cl.Args {
 		fieldType := classType.Fields[i].Type
 		fieldOffset := int64(classType.Fields[i].Offset)
-
-		// Generate field value with null/nullable handling. Generating the
-		// argument can split blocks (a nested literal copying a boxed
-		// nullable, an if-expression, ...) — refresh the builder so the
-		// stores below land in the current block.
-		arg, err := g.generateTypedValue(argExpr, fieldType)
-		if err != nil {
+		if err := g.storeLiteralField(alloc, fieldType, fieldOffset, argExpr); err != nil {
 			return nil, err
-		}
-		b = g.builder()
-
-		fieldPtr := b.FieldPtr(alloc, fieldType, fieldOffset)
-
-		// For embedded aggregate fields (struct/class, both IR *StructType),
-		// copy the data inline instead of storing a pointer. The source is then
-		// a temporary heap allocation that nothing references, so free it.
-		if _, isStruct := fieldType.(*StructType); isStruct {
-			b.MemCopy(fieldPtr, arg, int64(fieldType.Size()))
-			if isOwningTemp(argExpr) {
-				// Literal or call-result temp: its heap fields transferred into
-				// the embedded region with the byte copy; free only the shell.
-				freeVal := g.block.NewValue(OpFree, nil, arg)
-				freeVal.AuxInt = int64(fieldType.Size())
-			} else {
-				// The source is an existing binding: the raw byte copy aliased
-				// its string/vec/nullable heap fields into the embedded region.
-				// Deep-copy them so the two aggregates don't double-free.
-				g.emitDeepCopyFixups(fieldPtr, argExpr.GetType())
-				b = g.builder()
-			}
-		} else {
-			// Boxed string?/vec? values read from a binding or container are
-			// copied (box and contents) so the field owns independent storage.
-			// copyNullableValue splits blocks; refresh the builder after it.
-			if shouldCopyOnReturn(argExpr) || isNullableHeapBorrow(argExpr) {
-				arg = g.copyNullableValue(arg, argExpr.GetType())
-				b = g.builder()
-			}
-			// Borrowed string/vec fields must be copied so the class owns its
-			// own buffer (value semantics); fresh values transfer ownership.
-			arg = g.maybeCopyString(arg, argExpr)
-			arg = g.maybeCopyVec(arg, argExpr)
-			b.Store(fieldPtr, arg)
 		}
 	}
 
@@ -3544,6 +3541,13 @@ func (g *Generator) emitFreeOwnedValue(val *Value, semType semantic.Type) {
 
 	if inner := nullableValueInner(semType); inner != nil {
 		g.emitNullCheckedFreeBoxed(val, inner)
+		return
+	}
+
+	// A plain aggregate (struct/class/array) element or value: val is a pointer
+	// to its own allocation, which owns any nested heap. Deep-free it.
+	if isHeapValueType(semType) {
+		g.emitRecursiveFree(val, semType, g.getElementTypeSize(semType))
 		return
 	}
 

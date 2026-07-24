@@ -1550,16 +1550,26 @@ func (a *Analyzer) checkTypeCompatibilityCore(targetType, sourceType Type, typed
 		if nullableType.InnerType.Equals(sourceType) {
 			return true
 		}
-		// Also allow integer literal bounds check for nullable integer types
+		// Also allow integer literal bounds check for nullable integer types.
+		// Retype the literal to the inner type so it is lowered at the right
+		// width (e.g. a 128-bit literal into an s128? binding).
 		if litExpr, ok := typedSource.(*TypedLiteralExpr); ok && litExpr.LitType == ast.LiteralTypeInteger {
 			if IsIntegerType(nullableType.InnerType) {
-				return a.checkIntegerBounds(litExpr.Value, nullableType.InnerType, pos)
+				if a.checkIntegerBounds(litExpr.Value, nullableType.InnerType, pos) {
+					litExpr.Type = nullableType.InnerType
+					return true
+				}
+				return false
 			}
 		}
 		// Also allow float literal bounds check for nullable float types
 		if litExpr, ok := typedSource.(*TypedLiteralExpr); ok && litExpr.LitType == ast.LiteralTypeFloat {
 			if IsFloatType(nullableType.InnerType) {
-				return a.checkFloatBounds(litExpr.Value, nullableType.InnerType, pos)
+				if a.checkFloatBounds(litExpr.Value, nullableType.InnerType, pos) {
+					litExpr.Type = nullableType.InnerType
+					return true
+				}
+				return false
 			}
 		}
 	}
@@ -4440,7 +4450,7 @@ func (a *Analyzer) analyzeLiteral(lit *ast.LiteralExpr) TypedExpression {
 // string interpolation: s64, string, bool, or a nullable form of those.
 func isInterpolatable(t Type) bool {
 	switch tt := t.(type) {
-	case S64Type, StringType, BooleanType:
+	case S64Type, S128Type, U128Type, StringType, BooleanType:
 		return true
 	case NullableType:
 		return isInterpolatable(tt.InnerType)

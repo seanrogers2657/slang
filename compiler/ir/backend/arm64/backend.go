@@ -2179,9 +2179,22 @@ func (g *generator) genStrConcat(v *ir.Value) error {
 	return nil
 }
 
-// genIntToStr converts an s64 to its decimal string via the runtime helper.
+// genIntToStr converts an integer to its decimal string via a runtime helper,
+// dispatching on the argument's width and signedness. The result is a heap
+// string pointer.
 func (g *generator) genIntToStr(v *ir.Value) error {
-	g.loadValue(v.Args[0], "x0")
+	arg := v.Args[0]
+	if it, ok := arg.Type.(*ir.IntType); ok && it.Bits >= 128 {
+		g.loadValue128(arg, "x0", "x1")
+		if it.Signed {
+			g.emit("    bl _sl_s128_to_str")
+		} else {
+			g.emit("    bl _sl_u128_to_str")
+		}
+		g.storeToStack("x0", g.stackOffset(v))
+		return nil
+	}
+	g.loadValue(arg, "x0")
 	g.emit("    bl _sl_int_to_str")
 	g.storeToStack("x0", g.stackOffset(v))
 	return nil
@@ -2718,8 +2731,16 @@ func (g *generator) genUnwrap(v *ir.Value) error {
 	nullType, isNullable := v.Args[0].Type.(*ir.NullableType)
 	if isNullable && nullType.IsFlat() {
 		off := g.stackOffset(v.Args[0])
+		dst := g.stackOffset(v)
+		if is128(v.Type) {
+			// A 128-bit payload spans two words.
+			g.loadFromStack("x9", off+ir.NullablePayloadOffset)
+			g.loadFromStack("x10", off+ir.NullablePayloadOffset+8)
+			g.storeToStack128("x9", "x10", dst)
+			return nil
+		}
 		g.loadFromStack("x9", off+ir.NullablePayloadOffset)
-		g.storeToStack("x9", g.stackOffset(v))
+		g.storeToStack("x9", dst)
 		return nil
 	}
 
@@ -2766,9 +2787,15 @@ func (g *generator) genWrap(v *ir.Value) error {
 	// offset 8 of this value's slot. No heap allocation.
 	if nullType.IsFlat() {
 		off := g.stackOffset(v)
-		g.loadValue(v.Args[0], "x9")
 		g.emit("    mov x10, #%d", ir.NullableTagPresent)
 		g.storeToStack("x10", off+ir.NullableTagOffset)
+		if is128(v.Args[0].Type) {
+			// A 128-bit payload spans two words.
+			g.loadValue128(v.Args[0], "x9", "x11")
+			g.storeToStack128("x9", "x11", off+ir.NullablePayloadOffset)
+			return nil
+		}
+		g.loadValue(v.Args[0], "x9")
 		g.storeToStack("x9", off+ir.NullablePayloadOffset)
 		return nil
 	}

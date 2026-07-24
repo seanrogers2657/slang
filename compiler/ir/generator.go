@@ -1821,11 +1821,12 @@ func (g *Generator) generateStringPart(part semantic.TypedExpression) (*Value, b
 		// Fresh strings (interpolation, call results) are owned; identifiers,
 		// fields, and constants are borrowed/static.
 		return v, isOwnedStringTemp(part), nil
-	case semantic.S64Type:
+	case semantic.S64Type, semantic.S128Type, semantic.U128Type:
 		v, err := g.generateExpr(part)
 		if err != nil {
 			return nil, false, err
 		}
+		// The backend dispatches IntToStr on the argument's width/signedness.
 		return g.builder().IntToStr(v), true, nil
 	case semantic.BooleanType:
 		v, err := g.generateExpr(part)
@@ -1849,7 +1850,7 @@ func (g *Generator) convertScalarToStr(val *Value, elem semantic.Type) (*Value, 
 	switch elem.(type) {
 	case semantic.StringType:
 		return g.builder().StrCopy(val), nil
-	case semantic.S64Type:
+	case semantic.S64Type, semantic.S128Type, semantic.U128Type:
 		return g.builder().IntToStr(val), nil
 	case semantic.BooleanType:
 		return g.builder().StrCopy(g.builder().BoolToStr(val)), nil

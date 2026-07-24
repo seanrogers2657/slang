@@ -17,7 +17,42 @@ import "github.com/seanrogers2657/slang/compiler/ir"
 // s128/u128 arithmetic falsely trapped at the 64-bit boundary on in-range
 // values; adding true 128-bit overflow detection is a possible follow-up.
 
-// gen128Add computes r = a + b (mod 2^128).
+// is128Signed reports whether v's type is a signed 128-bit integer.
+func is128Signed(t ir.Type) bool {
+	it, ok := t.(*ir.IntType)
+	return ok && it.Bits >= 128 && it.Signed
+}
+
+// emit128PanicIfULess panics with p when the 128-bit value (aLo,aHi) is
+// unsigned-less-than (bLo,bHi). Used for add carry-out and sub borrow-out.
+func (g *generator) emit128PanicIfULess(aLo, aHi, bLo, bHi string, p panicMessage) {
+	lbl := g.labels.NextLabel()
+	g.emit("    cmp %s, %s", aHi, bHi)
+	g.emit("    b.lo _sl_ovf128_%d", lbl) // aHi < bHi -> a < b
+	g.emit("    b.hi _sl_ok128_%d", lbl)  // aHi > bHi -> a >= b
+	g.emit("    cmp %s, %s", aLo, bLo)
+	g.emit("    b.lo _sl_ovf128_%d", lbl) // hi equal, aLo < bLo -> a < b
+	g.emit("    b _sl_ok128_%d", lbl)
+	g.emit("_sl_ovf128_%d:", lbl)
+	g.emitPanic(p)
+	g.emit("_sl_ok128_%d:", lbl)
+}
+
+// emit128PanicIfSignBit panics with p when bit 63 of (p^q)&(r^s) is set — the
+// two's-complement signed add/sub overflow test on the high words. For add the
+// operands are (ahi,rhi,bhi,rhi); for sub (ahi,bhi,ahi,rhi).
+func (g *generator) emit128PanicIfSignBit(p, q, r, s string, msg panicMessage) {
+	lbl := g.labels.NextLabel()
+	g.emit("    eor x16, %s, %s", p, q)
+	g.emit("    eor x17, %s, %s", r, s)
+	g.emit("    and x16, x16, x17")
+	g.emit("    lsr x16, x16, #63")
+	g.emit("    cbz x16, _sl_ok128_%d", lbl)
+	g.emitPanic(msg)
+	g.emit("_sl_ok128_%d:", lbl)
+}
+
+// gen128Add computes r = a + b (mod 2^128), trapping on overflow.
 func (g *generator) gen128Add(v *ir.Value) error {
 	g.loadValue128(v.Args[0], "x10", "x11")
 	g.loadValue128(v.Args[1], "x12", "x13")
@@ -26,11 +61,19 @@ func (g *generator) gen128Add(v *ir.Value) error {
 	g.emit("    cmp x9, x10")       // low add carried iff rlo < alo (unsigned)
 	g.emit("    cset x15, lo")
 	g.emit("    add x14, x14, x15") // rhi += carry
+	if is128Signed(v.Type) {
+		// Signed overflow iff a and b share a sign that differs from the result:
+		// bit 63 of (ahi^rhi)&(bhi^rhi).
+		g.emit128PanicIfSignBit("x11", "x14", "x13", "x14", PanicOverflowAdd)
+	} else {
+		// Unsigned overflow (carry out) iff result < a.
+		g.emit128PanicIfULess("x9", "x14", "x10", "x11", PanicUnsignedOverAdd)
+	}
 	g.storeToStack128("x9", "x14", g.stackOffset(v))
 	return nil
 }
 
-// gen128Sub computes r = a - b (mod 2^128).
+// gen128Sub computes r = a - b (mod 2^128), trapping on overflow/underflow.
 func (g *generator) gen128Sub(v *ir.Value) error {
 	g.loadValue128(v.Args[0], "x10", "x11")
 	g.loadValue128(v.Args[1], "x12", "x13")
@@ -39,13 +82,32 @@ func (g *generator) gen128Sub(v *ir.Value) error {
 	g.emit("    cmp x10, x12")      // low sub borrowed iff alo < blo (unsigned)
 	g.emit("    cset x15, lo")
 	g.emit("    sub x14, x14, x15") // rhi -= borrow
+	if is128Signed(v.Type) {
+		// Signed overflow iff a and b have different signs and the result's
+		// sign differs from a: bit 63 of (ahi^bhi)&(ahi^rhi).
+		g.emit128PanicIfSignBit("x11", "x13", "x11", "x14", PanicOverflowSub)
+	} else {
+		// Unsigned underflow (borrow out) iff a < b.
+		g.emit128PanicIfULess("x10", "x11", "x12", "x13", PanicUnsignedUnderSub)
+	}
 	g.storeToStack128("x9", "x14", g.stackOffset(v))
 	return nil
 }
 
-// gen128Neg computes r = -a (mod 2^128).
+// gen128Neg computes r = -a (mod 2^128), trapping on the signed INT_MIN case.
 func (g *generator) gen128Neg(v *ir.Value) error {
 	g.loadValue128(v.Args[0], "x10", "x11")
+	if is128Signed(v.Type) {
+		// -a overflows only for a == INT_MIN (lo == 0, hi == 0x8000000000000000).
+		lbl := g.labels.NextLabel()
+		g.emit("    cbnz x10, _sl_negok128_%d", lbl) // lo != 0 -> not INT_MIN
+		g.emit("    mov x16, #1")
+		g.emit("    lsl x16, x16, #63") // 0x8000000000000000
+		g.emit("    cmp x11, x16")
+		g.emit("    b.ne _sl_negok128_%d", lbl)
+		g.emitPanic(PanicOverflowNeg)
+		g.emit("_sl_negok128_%d:", lbl)
+	}
 	g.emit("    neg x9, x10")  // rlo = -alo
 	g.emit("    neg x14, x11") // rhi = -ahi (borrow subtracted below)
 	g.emit("    cmp x10, #0")  // negating the low word borrows iff alo != 0
@@ -55,18 +117,28 @@ func (g *generator) gen128Neg(v *ir.Value) error {
 	return nil
 }
 
-// gen128Mul computes the low 128 bits of a * b. The low 128 bits of the product
-// are identical for signed and unsigned operands, so umulh serves both.
+// gen128Mul computes the low 128 bits of a * b, trapping on overflow. The
+// product and an overflow flag are computed by a leaf runtime helper (the
+// overflow test, especially signed, is too long to inline per site); the panic
+// itself is emitted here so it carries the enclosing function's name.
 func (g *generator) gen128Mul(v *ir.Value) error {
-	g.loadValue128(v.Args[0], "x10", "x11")
-	g.loadValue128(v.Args[1], "x12", "x13")
-	g.emit("    mul x9, x10, x12")    // rlo = low(alo * blo)
-	g.emit("    umulh x14, x10, x12") // rhi = high(alo * blo)
-	g.emit("    mul x15, x10, x13")   // + low(alo * bhi)
-	g.emit("    add x14, x14, x15")
-	g.emit("    mul x15, x11, x12") // + low(ahi * blo)
-	g.emit("    add x14, x14, x15")
-	g.storeToStack128("x9", "x14", g.stackOffset(v))
+	g.loadValue128(v.Args[0], "x0", "x1")
+	g.loadValue128(v.Args[1], "x2", "x3")
+	signed := is128Signed(v.Type)
+	if signed {
+		g.emit("    bl _sl_s128_mul_ovf")
+	} else {
+		g.emit("    bl _sl_u128_mul_ovf")
+	}
+	lbl := g.labels.NextLabel()
+	g.emit("    cbz x4, _sl_mulok128_%d", lbl) // x4 = overflow flag
+	if signed {
+		g.emitPanic(PanicOverflowMul)
+	} else {
+		g.emitPanic(PanicUnsignedOverMul)
+	}
+	g.emit("_sl_mulok128_%d:", lbl)
+	g.storeToStack128("x0", "x1", g.stackOffset(v)) // product low 128 in x0:x1
 	return nil
 }
 
@@ -143,6 +215,23 @@ func (g *generator) gen128DivMod(v *ir.Value, isMod bool) error {
 		g.emitPanic(PanicDivZero)
 	}
 	g.emit("_sl_div128_ok_%d:", label)
+
+	// Signed division overflow: INT_MIN / -1 has no representable quotient.
+	// (Modulo of INT_MIN % -1 is 0, so it never overflows.)
+	if signed && !isMod {
+		ovf := g.labels.NextLabel()
+		g.emit("    add x16, x2, #1")               // divisor == -1 iff both words are -1
+		g.emit("    add x17, x3, #1")
+		g.emit("    orr x16, x16, x17")
+		g.emit("    cbnz x16, _sl_divof128_%d", ovf) // divisor != -1
+		g.emit("    cbnz x0, _sl_divof128_%d", ovf)  // dividend lo != 0 -> not INT_MIN
+		g.emit("    mov x16, #1")
+		g.emit("    lsl x16, x16, #63") // 0x8000000000000000
+		g.emit("    cmp x1, x16")
+		g.emit("    b.ne _sl_divof128_%d", ovf)
+		g.emitPanic(PanicOverflowDiv)
+		g.emit("_sl_divof128_%d:", ovf)
+	}
 
 	if signed {
 		g.emit("    bl _sl_s128_divmod")
@@ -252,6 +341,120 @@ func (g *generator) emitInt128Helpers() {
 	g.emit("    sub x3, x3, x14")
 	g.emit("_sl_s128_negr_done:")
 	g.emit("    ldp x29, x30, [sp], #16")
+	g.emit("    ret")
+	g.emit("")
+
+	// ---- _sl_u128_mul_ovf (x0:x1 * x2:x3) -> product x0:x1, overflow flag x4 ----
+	// Computes the low 128 bits of the product and whether the true 256-bit
+	// product exceeds 128 bits. Overflow iff any of: a carry out of the
+	// bits[64,127] column, the high halves of alo*bhi or ahi*blo are nonzero, or
+	// both ahi and bhi are nonzero (which alone forces bits >= 128). Leaf.
+	g.emit("// Unsigned 128-bit multiply with overflow flag")
+	g.emit("_sl_u128_mul_ovf:")
+	g.emit("    mul x5, x0, x2")   // product low word
+	g.emit("    umulh x6, x0, x2") // lo_hi
+	g.emit("    mul x7, x0, x3")   // m1_lo
+	g.emit("    umulh x8, x0, x3") // m1_hi
+	g.emit("    mul x9, x1, x2")   // m2_lo
+	g.emit("    umulh x10, x1, x2") // m2_hi
+	g.emit("    add x11, x6, x7")  // s1 = lo_hi + m1_lo
+	g.emit("    cmp x11, x7")
+	g.emit("    cset x12, lo") // carry of first add
+	g.emit("    add x13, x11, x9") // product high word = s1 + m2_lo
+	g.emit("    cmp x13, x9")
+	g.emit("    cset x14, lo")     // carry of second add
+	g.emit("    add x12, x12, x14") // c1 = total carry out of bits[64,127]
+	g.emit("    mov x4, #0")
+	g.emit("    cbnz x12, _sl_u128mulovf_yes")
+	g.emit("    cbnz x8, _sl_u128mulovf_yes")  // m1_hi != 0
+	g.emit("    cbnz x10, _sl_u128mulovf_yes") // m2_hi != 0
+	g.emit("    cbz x1, _sl_u128mulovf_done")  // ahi == 0
+	g.emit("    cbz x3, _sl_u128mulovf_done")  // bhi == 0
+	g.emit("_sl_u128mulovf_yes:")
+	g.emit("    mov x4, #1")
+	g.emit("_sl_u128mulovf_done:")
+	g.emit("    mov x0, x5")  // product low
+	g.emit("    mov x1, x13") // product high
+	g.emit("    ret")
+	g.emit("")
+
+	// ---- _sl_s128_mul_ovf (x0:x1 * x2:x3) -> product x0:x1, overflow flag x4 ----
+	// Signs give the result sign; magnitudes multiply as unsigned (|INT_MIN| is
+	// 2^127, exactly its unsigned bit pattern). Overflow iff the magnitude needs
+	// > 128 bits, or is > 2^127, or is exactly 2^127 with a positive result
+	// (only -2^127 is representable). The low-128 product is sign-agnostic, so it
+	// is recomputed from the original operands. Leaf (avoids x18, reserved).
+	g.emit("// Signed 128-bit multiply with overflow flag")
+	g.emit("_sl_s128_mul_ovf:")
+	g.emit("    asr x9, x1, #63")  // sign(a)
+	g.emit("    asr x10, x3, #63") // sign(b)
+	g.emit("    eor x11, x9, x10") // result sign (0 or -1)
+	// |a| in x5:x6
+	g.emit("    mov x5, x0")
+	g.emit("    mov x6, x1")
+	g.emit("    cbz x9, _sl_s128mul_adone")
+	g.emit("    neg x5, x0")
+	g.emit("    neg x6, x1")
+	g.emit("    cmp x0, #0")
+	g.emit("    cset x12, ne")
+	g.emit("    sub x6, x6, x12")
+	g.emit("_sl_s128mul_adone:")
+	// |b| in x7:x8
+	g.emit("    mov x7, x2")
+	g.emit("    mov x8, x3")
+	g.emit("    cbz x10, _sl_s128mul_bdone")
+	g.emit("    neg x7, x2")
+	g.emit("    neg x8, x3")
+	g.emit("    cmp x2, #0")
+	g.emit("    cset x12, ne")
+	g.emit("    sub x8, x8, x12")
+	g.emit("_sl_s128mul_bdone:")
+	// magnitude product: Mlo=x13, Mhi=x14; m1_hi=x15, m2_hi=x16 held for the test
+	g.emit("    mul x13, x5, x7")
+	g.emit("    umulh x9, x5, x7") // lo_hi
+	g.emit("    mul x10, x5, x8")  // m1_lo
+	g.emit("    umulh x15, x5, x8") // m1_hi
+	g.emit("    mul x12, x6, x7")  // m2_lo
+	g.emit("    umulh x16, x6, x7") // m2_hi
+	g.emit("    add x9, x9, x10")  // s1 = lo_hi + m1_lo
+	g.emit("    cmp x9, x10")
+	g.emit("    cset x10, lo") // carry1
+	g.emit("    add x14, x9, x12") // Mhi = s1 + m2_lo
+	g.emit("    cmp x14, x12")
+	g.emit("    cset x17, lo")     // carry2
+	g.emit("    add x10, x10, x17") // c1
+	g.emit("    mov x4, #0")
+	g.emit("    cbnz x10, _sl_s128mul_magovf")
+	g.emit("    cbnz x15, _sl_s128mul_magovf")
+	g.emit("    cbnz x16, _sl_s128mul_magovf")
+	g.emit("    cbz x6, _sl_s128mul_magfit")
+	g.emit("    cbz x8, _sl_s128mul_magfit")
+	g.emit("_sl_s128mul_magovf:")
+	g.emit("    mov x4, #1")
+	g.emit("    b _sl_s128mul_result")
+	g.emit("_sl_s128mul_magfit:")
+	// M fits 128 bits (x13 lo, x14 hi). Check bit 127.
+	g.emit("    lsr x9, x14, #63")
+	g.emit("    cbz x9, _sl_s128mul_result") // M < 2^127 -> fits, flag stays 0
+	g.emit("    cbnz x13, _sl_s128mul_setovf") // lo != 0 -> M > 2^127
+	g.emit("    mov x9, #1")
+	g.emit("    lsl x9, x9, #63")
+	g.emit("    cmp x14, x9")
+	g.emit("    b.ne _sl_s128mul_setovf") // hi != 2^127 -> M > 2^127
+	// M == 2^127 exactly: valid only if the result is negative (-2^127).
+	g.emit("    cbnz x11, _sl_s128mul_result") // negative -> ok
+	g.emit("_sl_s128mul_setovf:")
+	g.emit("    mov x4, #1")
+	g.emit("_sl_s128mul_result:")
+	// Product low 128 from the original operands (sign-agnostic low bits).
+	g.emit("    mul x5, x0, x2")
+	g.emit("    umulh x6, x0, x2")
+	g.emit("    mul x7, x0, x3")
+	g.emit("    add x6, x6, x7")
+	g.emit("    mul x7, x1, x2")
+	g.emit("    add x6, x6, x7")
+	g.emit("    mov x0, x5")
+	g.emit("    mov x1, x6")
 	g.emit("    ret")
 	g.emit("")
 

@@ -2,6 +2,7 @@ package ir
 
 import (
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 
@@ -1664,6 +1665,20 @@ func (g *Generator) generateLiteral(le *semantic.TypedLiteralExpr) (*Value, erro
 
 	switch le.LitType {
 	case ast.LiteralTypeInteger:
+		// 128-bit literals exceed int64, so parse them with big.Int and store
+		// the value as two 64-bit words (low in AuxInt, high in AuxInt2). Bounds
+		// were already validated against the type in the semantic analyzer.
+		if intType, ok := irType.(*IntType); ok && intType.Bits >= 128 {
+			lo, hi, err := parseInt128(le.Value)
+			if err != nil {
+				return nil, err
+			}
+			v := g.block.NewValue(OpConst, irType)
+			v.AuxInt = lo
+			v.AuxInt2 = hi
+			return v, nil
+		}
+
 		var intVal int64
 
 		// Check if the type is unsigned to use the correct parsing
@@ -1726,6 +1741,25 @@ func (g *Generator) generateLiteral(le *semantic.TypedLiteralExpr) (*Value, erro
 	default:
 		return nil, fmt.Errorf("unknown literal type: %d", le.LitType)
 	}
+}
+
+// parseInt128 parses a decimal integer literal that may not fit in 64 bits into
+// its 128-bit two's-complement representation, returned as low and high 64-bit
+// words (reinterpreted as int64). Negative values wrap mod 2^128. The literal's
+// range was already validated against its declared type in the semantic pass.
+func parseInt128(s string) (lo, hi int64, err error) {
+	b, ok := new(big.Int).SetString(s, 10)
+	if !ok {
+		return 0, 0, fmt.Errorf("invalid integer literal: %s", s)
+	}
+	// Reduce mod 2^128; big.Int.Mod returns a non-negative result for a positive
+	// modulus, which is exactly the two's-complement bit pattern for negatives.
+	mod := new(big.Int).Lsh(big.NewInt(1), 128)
+	b.Mod(b, mod)
+	mask64 := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 64), big.NewInt(1))
+	loWord := new(big.Int).And(b, mask64)
+	hiWord := new(big.Int).Rsh(b, 64)
+	return int64(loWord.Uint64()), int64(hiWord.Uint64()), nil
 }
 
 // generateInterpolatedString generates IR for an interpolated string. Each part

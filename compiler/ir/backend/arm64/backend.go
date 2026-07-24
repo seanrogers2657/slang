@@ -178,6 +178,9 @@ func (g *generator) generate() (string, error) {
 	// Emit growable vector (vec) runtime helpers
 	g.emitVecHelpers()
 
+	// Emit 128-bit integer software divmod helpers
+	g.emitInt128Helpers()
+
 	// Emit panic helper
 	g.emitPanicHelper()
 
@@ -1445,6 +1448,52 @@ func (g *generator) emitPrologue() {
 		}
 		regIdx++
 	}
+
+	// Materialize 128-bit constants into their slots once. They are invariant,
+	// so a single prologue store lets every use (arithmetic, movement, print)
+	// read the two words uniformly from the slot.
+	seen := make(map[*ir.Value]bool)
+	for _, block := range g.fn.Blocks {
+		for _, v := range block.Values {
+			if v.Op == ir.OpConst && is128(v.Type) && !seen[v] {
+				seen[v] = true
+				off := g.stackOffset(v)
+				g.loadImmediate(v.AuxInt, "x9")
+				g.storeToStack("x9", off)
+				g.loadImmediate(v.AuxInt2, "x9")
+				g.storeToStack("x9", off+8)
+			}
+		}
+	}
+}
+
+// loadValue128 loads a 128-bit value's low and high words into loReg and hiReg.
+// Values with a stack slot (including prologue-materialized constants) are read
+// word-by-word; a constant without a slot is materialized inline as a fallback.
+func (g *generator) loadValue128(v *ir.Value, loReg, hiReg string) {
+	if v == nil {
+		g.emit("    mov %s, #0", loReg)
+		g.emit("    mov %s, #0", hiReg)
+		return
+	}
+	if offset, ok := g.layout.Offsets[v]; ok {
+		g.loadFromStack(loReg, offset)
+		g.loadFromStack(hiReg, offset+8)
+		return
+	}
+	if v.Op == ir.OpConst {
+		g.loadImmediate(v.AuxInt, loReg)
+		g.loadImmediate(v.AuxInt2, hiReg)
+		return
+	}
+	g.emit("    mov %s, #0", loReg)
+	g.emit("    mov %s, #0", hiReg)
+}
+
+// storeToStack128 stores a 128-bit value's low and high words to a stack slot.
+func (g *generator) storeToStack128(loReg, hiReg string, offset int) {
+	g.storeToStack(loReg, offset)
+	g.storeToStack(hiReg, offset+8)
 }
 
 // generateBody generates code for all blocks in the current function.
@@ -1579,12 +1628,22 @@ func needsStackSlot(v *ir.Value) bool {
 	case ir.OpStore, ir.OpStoreGlobal, ir.OpFree, ir.OpReturn, ir.OpExit:
 		return false // These don't produce values
 	case ir.OpConst:
-		return false // Constants are materialized inline, no stack needed
+		// 64-bit and narrower constants are materialized inline at each use.
+		// A 128-bit constant is two words, so it is materialized once into a
+		// slot in the prologue and read from there like any other wide value.
+		return is128(v.Type)
 	case ir.OpPhi:
 		return true // Phi nodes need slots for their merged values
 	default:
 		return v.Type != nil && !v.Type.Equal(ir.TypeVoid)
 	}
+}
+
+// is128 reports whether t is a 128-bit (or wider) integer type, which the
+// backend represents and moves as multiple 64-bit words.
+func is128(t ir.Type) bool {
+	it, ok := t.(*ir.IntType)
+	return ok && it.Bits >= 128
 }
 
 // valueSize returns the stack size needed for a value.
@@ -1828,6 +1887,9 @@ func (g *generator) emitNarrowOverflowCheck(v *ir.Value, reg string, p panicMess
 }
 
 func (g *generator) genAdd(v *ir.Value) error {
+	if is128(v.Type) {
+		return g.gen128Add(v)
+	}
 	g.loadValue(v.Args[0], "x10")
 	g.loadValue(v.Args[1], "x11")
 
@@ -1866,6 +1928,9 @@ func (g *generator) genAdd(v *ir.Value) error {
 }
 
 func (g *generator) genSub(v *ir.Value) error {
+	if is128(v.Type) {
+		return g.gen128Sub(v)
+	}
 	g.loadValue(v.Args[0], "x10")
 	g.loadValue(v.Args[1], "x11")
 
@@ -1904,6 +1969,9 @@ func (g *generator) genSub(v *ir.Value) error {
 }
 
 func (g *generator) genMul(v *ir.Value) error {
+	if is128(v.Type) {
+		return g.gen128Mul(v)
+	}
 	g.loadValue(v.Args[0], "x10")
 	g.loadValue(v.Args[1], "x11")
 
@@ -1948,6 +2016,9 @@ func (g *generator) genMul(v *ir.Value) error {
 }
 
 func (g *generator) genDiv(v *ir.Value) error {
+	if is128(v.Type) {
+		return g.gen128DivMod(v, false)
+	}
 	g.loadValue(v.Args[0], "x10")
 	g.loadValue(v.Args[1], "x11")
 
@@ -1987,6 +2058,9 @@ func (g *generator) genDiv(v *ir.Value) error {
 }
 
 func (g *generator) genMod(v *ir.Value) error {
+	if is128(v.Type) {
+		return g.gen128DivMod(v, true)
+	}
 	g.loadValue(v.Args[0], "x10")
 	g.loadValue(v.Args[1], "x11")
 
@@ -2011,6 +2085,9 @@ func (g *generator) genMod(v *ir.Value) error {
 }
 
 func (g *generator) genNeg(v *ir.Value) error {
+	if is128(v.Type) {
+		return g.gen128Neg(v)
+	}
 	g.loadValue(v.Args[0], "x10")
 	g.emit("    neg x9, x10")
 
@@ -2054,6 +2131,9 @@ func unsignedCondCode(cond string) string {
 }
 
 func (g *generator) genCmp(v *ir.Value, cond string) error {
+	if is128(v.Args[0].Type) || is128(v.Args[1].Type) {
+		return g.gen128Cmp(v, cond)
+	}
 	g.loadValue(v.Args[0], "x10")
 	g.loadValue(v.Args[1], "x11")
 
@@ -2801,6 +2881,19 @@ func (g *generator) genPrint(v *ir.Value) error {
 	}
 
 	arg := v.Args[0]
+
+	// 128-bit integers are passed to their dedicated helpers as a two-word
+	// value in x0:x1, rather than a single register.
+	if it, ok := arg.Type.(*ir.IntType); ok && it.Bits >= 128 {
+		g.loadValue128(arg, "x0", "x1")
+		if it.Signed {
+			g.emit("    bl _sl_print_s128")
+		} else {
+			g.emit("    bl _sl_print_u128")
+		}
+		return nil
+	}
+
 	g.loadValue(arg, "x0")
 
 	// Call appropriate print helper based on type

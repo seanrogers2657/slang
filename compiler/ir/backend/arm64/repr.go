@@ -35,6 +35,12 @@ func reprOf(t ir.Type) repr {
 		}
 		return repr{words: words, flatNullable: true}
 	}
+	// 128-bit integers occupy two words and are moved word-by-word, like flat
+	// nullables. This is what lets the existing multi-word param/return/call/
+	// load/store/phi plumbing carry s128/u128 values.
+	if it, ok := t.(*ir.IntType); ok && it.Bits >= 128 {
+		return repr{words: it.Bits / 64}
+	}
 	return repr{words: 1}
 }
 

@@ -1130,8 +1130,8 @@ func TestGenerateTypeConversions(t *testing.T) {
 func TestBinaryOpMap(t *testing.T) {
 	// Verify all expected operators are in the map
 	expectedOps := []struct {
-		op     string
-		irOp   Op
+		op   string
+		irOp Op
 	}{
 		{"+", OpAdd},
 		{"-", OpSub},
@@ -1282,5 +1282,39 @@ func TestElvisOperator(t *testing.T) {
 	}
 	if !strings.Contains(ir, "Phi") {
 		t.Errorf("IR should contain Phi for elvis operator\nGot:\n%s", ir)
+	}
+}
+
+// TestParseInt128 verifies decimal literals are split into low/high 64-bit
+// words in two's-complement form, including values beyond 64 bits and negatives.
+func TestParseInt128(t *testing.T) {
+	tests := []struct {
+		in     string
+		wantLo int64
+		wantHi int64
+	}{
+		{"0", 0, 0},
+		{"1", 1, 0},
+		{"-1", -1, -1},                   // all ones in both words
+		{"18446744073709551616", 0, 1},   // 2^64 -> lo=0, hi=1
+		{"18446744073709551615", -1, 0},  // 2^64-1 -> lo=all ones, hi=0
+		{"-18446744073709551616", 0, -1}, // -2^64 -> lo=0, hi=-1
+		{"170141183460469231731687303715884105727", -1, 0x7FFFFFFFFFFFFFFF},  // s128 max
+		{"-170141183460469231731687303715884105728", 0, -0x8000000000000000}, // s128 min
+		{"340282366920938463463374607431768211455", -1, -1},                  // u128 max (all ones)
+	}
+	for _, tt := range tests {
+		lo, hi, err := parseInt128(tt.in)
+		if err != nil {
+			t.Errorf("parseInt128(%q) unexpected error: %v", tt.in, err)
+			continue
+		}
+		if lo != tt.wantLo || hi != tt.wantHi {
+			t.Errorf("parseInt128(%q) = (lo=%#x, hi=%#x), want (lo=%#x, hi=%#x)",
+				tt.in, uint64(lo), uint64(hi), uint64(tt.wantLo), uint64(tt.wantHi))
+		}
+	}
+	if _, _, err := parseInt128("not-a-number"); err == nil {
+		t.Error("parseInt128 should error on a non-numeric string")
 	}
 }

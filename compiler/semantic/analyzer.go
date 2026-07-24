@@ -1582,14 +1582,25 @@ func (a *Analyzer) checkTypeCompatibilityCore(targetType, sourceType Type, typed
 
 	// Check for literal bounds when assigning to a specific type
 	if litExpr, ok := typedSource.(*TypedLiteralExpr); ok {
-		// Integer literal -> any integer type (with bounds check)
+		// Integer literal -> any integer type (with bounds check). Retype the
+		// literal to the target so it is later lowered at the target's width;
+		// without this a 128-bit literal keeps its default s64 type and is
+		// truncated/rejected during IR generation.
 		if litExpr.LitType == ast.LiteralTypeInteger && IsIntegerType(targetType) {
-			return a.checkIntegerBounds(litExpr.Value, targetType, pos)
+			if a.checkIntegerBounds(litExpr.Value, targetType, pos) {
+				litExpr.Type = targetType
+				return true
+			}
+			return false
 		}
 
 		// Float literal -> any float type (with bounds check)
 		if litExpr.LitType == ast.LiteralTypeFloat && IsFloatType(targetType) {
-			return a.checkFloatBounds(litExpr.Value, targetType, pos)
+			if a.checkFloatBounds(litExpr.Value, targetType, pos) {
+				litExpr.Type = targetType
+				return true
+			}
+			return false
 		}
 
 		// Integer literal cannot be assigned to float type

@@ -26,6 +26,7 @@ type Value struct {
 
 	// Auxiliary data for constants and other operations
 	AuxInt    int64   // immediate integer value, field offset, size, etc.
+	AuxInt2   int64   // high 64 bits of a 128-bit constant (AuxInt holds the low 64)
 	AuxFloat  float64 // immediate float value
 	AuxString string  // string constant, function name, label, etc.
 

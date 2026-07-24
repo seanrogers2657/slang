@@ -99,6 +99,8 @@ var (
 	PanicOverflowAdd      = panicMessage{"_sl_panic_overflow_add", "panic: integer overflow: addition\n"}
 	PanicOverflowSub      = panicMessage{"_sl_panic_overflow_sub", "panic: integer overflow: subtraction\n"}
 	PanicOverflowMul      = panicMessage{"_sl_panic_overflow_mul", "panic: integer overflow: multiplication\n"}
+	PanicOverflowDiv      = panicMessage{"_sl_panic_overflow_div", "panic: integer overflow: division\n"}
+	PanicOverflowNeg      = panicMessage{"_sl_panic_overflow_neg", "panic: integer overflow: negation\n"}
 	PanicUnsignedOverAdd  = panicMessage{"_sl_panic_unsigned_overflow_add", "panic: unsigned overflow: addition\n"}
 	PanicUnsignedUnderSub = panicMessage{"_sl_panic_unsigned_underflow_sub", "panic: unsigned underflow: subtraction\n"}
 	PanicUnsignedOverMul  = panicMessage{"_sl_panic_unsigned_overflow_mul", "panic: unsigned overflow: multiplication\n"}
@@ -112,6 +114,8 @@ var allPanicMessages = []panicMessage{
 	PanicOverflowAdd,
 	PanicOverflowSub,
 	PanicOverflowMul,
+	PanicOverflowDiv,
+	PanicOverflowNeg,
 	PanicUnsignedOverAdd,
 	PanicUnsignedUnderSub,
 	PanicUnsignedOverMul,
@@ -1956,6 +1960,22 @@ func (g *generator) genDiv(v *ir.Value) error {
 	// Signed division
 	if intType, ok := v.Type.(*ir.IntType); ok && intType.Signed {
 		g.emit("    sdiv x9, x10, x11")
+		// Narrow signed overflow: e.g. s8 -128 / -1 = 128, out of s8 range.
+		g.emitNarrowOverflowCheck(v, "x9", PanicOverflowDiv)
+		// Full-width signed overflow: INT_MIN / -1 wraps back to INT_MIN. The
+		// narrow check is a no-op at >=64 bits, so detect it explicitly. When
+		// the divisor is -1 the quotient equals -dividend, so x9 == x10 (with a
+		// nonzero dividend) is exactly the INT_MIN case.
+		if intType.Bits >= 64 {
+			label := g.labels.NextLabel()
+			g.emit("    add x12, x11, #1")                // divisor == -1 iff x11+1 == 0
+			g.emit("    cbnz x12, _sl_divof_ok_%d", label) // divisor != -1 → no overflow
+			g.emit("    cbz x10, _sl_divof_ok_%d", label)  // 0 / -1 == 0, fine
+			g.emit("    cmp x10, x9")
+			g.emit("    b.ne _sl_divof_ok_%d", label)
+			g.emitPanic(PanicOverflowDiv)
+			g.emit("_sl_divof_ok_%d:", label)
+		}
 	} else {
 		g.emit("    udiv x9, x10, x11")
 	}
@@ -1993,6 +2013,22 @@ func (g *generator) genMod(v *ir.Value) error {
 func (g *generator) genNeg(v *ir.Value) error {
 	g.loadValue(v.Args[0], "x10")
 	g.emit("    neg x9, x10")
+
+	if intType, ok := v.Type.(*ir.IntType); ok && intType.Signed {
+		// Narrow signed overflow: e.g. -(s8 -128) = 128, out of s8 range.
+		g.emitNarrowOverflowCheck(v, "x9", PanicOverflowNeg)
+		// Full-width signed overflow: -INT_MIN wraps back to INT_MIN. Detect it
+		// via the self-negation identity — INT_MIN is the only nonzero value
+		// equal to its own negation (x9 == x10).
+		if intType.Bits >= 64 {
+			label := g.labels.NextLabel()
+			g.emit("    cbz x10, _sl_negof_ok_%d", label) // -0 == 0, fine
+			g.emit("    cmp x10, x9")
+			g.emit("    b.ne _sl_negof_ok_%d", label)
+			g.emitPanic(PanicOverflowNeg)
+			g.emit("_sl_negof_ok_%d:", label)
+		}
+	}
 
 	offset := g.stackOffset(v)
 	g.storeToStack("x9", offset)

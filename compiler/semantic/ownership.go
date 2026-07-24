@@ -159,6 +159,9 @@ func GetRootVarName(expr ast.Expression) string {
 	switch e := expr.(type) {
 	case *ast.IdentifierExpr:
 		return e.Name
+	case *ast.SelfExpr:
+		// 'self' is bound in the method scope under the name "self".
+		return "self"
 	case *ast.FieldAccessExpr:
 		return GetRootVarName(e.Object)
 	case *ast.IndexExpr:

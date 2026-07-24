@@ -118,8 +118,6 @@ func TestResolverReservedPaths(t *testing.T) {
 		errContain string
 	}{
 		{"main reserved", "main", "reserved for the root package"},
-		{"std reserved", "std", "reserved for the future standard library"},
-		{"std prefix reserved", "std/math", "reserved for the future standard library"},
 	}
 
 	for _, tt := range tests {
@@ -132,6 +130,30 @@ func TestResolverReservedPaths(t *testing.T) {
 				t.Errorf("expected error containing %q, got: %v", tt.errContain, err)
 			}
 		})
+	}
+}
+
+func TestResolverStdlib(t *testing.T) {
+	// No packages/ dir is needed to import from the embedded standard library.
+	r := NewResolver(t.TempDir())
+
+	// A real stdlib package resolves from the embedded filesystem.
+	dir, err := r.Resolve("std/math")
+	if err != nil {
+		t.Fatalf("expected std/math to resolve, got: %v", err)
+	}
+	if dir != "std/math" {
+		t.Errorf("expected display path %q, got %q", "std/math", dir)
+	}
+
+	// Bare "std" is a namespace, not an importable package.
+	if _, err := r.Resolve("std"); err == nil {
+		t.Error("expected bare 'std' to error")
+	}
+
+	// A missing stdlib package errors.
+	if _, err := r.Resolve("std/does_not_exist"); err == nil {
+		t.Error("expected std/does_not_exist to error")
 	}
 }
 

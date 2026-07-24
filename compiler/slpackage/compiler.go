@@ -2,8 +2,10 @@ package slpackage
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -86,7 +88,7 @@ func (c *PackageCompiler) DiscoverAndParse() (map[string][]*ast.FileAST, []*erro
 	return pkgFiles, nil
 }
 
-// parseFiles reads, lexes, and parses a list of .sl files.
+// parseFiles reads, lexes, and parses a list of on-disk .sl files.
 func (c *PackageCompiler) parseFiles(filePaths []string) ([]*ast.FileAST, []*errors.CompilerError) {
 	var fileASTs []*ast.FileAST
 	var allErrors []*errors.CompilerError
@@ -101,31 +103,72 @@ func (c *PackageCompiler) parseFiles(filePaths []string) ([]*ast.FileAST, []*err
 			continue
 		}
 
-		// Lex
-		l := lexer.NewLexerWithFilename(source, filePath)
-		l.Parse()
-		if len(l.Errors) > 0 {
-			allErrors = append(allErrors, l.Errors...)
-			continue // don't parse if lexer failed
+		fileAST, errs := parseSource(source, filePath)
+		allErrors = append(allErrors, errs...)
+		if fileAST != nil {
+			fileASTs = append(fileASTs, fileAST)
 		}
-
-		// Parse
-		p := parser.NewParser(l.Tokens)
-		program := p.Parse()
-		if len(p.Errors) > 0 {
-			for _, e := range p.Errors {
-				allErrors = append(allErrors, e)
-			}
-			continue // don't extract imports if parser failed
-		}
-
-		fileASTs = append(fileASTs, &ast.FileAST{
-			Path: filePath,
-			AST:  program,
-		})
 	}
 
 	return fileASTs, allErrors
+}
+
+// parseFilesFS reads, lexes, and parses the .sl files of a resolved package,
+// reading through its filesystem (on-disk or embedded stdlib).
+func (c *PackageCompiler) parseFilesFS(rp *resolvedPkg) ([]*ast.FileAST, []*errors.CompilerError) {
+	names, err := slFileNames(rp.fsys, rp.subdir)
+	if err != nil {
+		return nil, []*errors.CompilerError{errors.NewError(
+			fmt.Sprintf("error reading package: %s", err),
+			rp.display, errors.Position{}, "module",
+		)}
+	}
+
+	var fileASTs []*ast.FileAST
+	var allErrors []*errors.CompilerError
+
+	for _, name := range names {
+		readPath := name
+		if rp.subdir != "." {
+			readPath = path.Join(rp.subdir, name)
+		}
+		display := filepath.Join(rp.display, name)
+
+		source, err := fs.ReadFile(rp.fsys, readPath)
+		if err != nil {
+			allErrors = append(allErrors, errors.NewError(
+				fmt.Sprintf("cannot read file: %s", err),
+				display, errors.Position{}, "module",
+			))
+			continue
+		}
+
+		fileAST, errs := parseSource(source, display)
+		allErrors = append(allErrors, errs...)
+		if fileAST != nil {
+			fileASTs = append(fileASTs, fileAST)
+		}
+	}
+
+	return fileASTs, allErrors
+}
+
+// parseSource lexes and parses a single source buffer, using display as the
+// filename in tokens, ASTs, and error messages.
+func parseSource(source []byte, display string) (*ast.FileAST, []*errors.CompilerError) {
+	l := lexer.NewLexerWithFilename(source, display)
+	l.Parse()
+	if len(l.Errors) > 0 {
+		return nil, l.Errors // don't parse if lexer failed
+	}
+
+	p := parser.NewParserWithFilename(l.Tokens, display)
+	program := p.Parse()
+	if len(p.Errors) > 0 {
+		return nil, p.Errors // don't extract imports if parser failed
+	}
+
+	return &ast.FileAST{Path: display, AST: program}, nil
 }
 
 // discoverImports extracts imports from a package's file ASTs and recursively discovers dependencies.
@@ -142,7 +185,7 @@ func (c *PackageCompiler) discoverImports(pkgPath string, fileASTs []*ast.FileAS
 			}
 
 			// Resolve the import path
-			pkgDir, err := c.Resolver.Resolve(imp.Path)
+			rp, err := c.Resolver.resolvePackage(imp.Path)
 			if err != nil {
 				allErrors = append(allErrors, errors.NewError(
 					err.Error(), fileAST.Path, errPos, "module",
@@ -159,20 +202,10 @@ func (c *PackageCompiler) discoverImports(pkgPath string, fileASTs []*ast.FileAS
 			}
 
 			// Register the new package
-			c.Packages[imp.Path] = &Package{Path: imp.Path, Dir: pkgDir}
+			c.Packages[imp.Path] = &Package{Path: imp.Path, Dir: rp.display}
 
-			// Discover .sl files in the package directory
-			files, err := DiscoverSlFiles(pkgDir)
-			if err != nil {
-				allErrors = append(allErrors, errors.NewError(
-					fmt.Sprintf("error reading package %q: %s", imp.Path, err),
-					fileAST.Path, errPos, "module",
-				))
-				continue
-			}
-
-			// Parse the package files
-			depFileASTs, parseErrs := c.parseFiles(files)
+			// Parse the package files (on-disk or embedded stdlib)
+			depFileASTs, parseErrs := c.parseFilesFS(rp)
 			allErrors = append(allErrors, parseErrs...)
 			pkgFiles[imp.Path] = depFileASTs
 

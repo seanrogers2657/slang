@@ -518,14 +518,21 @@ func (p *parser) ParseStatement() ast.Statement {
 		return p.ParseVarDecl(true)
 	}
 
-	// Check for assignment: identifier followed by '='
-	if p.CurrentToken().Type == lexer.TokenTypeIdentifier {
-		if p.peek().Type == lexer.TokenTypeAssign {
-			return p.ParseAssignment()
-		}
+	// Otherwise it's an assignment (to an identifier, field, or index target)
+	// or a bare expression statement.
+	return p.parseSimpleStatement()
+}
+
+// parseSimpleStatement parses an assignment (to an identifier, field, or index
+// target) or a bare expression statement. These are the statement forms valid
+// both at the top level and in a for-loop init/update clause.
+func (p *parser) parseSimpleStatement() ast.Statement {
+	// Assignment to a bare identifier: name = expr
+	if p.CurrentToken().Type == lexer.TokenTypeIdentifier && p.peek().Type == lexer.TokenTypeAssign {
+		return p.ParseAssignment()
 	}
 
-	// Otherwise, parse as expression and check if it's a field assignment
+	// Otherwise, parse as expression and check if it's a field/index assignment
 	expr := p.parseExpression(precedenceLowest)
 	if expr == nil {
 		return nil
@@ -833,8 +840,9 @@ func (p *parser) ParseForStatement() ast.Statement {
 			init = p.ParseVarDecl(false)
 		} else if p.CurrentToken().Type == lexer.TokenTypeVar {
 			init = p.ParseVarDecl(true)
-		} else if p.CurrentToken().Type == lexer.TokenTypeIdentifier && p.peek().Type == lexer.TokenTypeAssign {
-			init = p.ParseAssignment()
+		} else {
+			// Any assignment (ident/field/index) or a bare call expression.
+			init = p.parseSimpleStatement()
 		}
 	}
 
@@ -863,8 +871,9 @@ func (p *parser) ParseForStatement() ast.Statement {
 	// Check what comes next - if it's ) or {, there's no update
 	nextIsEnd := (hasParens && p.CurrentToken().Type == lexer.TokenTypeRParen) ||
 		(!hasParens && p.CurrentToken().Type == lexer.TokenTypeLBrace)
-	if !nextIsEnd && p.CurrentToken().Type == lexer.TokenTypeIdentifier && p.peek().Type == lexer.TokenTypeAssign {
-		update = p.ParseAssignment()
+	if !nextIsEnd {
+		// Any assignment (ident/field/index) or a bare call expression.
+		update = p.parseSimpleStatement()
 	}
 
 	// If has parens, expect closing paren
@@ -2839,10 +2848,17 @@ func (p *parser) parseWhenCase() *ast.WhenCase {
 	// Skip newlines after arrow
 	p.skipNewlines()
 
-	// Parse body (either a block, assignment statement, or single expression)
+	// Parse body (either a block, control-flow statement, assignment
+	// statement, or single expression)
 	var body ast.Statement
 	if p.CurrentToken().Type == lexer.TokenTypeLBrace {
 		body = p.ParseBlockStmt()
+	} else if p.CurrentToken().Type == lexer.TokenTypeBreak {
+		body = p.ParseBreakStatement()
+	} else if p.CurrentToken().Type == lexer.TokenTypeContinue {
+		body = p.ParseContinueStatement()
+	} else if p.CurrentToken().Type == lexer.TokenTypeReturn {
+		body = p.ParseReturnStatement()
 	} else if p.CurrentToken().Type == lexer.TokenTypeIdentifier && p.peek().Type == lexer.TokenTypeAssign {
 		// Assignment statement: name = expr
 		body = p.ParseAssignment()

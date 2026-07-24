@@ -1380,6 +1380,17 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 		typedInit = a.analyzeExpression(stmt.Initializer)
 		initType = typedInit.GetType()
 
+		// A void-valued expression (e.g. a call to a function with no return
+		// type) produces no value and cannot initialize a binding.
+		if _, isVoid := initType.(VoidType); isVoid {
+			a.addError(
+				"cannot bind a void value; this expression produces no value",
+				stmt.Initializer.Pos(), stmt.Initializer.End(),
+			).WithHint("give the function a return type, or call it as a statement")
+			typedInit = &TypedLiteralExpr{Type: ErrorType{}}
+			initType = ErrorType{}
+		}
+
 		// Determine the declared type
 		if stmt.TypeName != "" {
 			// Explicit type annotation - use resolveTypeName to support struct types
@@ -1747,6 +1758,24 @@ func (a *Analyzer) analyzeFieldAssignStatement(stmt *ast.FieldAssignStmt) TypedS
 		accessingThroughMutableRef = true
 	}
 	_ = accessingThroughMutableRef // used for documentation, mutation is allowed
+
+	// The immediate-object check above only sees the borrow when the target is
+	// one level deep (p.x = ...). For a nested target (o.i.v = ...), stmt.Object
+	// is the field access o.i, which analyzes to a bare struct value and loses
+	// the &T wrapper at the root. Walk to the root binding: an immutable &T
+	// reference makes the entire reachable object graph read-only, so mutation
+	// through it at any depth must be rejected. (A mutable &&T root is fine; a
+	// reference can only appear at the root since fields cannot be reference
+	// typed.)
+	if !accessingThroughImmutableRef {
+		if rootName := GetRootVarName(stmt.Object); rootName != "" {
+			if info, found := a.currentScope.lookup(rootName); found {
+				if _, isImmutRef := info.Type.(RefPointerType); isImmutRef {
+					accessingThroughImmutableRef = true
+				}
+			}
+		}
+	}
 
 	// Check that the object is a struct or class type
 	var fields []StructFieldInfo

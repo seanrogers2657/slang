@@ -93,12 +93,18 @@ func TestAnalyzeBinaryExpression_Comparison(t *testing.T) {
 
 func TestAnalyzeBinaryExpression_TypeError(t *testing.T) {
 	tests := []struct {
-		name string
-		expr *BinaryExprBuilder
+		name    string
+		expr    *BinaryExprBuilder
+		wantErr string
 	}{
-		{"string + int", bin(strLit("test"), "+", intLit("3"))},
-		{"int + string", bin(intLit("5"), "+", strLit("test"))},
-		{"string - string", bin(strLit("a"), "-", strLit("b"))},
+		// '+' concatenates two strings, but there is no implicit conversion,
+		// so a string mixed with a number is reported as a concatenation error
+		// rather than the generic numeric-operands one.
+		{"string + int", bin(strLit("test"), "+", intLit("3")), "cannot concatenate 'string' and 's64'"},
+		{"int + string", bin(intLit("5"), "+", strLit("test")), "cannot concatenate 'string' and 's64'"},
+		{"string - string", bin(strLit("a"), "-", strLit("b")), "operator '-' is not defined on strings"},
+		{"string * string", bin(strLit("a"), "*", strLit("b")), "operator '*' is not defined on strings"},
+		{"bool + int", bin(boolLit("true"), "+", intLit("3")), "requires numeric operands"},
 	}
 
 	for _, tt := range tests {
@@ -106,9 +112,18 @@ func TestAnalyzeBinaryExpression_TypeError(t *testing.T) {
 			test := newTest(t)
 			result := test.analyzer.analyzeBinaryExpression(tt.expr.build())
 			test.expectType(result, TypeError)
-			test.expectErrorContaining("requires numeric operands")
+			test.expectErrorContaining(tt.wantErr)
 		})
 	}
+}
+
+// TestAnalyzeBinaryExpression_StringConcat covers the one arithmetic operator
+// that is defined on strings.
+func TestAnalyzeBinaryExpression_StringConcat(t *testing.T) {
+	test := newTest(t)
+	result := test.analyzer.analyzeBinaryExpression(bin(strLit("a"), "+", strLit("b")).build())
+	test.expectType(result, TypeString)
+	test.expectNoErrors()
 }
 
 func TestAnalyzeProgram(t *testing.T) {
@@ -1008,10 +1023,10 @@ func TestAnalyzeGroupingExpression(t *testing.T) {
 
 	t.Run("type error inside grouping propagates", func(t *testing.T) {
 		test := newTest(t)
-		// ("a" + 5) - type error
+		// ("a" + 5) - type error: no implicit conversion between string and s64
 		result := test.analyzer.analyzeExpression(groupExpr(binExpr(strLit("a"), "+", intLit("5"))))
 		test.expectType(result, TypeError)
-		test.expectErrorContaining("requires numeric operands")
+		test.expectErrorContaining("cannot concatenate 'string' and 's64'")
 	})
 }
 
@@ -2567,6 +2582,62 @@ func TestAnalyzeArrayTypeAnnotation(t *testing.T) {
 		arrType := ArrayType{ElementType: TypeS64, Size: 3}
 		if arrType.String() != "s64[]" {
 			t.Errorf("expected s64[], got %s", arrType.String())
+		}
+	})
+}
+
+// TestCoerceLiteralOperand covers retyping a bare integer literal to the other
+// operand's integer type, which is what lets byte-level expressions like
+// `s[i] >= 97` type-check without a conversion.
+func TestCoerceLiteralOperand(t *testing.T) {
+	t.Run("literal takes the non-literal operand's type", func(t *testing.T) {
+		test := newTest(t)
+		lit := &TypedLiteralExpr{Type: TypeS64, LitType: ast.LiteralTypeInteger, Value: "100"}
+
+		// Non-literal stand-in on the left: an identifier typed u8.
+		ident := &TypedIdentifierExpr{Type: TypeU8, Name: "b"}
+		test.analyzer.coerceLiteralOperand(ident, lit)
+		if !lit.Type.Equals(TypeU8) {
+			t.Errorf("literal type = %s, want u8", lit.Type.String())
+		}
+
+		// Same in the other operand order.
+		lit2 := &TypedLiteralExpr{Type: TypeS64, LitType: ast.LiteralTypeInteger, Value: "100"}
+		test.analyzer.coerceLiteralOperand(lit2, ident)
+		if !lit2.Type.Equals(TypeU8) {
+			t.Errorf("literal type = %s, want u8", lit2.Type.String())
+		}
+	})
+
+	t.Run("two literals keep the s64 default", func(t *testing.T) {
+		test := newTest(t)
+		a := &TypedLiteralExpr{Type: TypeS64, LitType: ast.LiteralTypeInteger, Value: "1"}
+		b := &TypedLiteralExpr{Type: TypeS64, LitType: ast.LiteralTypeInteger, Value: "2"}
+		test.analyzer.coerceLiteralOperand(a, b)
+		if !a.Type.Equals(TypeS64) || !b.Type.Equals(TypeS64) {
+			t.Errorf("literal types = %s, %s; want both s64", a.Type.String(), b.Type.String())
+		}
+	})
+
+	t.Run("out-of-range literal is not coerced", func(t *testing.T) {
+		test := newTest(t)
+		ident := &TypedIdentifierExpr{Type: TypeU8, Name: "b"}
+		lit := &TypedLiteralExpr{Type: TypeS64, LitType: ast.LiteralTypeInteger, Value: "1000"}
+		test.analyzer.coerceLiteralOperand(ident, lit)
+		// 1000 does not fit u8, so it stays s64 and the narrow side widens
+		// instead — coercion must never truncate.
+		if !lit.Type.Equals(TypeS64) {
+			t.Errorf("literal type = %s, want s64 (unchanged)", lit.Type.String())
+		}
+	})
+
+	t.Run("non-integer operands are untouched", func(t *testing.T) {
+		test := newTest(t)
+		str := &TypedLiteralExpr{Type: TypeString, LitType: ast.LiteralTypeString, Value: "x"}
+		lit := &TypedLiteralExpr{Type: TypeS64, LitType: ast.LiteralTypeInteger, Value: "1"}
+		test.analyzer.coerceLiteralOperand(str, lit)
+		if !lit.Type.Equals(TypeS64) {
+			t.Errorf("literal type = %s, want s64", lit.Type.String())
 		}
 	})
 }

@@ -1,6 +1,6 @@
-// @test: expect_error=true
-// @test: error_stage=semantic
-// @test: error_contains=requires numeric operands
+// @test: exit_code=0
+// @test: stdout=helloworld\n
+// Two string literals concatenate with +
 main = () {
-    "hello" + "world"
+    print("hello" + "world")
 }

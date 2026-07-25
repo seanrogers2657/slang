@@ -4494,6 +4494,8 @@ func (a *Analyzer) analyzeBinaryExpression(expr *ast.BinaryExpr) TypedExpression
 	left := a.analyzeExpression(expr.Left)
 	right := a.analyzeExpression(expr.Right)
 
+	a.coerceLiteralOperand(left, right)
+
 	leftType := left.GetType()
 	rightType := right.GetType()
 
@@ -4508,6 +4510,52 @@ func (a *Analyzer) analyzeBinaryExpression(expr *ast.BinaryExpr) TypedExpression
 		LeftPos:  expr.LeftPos,
 		OpPos:    expr.OpPos,
 		RightPos: expr.RightPos,
+	}
+}
+
+// coerceLiteralOperand retypes a bare integer literal operand to match the
+// other operand's integer type, so mixed-width expressions like `s[i] >= 97`
+// and `b - 48` (where s[i] is u8) type-check without an explicit conversion.
+//
+// Integer literals otherwise default to s64, and IntegerWidensTo refuses to
+// bridge signedness, so every byte-level expression would be a type error. This
+// mirrors the coercion already applied to a literal initializer at a
+// declaration with an explicit type annotation.
+//
+// Only a literal adjacent to a *non-literal* operand is retyped: two literals
+// keep the s64 default, and a literal that does not fit the target type is left
+// alone so the narrow operand widens instead — coercion never truncates.
+func (a *Analyzer) coerceLiteralOperand(left, right TypedExpression) {
+	tryCoerce := func(lit TypedExpression, target TypedExpression) bool {
+		litExpr, ok := lit.(*TypedLiteralExpr)
+		if !ok || litExpr.LitType != ast.LiteralTypeInteger {
+			return false
+		}
+		targetType := target.GetType()
+		if !IsIntegerType(targetType) || !IsIntegerType(litExpr.Type) {
+			return false
+		}
+		if litExpr.Type.Equals(targetType) {
+			return false
+		}
+		if checkIntegerBoundsCore(litExpr.Value, targetType) != "" {
+			// Out of range for the target — leave it alone so the narrow
+			// operand widens to the literal's type instead.
+			return false
+		}
+		litExpr.Type = targetType
+		return true
+	}
+
+	// A literal never drives the coercion, so a literal-literal pair is
+	// untouched and keeps the s64 default.
+	if _, rightIsLit := right.(*TypedLiteralExpr); !rightIsLit {
+		if tryCoerce(left, right) {
+			return
+		}
+	}
+	if _, leftIsLit := left.(*TypedLiteralExpr); !leftIsLit {
+		tryCoerce(right, left)
 	}
 }
 
@@ -4687,6 +4735,36 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 		}
 
 		return TypeBoolean
+	}
+
+	// String concatenation: + joins two strings into a fresh heap string.
+	// Only '+' is defined on strings; the other arithmetic operators are not.
+	if op == "+" || op == "-" || op == "*" || op == "/" || op == "%" {
+		_, leftIsStr := leftType.(StringType)
+		_, rightIsStr := rightType.(StringType)
+		if leftIsStr && rightIsStr {
+			if op != "+" {
+				a.addError(
+					fmt.Sprintf("operator '%s' is not defined on strings", op),
+					leftPos, rightPos,
+				).WithHint("only '+' concatenates strings")
+				return TypeError
+			}
+			return TypeString
+		}
+		// Exactly one side is a string — there is no implicit conversion, so
+		// point at interpolation rather than the generic "requires numeric" error.
+		if op == "+" && (leftIsStr || rightIsStr) {
+			otherType, otherPos := rightType, rightPos
+			if rightIsStr {
+				otherType, otherPos = leftType, leftPos
+			}
+			a.addError(
+				fmt.Sprintf("cannot concatenate 'string' and '%s'", otherType.String()),
+				otherPos, otherPos,
+			).WithHint("both operands must be strings; use interpolation (\"${a}${b}\") to mix types")
+			return TypeError
+		}
 	}
 
 	// Arithmetic operators: +, -, *, /, %

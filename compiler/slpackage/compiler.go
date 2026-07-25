@@ -380,8 +380,15 @@ func (c *PackageCompiler) Analyze(pkgFiles map[string][]*ast.FileAST) ([]*errors
 func (c *PackageCompiler) GenerateIR(typedPrograms map[string]*semantic.TypedProgram) (*ir.Program, error) {
 	var combined *ir.Program
 
-	// First pass: collect globals (mutable top-level vars from all packages)
-	globalVars := make(map[string]bool)
+	// First pass: collect globals (all top-level bindings from all packages).
+	//
+	// Both `val` and `var` become globals. A top-level binding lives outside any
+	// function, but SSA definitions are function-local, so leaving one as an SSA
+	// variable makes it visible only to whichever function the top-level
+	// statements were injected into (main) — every other function reading it
+	// fails IR validation with "used before definition". Immutability is
+	// enforced by the semantic analyzer and does not affect storage.
+	globalVars := make(map[string]semantic.Type)
 	for _, pkgPath := range c.AnalysisOrder {
 		typedAST := typedPrograms[pkgPath]
 		if typedAST == nil {
@@ -392,8 +399,8 @@ func (c *PackageCompiler) GenerateIR(typedPrograms map[string]*semantic.TypedPro
 			prefix = ManglePrefix(pkgPath)
 		}
 		for _, stmt := range typedAST.Statements {
-			if varDecl, ok := stmt.(*semantic.TypedVarDeclStmt); ok && varDecl.Mutable {
-				globalVars[prefix+varDecl.Name] = true
+			if varDecl, ok := stmt.(*semantic.TypedVarDeclStmt); ok {
+				globalVars[prefix+varDecl.Name] = varDecl.DeclaredType
 			}
 		}
 	}
@@ -465,8 +472,10 @@ func (c *PackageCompiler) GenerateIR(typedPrograms map[string]*semantic.TypedPro
 		if combined == nil {
 			combined = prog
 		} else {
-			combined.Functions = append(combined.Functions, prog.Functions...)
-			combined.Globals = append(combined.Globals, prog.Globals...)
+			// Merge (not a plain append): each package numbers its string
+			// pool from zero, so the incoming references must be remapped
+			// onto the combined pool.
+			combined.Merge(prog)
 		}
 	}
 

@@ -1,6 +1,6 @@
-// @test: expect_error=true
-// @test: error_stage=semantic
-// @test: error_contains=requires numeric operands
+// @test: exit_code=0
+// @test: stdout=hello\nworldtest\n
+// Escape sequences survive concatenation
 main = () {
-    "hello\nworld" + "test"
+    print("hello\nworld" + "test")
 }

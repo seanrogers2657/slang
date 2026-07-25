@@ -95,10 +95,11 @@ The compiler currently supports:
 - **Expressions**: Binary and unary expressions
 - **Operators**:
   - Arithmetic: `+`, `-`, `*`, `/`, `%`
+  - String concatenation: `+` on two strings (the only arithmetic operator defined on strings)
   - Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=` (return `bool`)
   - Logical: `&&` (and), `||` (or), `!` (not)
   - Field access: `.` for struct fields
-  - Index access: `[]` for arrays
+  - Index access: `[]` for arrays and strings (`s[i]` yields `u8`)
   - Safe navigation: `?.` for nullable field access
 - **Boolean literals**: `true`, `false`
 - **String interpolation**: `$name` and `${expr}` (Kotlin-style; see String Interpolation)
@@ -113,9 +114,11 @@ The compiler currently supports:
 - **Built-in Functions**:
   - `print(value)` - print a value to stdout (accepts `s64`, `string`, or `bool`)
   - `exit(code)` - exit program with specified exit code
-  - `len(array)` - get array length
+  - `len(array)` - get array length (also accepts `string` and `vec`)
   - `sleep(nanoseconds)` - sleep for specified duration
   - `assert(condition, message)` - if condition is false, prints message to stderr and exits with code 1
+  - `substr(s, start, end)` - the half-open byte range `[start, end)` of a string, as a new string (range-checked)
+  - `chr(byte)` - a one-byte string from a byte value (the inverse of `s[i]`)
   - `new value` - allocate a value on the heap (returns `*T`)
 - **Comments**: Line comments with `//` (e.g., `// this is a comment`)
 
@@ -721,6 +724,93 @@ val x = 10     // Error: variable 'x' is already declared in this scope
 x = 20         // Error: cannot assign to immutable variable 'x'
 ```
 
+### Integer Widths in Expressions
+
+There is no cast syntax. Mixed-width expressions type-check through two rules,
+which together let byte-level code (`s[i]` yields `u8`) interoperate with the
+default `s64` integer:
+
+```slang
+main = () {
+    val b: u8 = 200
+
+    print(b > 100)      // bare literal 100 takes u8, the other operand's type
+    print(b + 55)       // ...in arithmetic too
+
+    val z: s64 = 0
+    print(z + b)        // u8 widens to s64: 200
+
+    print(b + 1000)     // 1000 does not fit u8, so b widens instead: 1200
+}
+```
+
+**Widening rules** (`IntegerWidensTo` in `compiler/semantic/types.go`):
+- **Same signedness**: a narrower (or equal) type widens to the wider one
+  (`s8 -> s64`, `u8 -> u64`).
+- **Unsigned to signed**: allowed only when *strictly* narrower, so the whole
+  unsigned range fits below the signed limit (`u8 -> s64`, `u32 -> s64`, but
+  **not** `u64 -> s64`, whose high half would read as negative, and not
+  `u8 -> s8`). Values are held zero-extended in their 64-bit slots, so this
+  widening is a no-op at runtime.
+- **Signed to unsigned**: never, since negatives have no representation.
+
+**Literal coercion** (`coerceLiteralOperand` in `compiler/semantic/analyzer.go`):
+a bare integer literal next to a non-literal operand takes that operand's
+integer type, if the value fits. Two literals keep the `s64` default, and a
+literal that does not fit is left alone so the narrow side widens instead —
+coercion never silently truncates.
+
+**Arithmetic happens in the declared type, and overflow always traps.** Because
+a literal takes the narrow operand's type, an expression stays at that width
+rather than silently widening to `s64` to make the result fit. Escaping the
+declared type would be an implicit conversion, and it would let an overflow
+pass undetected — so the operation traps instead:
+
+```slang
+val s = "!"
+print(s[0] - 48)          // panic: unsigned underflow ('!' is 33, below '0')
+
+val a: s32 = 2000000000
+print(a + 2000000000)     // panic: integer overflow (4000000000 exceeds s32)
+```
+
+This is the intended guarantee, not an edge case: **no operation is allowed to
+overflow or underflow silently.** It is enforced uniformly — signed and
+unsigned, every width, for `+ - * / %`, negation, and signed-min ÷ -1 — and
+out-of-range literals are rejected at compile time.
+
+To compute at a wider type, start from a value of that type
+(`zero + s[i] - 48`, where `val zero: s64 = 0`).
+
+**This is a workaround for a missing feature: typed integer literals.** A bare
+literal has no declared width, so the compiler infers one — `s64` by default,
+or the other operand's type via `coerceLiteralOperand`. A suffix (e.g.
+`2000000000s64`, `42u8`) would let the literal state its own type, after which
+the ordinary widening rules apply and no inference heuristic is needed.
+
+The gap is not only about width selection — a literal wider than `s64` cannot
+be written at all in most positions today, because the default type is what it
+is bounds-checked against:
+
+```slang
+val x = 170141183460469231731687303715884105727        // error: out of range for s64
+val x: s128 = 170141183460469231731687303715884105727  // ok — annotation retypes it
+show(170141183460469231731687303715884105727)          // error: expected s128, got s64
+```
+
+So `s128`/`u128` literals work only where a declared type is in scope to coerce
+them (annotated declaration, return position). Passing one directly as an
+argument requires binding it to an annotated local first. Literal suffixes would
+close this; a cast syntax would not, since the problem is the literal's own type
+rather than a conversion between two known types.
+
+**Comparison signedness follows the widened type, not the operands.** A
+comparison's own result is `bool`, so `genCmp` picks its condition codes from
+the operand types: unsigned codes only when *both* operands are unsigned. When
+signedness differs the unsigned side widened into the signed one, so the
+comparison is signed — otherwise `u8(1) > s64(-1)` would read `-1` as a huge
+positive value and return false.
+
 ### Control Flow
 
 Slang supports standard control flow constructs:
@@ -965,6 +1055,37 @@ main = () {
 - `\$` is a literal `$`; a `$` not followed by `{` or a letter is also literal
 - Interpolated strings may nest (`"${ "inner ${x}" }"`)
 
+### String Manipulation
+
+Strings are built and taken apart with four primitives. Together they are enough
+to write `split`, `trim`, `index_of`, and `parse_int` in Slang itself — see
+`_examples/slang/strings/toolkit_composes.sl`.
+
+```slang
+main = () {
+    val s = "Hello, World!"
+
+    print(len(s))                 // 13 — length in bytes
+    print(s[0])                   // 72 — byte at index 0, as u8
+    print(substr(s, 0, 5))        // Hello — half-open range [start, end)
+    print(chr(72) + chr(105))     // Hi — build a string from bytes
+    print("a" + "b")              // ab — concatenation
+}
+```
+
+**String manipulation rules:**
+- `substr(s, start, end)` returns the bytes in `[start, end)` as a **new** heap
+  string. Valid ranges satisfy `0 <= start <= end <= len(s)`; anything else
+  panics with `substring range out of bounds`. An empty range is legal anywhere
+  in `[0, len]`, so `substr(s, i, i)` is `""`.
+- `s[i]` yields a `u8`, and `chr(b)` turns a byte back into a one-byte string.
+  `chr` accepts any integer type but panics with `chr value out of byte range`
+  outside `0..255` — it does not truncate to the low byte.
+- `+` concatenates two strings; there is no implicit conversion, so mixing a
+  string with a number is a compile error — use interpolation (`"${a}${b}"`).
+- Every one of these produces a fresh heap allocation, freed at scope exit
+  (see the memory model below). There is no substring aliasing or slicing view.
+
 **String memory model (important for compiler work):** `string` is a **copyable
 value type** (`IsCopyable(StringType)` is true — same bucket as primitives and
 copyable structs), **not** an owned pointer like `*T` (which is single-owner and
@@ -995,7 +1116,10 @@ Relevant ops/helpers: `OpStrConcat`, `OpIntToStr`, `OpBoolToStr`, `OpStrCopy`,
 - All programs — single-file or multi-package — go through `PackageCompiler`. No separate single-file path
 - `PackageCompiler` orchestrates 4 phases: (1) discovery/parsing, (2) semantic analysis, (3) IR generation. Backend is called by the caller
 - The semantic analyzer uses a 5-pass approach: register type names → resolve type fields → register function signatures → analyze top-level variables → analyze declaration bodies. This ordering is required for forward references
-- Top-level `var` declarations in non-root packages use `OpLoadGlobal`/`OpStoreGlobal` for `.data` section access
+- Top-level declarations — **both `val` and `var`, in every package including root** — are stored in `.data` and accessed with `OpLoadGlobal`/`OpStoreGlobal`. SSA definitions are function-local, so an SSA-backed top-level binding is visible only to the function the top-level statements are injected into (`main`); any other function reading it fails IR validation with "used before definition". Immutability is enforced by the semantic analyzer and does not affect storage.
+- A global's storage is sized and typed from the declared type run through `convertSSAType` (`GeneratorConfig.GlobalVars` carries the `semantic.Type`). It must be the SSA conversion, not `convertType`: a struct/class value is carried in SSA as a pointer to its allocation, so the layout type would make `OpLoadGlobal` yield a bare aggregate and a field access on a top-level struct binding would fail validation with "FieldPtr argument must be a pointer". The backend reserves `reprOf(type).words` × `.quad` and moves that many words, so 128-bit and flat-nullable globals are not truncated to their low word.
+- Global *storage* is not global *name resolution*. A function-local binding of the same name — a parameter, a local, a block local, a `for` init variable — shadows the top-level one, so the IR generator tracks declared local names per lexical scope (`Generator.localNameScopes`) and `readVariable`/`writeVariable` consult it before `globalVars`. Without that, a local named like a top-level binding silently reads and overwrites shared `.data` state. The statements injected into `main` are exempt (`generatingTopLevel`): they initialize the globals themselves.
+- `Program.Merge` combines per-package IR programs. It remaps string-constant pool indices (each package numbers its pool from zero) and adopts functions and globals, but deliberately **not** structs — struct names are never package-mangled, so two packages that each declare a `Point` would collide as "duplicate struct name".
 
 ### Name Mangling
 - Uses `__` as separator (e.g., `math__add`), not `_.` — slasm doesn't support `.` in labels

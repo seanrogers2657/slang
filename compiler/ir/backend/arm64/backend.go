@@ -96,6 +96,8 @@ var (
 	PanicDivZero          = panicMessage{"_sl_panic_div_zero", "panic: division by zero\n"}
 	PanicModZero          = panicMessage{"_sl_panic_mod_zero", "panic: modulo by zero\n"}
 	PanicBounds           = panicMessage{"_sl_panic_bounds", "panic: array index out of bounds\n"}
+	PanicSubstrRange      = panicMessage{"_sl_panic_substr_range", "panic: substring range out of bounds\n"}
+	PanicCharRange        = panicMessage{"_sl_panic_char_range", "panic: chr value out of byte range\n"}
 	PanicOverflowAdd      = panicMessage{"_sl_panic_overflow_add", "panic: integer overflow: addition\n"}
 	PanicOverflowSub      = panicMessage{"_sl_panic_overflow_sub", "panic: integer overflow: subtraction\n"}
 	PanicOverflowMul      = panicMessage{"_sl_panic_overflow_mul", "panic: integer overflow: multiplication\n"}
@@ -111,6 +113,8 @@ var allPanicMessages = []panicMessage{
 	PanicDivZero,
 	PanicModZero,
 	PanicBounds,
+	PanicSubstrRange,
+	PanicCharRange,
 	PanicOverflowAdd,
 	PanicOverflowSub,
 	PanicOverflowMul,
@@ -276,10 +280,15 @@ func (g *generator) emitDataSection() {
 
 	// Heap is dynamically allocated via mmap at runtime
 
-	// Global variables (from top-level var declarations)
+	// Global variables (from top-level val/var declarations). A global is sized
+	// from its declared type, so wide values (s128, flat nullables) reserve
+	// every word they occupy rather than just the first.
 	for _, global := range g.prog.Globals {
+		g.emit("    .align 3")
 		g.emit("_sl_global_%s:", global.Name)
-		g.emit("    .quad 0")
+		for i := 0; i < reprOf(global.Type).words; i++ {
+			g.emit("    .quad 0")
+		}
 	}
 
 	g.emit("")
@@ -1116,6 +1125,61 @@ func (g *generator) emitStringConvHelpers() {
 	g.emit("    ret")
 	g.emit("")
 
+	// ---- _sl_str_substr ----
+	// Copies the half-open byte range [start, end) out of a string into a fresh
+	// heap string. The caller has already bounds-checked the range (see
+	// genSubstr), so this helper assumes 0 <= start <= end <= len.
+	g.emit("// String substr (x0 = src, x1 = start, x2 = end) -> x0 = ptr to {len; bytes}")
+	g.emit("_sl_str_substr:")
+	g.emit("    stp x29, x30, [sp, #-16]!")
+	g.emit("    mov x29, sp")
+	g.emit("    stp x19, x20, [sp, #-16]!")
+	g.emit("    stp x21, x22, [sp, #-16]!")
+	g.emit("    mov x19, x0")       // src ptr
+	g.emit("    mov x20, x1")       // start
+	g.emit("    sub x21, x2, x1")   // count = end - start
+	g.emit("    add x0, x21, #8")   // alloc count + header
+	g.emit("    bl _sl_heap_alloc") // x0 = dest
+	g.emit("    str x21, [x0]")     // length header
+	g.emit("    add x9, x0, #8")    // dest bytes
+	g.emit("    add x10, x19, #8")  // src bytes
+	g.emit("    add x10, x10, x20") // + start
+	g.emit("    mov x11, x21")      // count
+	g.emit("_sl_str_substr_loop:")
+	g.emit("    cbz x11, _sl_str_substr_done")
+	g.emit("    ldrb w12, [x10]")
+	g.emit("    strb w12, [x9]")
+	g.emit("    add x10, x10, #1")
+	g.emit("    add x9, x9, #1")
+	g.emit("    sub x11, x11, #1")
+	g.emit("    b _sl_str_substr_loop")
+	g.emit("_sl_str_substr_done:")
+	g.emit("    ldp x21, x22, [sp], #16") // x0 still = dest ptr
+	g.emit("    ldp x19, x20, [sp], #16")
+	g.emit("    ldp x29, x30, [sp], #16")
+	g.emit("    ret")
+	g.emit("")
+
+	// ---- _sl_char_to_str ----
+	// Builds a fresh one-byte heap string from the low byte of x0. This is the
+	// inverse of the s[i] byte index, so bytes read out of a string can be
+	// built back into one.
+	g.emit("// Char-to-string (x0 = byte) -> x0 = ptr to {len=1; byte}")
+	g.emit("_sl_char_to_str:")
+	g.emit("    stp x29, x30, [sp, #-16]!")
+	g.emit("    mov x29, sp")
+	g.emit("    stp x19, x20, [sp, #-16]!")
+	g.emit("    mov x19, x0")       // byte value
+	g.emit("    mov x0, #9")        // header + 1 byte
+	g.emit("    bl _sl_heap_alloc") // x0 = dest
+	g.emit("    mov x9, #1")
+	g.emit("    str x9, [x0]")            // length header = 1
+	g.emit("    strb w19, [x0, #8]")      // the byte
+	g.emit("    ldp x19, x20, [sp], #16") // x0 still = dest ptr
+	g.emit("    ldp x29, x30, [sp], #16")
+	g.emit("    ret")
+	g.emit("")
+
 	// ---- _sl_str_free ----
 	// Frees a heap string. Constant strings live in .data (not in any arena),
 	// so _sl_find_arena returns 0 and we no-op — this is what makes it safe to
@@ -1815,7 +1879,11 @@ func (g *generator) genConst(v *ir.Value) error {
 		g.storeToStack("x9", offset)
 
 	case *ir.StringType:
-		// String constant - register in data section
+		// String constant — must already be in the pool emitted by
+		// emitDataSection, which ran before any function was generated.
+		// Appending here would mint an index whose label can never be
+		// defined, turning a missing pool entry into an obscure assembler
+		// "undefined label _sl_strN" instead of a compiler error.
 		strIdx := -1
 		for i, s := range g.strings {
 			if s == v.AuxString {
@@ -1824,9 +1892,8 @@ func (g *generator) genConst(v *ir.Value) error {
 			}
 		}
 		if strIdx == -1 {
-			// Add new string
-			strIdx = len(g.strings)
-			g.strings = append(g.strings, v.AuxString)
+			return fmt.Errorf("string constant %q is not in the program's constant pool; "+
+				"the pool must be complete before code generation (see Program.Merge)", v.AuxString)
 		}
 		// Store string index in value for loadValue to use later
 		v.AuxInt = int64(strIdx)
@@ -2139,8 +2206,15 @@ func (g *generator) genCmp(v *ir.Value, cond string) error {
 
 	// Relational comparisons of unsigned integers must use the unsigned
 	// condition codes (lo/ls/hi/hs); the comparison's own result type is bool,
-	// so signedness is taken from the operand type.
-	if isUnsignedInt(v.Args[0].Type) || isUnsignedInt(v.Args[1].Type) {
+	// so signedness is taken from the operand types.
+	//
+	// Both operands must be unsigned to compare as unsigned. When they differ,
+	// the semantic analyzer only admitted the pair because the unsigned side
+	// widens into the signed one (IntegerWidensTo permits unsigned -> signed
+	// only when strictly narrower), so the common type is signed and the
+	// comparison must be too. Reading it as unsigned would treat a negative
+	// signed operand as a huge positive value, making `u8(1) > s64(-1)` false.
+	if isUnsignedInt(v.Args[0].Type) && isUnsignedInt(v.Args[1].Type) {
 		cond = unsignedCondCode(cond)
 	}
 
@@ -2306,21 +2380,41 @@ func (g *generator) signExtendNarrow(reg string, bits int, signed bool) {
 	g.emit("    asr %s, %s, #%d", reg, reg, shift)
 }
 
+// genLoadGlobal reads a top-level binding out of .data. Multi-word values
+// (s128, flat nullables) are copied word by word; storeToStack only ever uses
+// x8 as scratch, so the label address in x10 survives the loop.
 func (g *generator) genLoadGlobal(v *ir.Value) error {
 	label := "_sl_global_" + v.AuxString
 	offset := g.stackOffset(v)
-	g.emit("    adrp x9, %s@PAGE", label)
-	g.emit("    add x9, x9, %s@PAGEOFF", label)
-	g.emit("    ldr x9, [x9]")
-	g.storeToStack("x9", offset)
+	g.emit("    adrp x10, %s@PAGE", label)
+	g.emit("    add x10, x10, %s@PAGEOFF", label)
+	for i := 0; i < reprOf(v.Type).words; i++ {
+		g.emit("    ldr x9, [x10, #%d]", i*8)
+		g.storeToStack("x9", offset+i*8)
+	}
 	return nil
 }
 
+// genStoreGlobal writes a top-level binding into .data, word by word for
+// multi-word values. loadFromStack also scratches only x8, so x10 is stable.
 func (g *generator) genStoreGlobal(v *ir.Value) error {
 	label := "_sl_global_" + v.AuxString
-	g.loadValue(v.Args[0], "x9") // value to store
+	src := v.Args[0]
+	r := reprOf(src.Type)
+
 	g.emit("    adrp x10, %s@PAGE", label)
 	g.emit("    add x10, x10, %s@PAGEOFF", label)
+
+	if r.multiWord() {
+		srcOffset := g.stackOffset(src)
+		for i := 0; i < r.words; i++ {
+			g.loadFromStack("x9", srcOffset+i*8)
+			g.emit("    str x9, [x10, #%d]", i*8)
+		}
+		return nil
+	}
+
+	g.loadValue(src, "x9")
 	g.emit("    str x9, [x10]")
 	return nil
 }
@@ -2715,6 +2809,65 @@ func (g *generator) genStringIndex(v *ir.Value) error {
 	return nil
 }
 
+// genSubstr generates the bounds-checked half-open slice substr(s, start, end).
+// The range check happens inline (rather than inside _sl_str_substr) so the
+// panic reports the enclosing function name, matching s[i] and array indexing.
+func (g *generator) genSubstr(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x10") // string ptr
+	g.loadValue(v.Args[1], "x11") // start
+	g.loadValue(v.Args[2], "x12") // end
+
+	label := g.labels.NextLabel()
+
+	g.emit("    ldr x13, [x10]") // len from header
+	// start < 0 (signed)
+	g.emit("    cmp x11, #0")
+	g.emit("    blt _sl_bounds_fail_%d", label)
+	// end < start — rejects a reversed range and any negative end
+	g.emit("    cmp x12, x11")
+	g.emit("    blt _sl_bounds_fail_%d", label)
+	// end > len
+	g.emit("    cmp x12, x13")
+	g.emit("    ble _sl_bounds_ok_%d", label)
+
+	g.emit("_sl_bounds_fail_%d:", label)
+	g.emitPanic(PanicSubstrRange)
+
+	g.emit("_sl_bounds_ok_%d:", label)
+	g.emit("    mov x0, x10")
+	g.emit("    mov x1, x11")
+	g.emit("    mov x2, x12")
+	g.emit("    bl _sl_str_substr")
+	g.storeToStack("x0", g.stackOffset(v))
+	return nil
+}
+
+// genCharToStr generates chr(b): a fresh one-byte string from a byte value.
+//
+// The value is range-checked to 0..255 rather than truncated to its low byte.
+// chr accepts any integer type, so a wider argument can carry a value with no
+// byte representation; silently keeping the low bits would be the only place in
+// the language where out-of-range data passes through instead of trapping. The
+// check is inline (like genSubstr) so the panic names the enclosing function.
+func (g *generator) genCharToStr(v *ir.Value) error {
+	g.loadValue(v.Args[0], "x0")
+
+	label := g.labels.NextLabel()
+
+	g.emit("    cmp x0, #0")
+	g.emit("    blt _sl_char_fail_%d", label)
+	g.emit("    cmp x0, #255")
+	g.emit("    ble _sl_char_ok_%d", label)
+
+	g.emit("_sl_char_fail_%d:", label)
+	g.emitPanic(PanicCharRange)
+
+	g.emit("_sl_char_ok_%d:", label)
+	g.emit("    bl _sl_char_to_str")
+	g.storeToStack("x0", g.stackOffset(v))
+	return nil
+}
+
 func (g *generator) genIsNull(v *ir.Value) error {
 	g.loadValue(v.Args[0], "x10")
 	g.emit("    cmp x10, #0")
@@ -2868,6 +3021,10 @@ func (g *generator) genCall(v *ir.Value) error {
 		return g.genSleep(v)
 	case "assert":
 		return g.genAssert(v)
+	case "substr":
+		return g.genSubstr(v)
+	case "chr":
+		return g.genCharToStr(v)
 	}
 
 	// Regular function call. A single-word argument is passed by value in one

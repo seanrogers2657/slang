@@ -67,6 +67,56 @@ func (p *Program) AddString(s string) int {
 	return idx
 }
 
+// Merge folds another program's contents into p, rewriting the merged
+// program's string-constant references to point at p's pool.
+//
+// String constants are referenced by *pool index*, and every program numbers
+// its own pool from zero. Appending functions without remapping those indices
+// therefore does not merely lose the other pool's entries — it makes them
+// collide, so a reference meant for the other program's `_sl_str0` silently
+// resolves to p's unrelated `_sl_str0`. Callers combining per-package programs
+// must go through this method rather than appending the slices directly.
+func (p *Program) Merge(other *Program) {
+	if other == nil {
+		return
+	}
+	if p.stringIndex == nil {
+		p.stringIndex = make(map[string]int)
+	}
+
+	// Map each of other's pool indices onto p's pool, deduplicating shared
+	// literals, then rewrite the references before adopting the functions.
+	remap := make([]int, len(other.Strings))
+	for i, s := range other.Strings {
+		remap[i] = p.AddString(s)
+	}
+	for _, fn := range other.Functions {
+		for _, block := range fn.Blocks {
+			for _, v := range block.Values {
+				if v.Op != OpConst {
+					continue
+				}
+				if _, isStr := v.Type.(*StringType); !isStr {
+					continue
+				}
+				if idx := int(v.AuxInt); idx >= 0 && idx < len(remap) {
+					v.AuxInt = int64(remap[idx])
+				}
+			}
+		}
+	}
+
+	p.Functions = append(p.Functions, other.Functions...)
+	p.Globals = append(p.Globals, other.Globals...)
+
+	// Struct types are deliberately not adopted. Unlike function names, struct
+	// names are never package-mangled, so two packages that each declare a
+	// `Point` would land in p.Structs twice and fail validation with
+	// "duplicate struct name". Nothing downstream of the merge reads
+	// p.Structs — the backend works from the struct types embedded in values —
+	// so the list stays whatever the first program contributed.
+}
+
 // GetString returns the string at the given index.
 func (p *Program) GetString(idx int) string {
 	if idx < 0 || idx >= len(p.Strings) {

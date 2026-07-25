@@ -825,18 +825,30 @@ type integerBitWidth interface {
 }
 
 // IntegerWidensTo checks if integer type 'from' can be implicitly widened to 'to'.
-// Widening is allowed when: both are integers (not floats), same signedness,
-// and from is narrower or equal width.
+// Widening is allowed only when every value of 'from' is representable in 'to':
+//
+//   - same signedness: 'from' must be no wider than 'to' (s8 -> s64, u8 -> u64)
+//   - unsigned to signed: 'from' must be strictly narrower, so its whole
+//     unsigned range fits below 'to's positive limit (u8 -> s64, but not
+//     u64 -> s64, whose high half would read as negative)
+//   - signed to unsigned: never, since negative values have no representation
+//
+// The unsigned-to-signed case is what lets byte-level code mix with the default
+// s64 integer: `s[i]` yields u8, and values are held zero-extended in their
+// 64-bit slots, so widening one is already a no-op at runtime.
 func IntegerWidensTo(from, to Type) bool {
 	if !IsIntegerType(from) || !IsIntegerType(to) {
 		return false
 	}
 	f := from.(integerBitWidth)
 	t := to.(integerBitWidth)
-	if f.IsSigned() != t.IsSigned() {
-		return false
+	if f.IsSigned() == t.IsSigned() {
+		return f.BitWidth() <= t.BitWidth()
 	}
-	return f.BitWidth() <= t.BitWidth()
+	if !f.IsSigned() && t.IsSigned() {
+		return f.BitWidth() < t.BitWidth()
+	}
+	return false
 }
 
 // IsFloatType checks if a type is any float type

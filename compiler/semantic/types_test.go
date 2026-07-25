@@ -192,3 +192,47 @@ func TestPointerTypes(t *testing.T) {
 		}
 	})
 }
+
+func TestIntegerWidensTo(t *testing.T) {
+	tests := []struct {
+		name string
+		from Type
+		to   Type
+		want bool
+	}{
+		// Same signedness: narrower (or equal) widens.
+		{"s8 to s64", TypeS8, TypeS64, true},
+		{"s64 to s64", TypeS64, TypeS64, true},
+		{"u8 to u64", TypeU8, TypeU64, true},
+		{"s64 to s8", TypeS64, TypeS8, false},
+		{"u64 to u8", TypeU64, TypeU8, false},
+
+		// Unsigned to signed: allowed only when strictly narrower, so the
+		// whole unsigned range fits below the signed limit.
+		{"u8 to s64", TypeU8, TypeS64, true},
+		{"u16 to s64", TypeU16, TypeS64, true},
+		{"u32 to s64", TypeU32, TypeS64, true},
+		{"u8 to s16", TypeU8, TypeS16, true},
+		{"u64 to s64", TypeU64, TypeS64, false}, // high half would read negative
+		{"u8 to s8", TypeU8, TypeS8, false},     // 255 does not fit in s8
+		{"u32 to s32", TypeU32, TypeS32, false},
+
+		// Signed to unsigned: never, since negatives have no representation.
+		{"s8 to u64", TypeS8, TypeU64, false},
+		{"s64 to u64", TypeS64, TypeU64, false},
+
+		// Non-integers never widen.
+		{"string to s64", TypeString, TypeS64, false},
+		{"s64 to string", TypeS64, TypeString, false},
+		{"bool to s64", TypeBoolean, TypeS64, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IntegerWidensTo(tt.from, tt.to); got != tt.want {
+				t.Errorf("IntegerWidensTo(%s, %s) = %v, want %v",
+					tt.from.String(), tt.to.String(), got, tt.want)
+			}
+		})
+	}
+}

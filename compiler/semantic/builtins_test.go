@@ -71,11 +71,11 @@ func TestBuiltinRegistry_All(t *testing.T) {
 	registry := NewBuiltinRegistry()
 
 	all := registry.All()
-	if len(all) != 9 {
-		t.Errorf("expected 9 default builtins, got %d", len(all))
+	if len(all) != 11 {
+		t.Errorf("expected 11 default builtins, got %d", len(all))
 	}
 
-	expectedBuiltins := []string{"exit", "print", "len", "sleep", "assert", "vec", "push", "get", "set"}
+	expectedBuiltins := []string{"exit", "print", "len", "sleep", "assert", "substr", "chr", "vec", "push", "get", "set"}
 	for _, name := range expectedBuiltins {
 		if _, ok := all[name]; !ok {
 			t.Errorf("expected %q in All() result", name)

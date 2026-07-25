@@ -29,6 +29,13 @@ var binaryOpMap = map[string]Op{
 type ownedVar struct {
 	name    string
 	semType semantic.Type
+	// global records whether the binding's storage is a .data global rather
+	// than an SSA variable, captured at declaration time. Cleanup reads the
+	// value back to free it, and a later local of the same name would shadow
+	// the name — so without this the top-level binding's entry would re-read
+	// (and re-free) the local's value, double-freeing one buffer and leaking
+	// the other.
+	global bool
 }
 
 // Generator converts a TypedProgram into IR.
@@ -76,6 +83,18 @@ type Generator struct {
 	// Global variables — names that should use OpLoadGlobal/OpStoreGlobal
 	globalVars map[string]Type
 
+	// localNameScopes records the names bound by function-local declarations
+	// (parameters and val/var statements), one entry per lexical scope. A local
+	// binding shadows a top-level one of the same name, so it must resolve to
+	// SSA rather than .data — otherwise a parameter or local named like a
+	// top-level binding silently reads and overwrites the global.
+	localNameScopes []map[string]bool
+
+	// generatingTopLevel is set while the injected top-level statements are
+	// generated into main. Those declarations *are* the globals, so they must
+	// not register themselves as locals shadowing their own storage.
+	generatingTopLevel bool
+
 	// funcSemanticParams maps a (mangled) function name to its parameters'
 	// semantic types. The IR collapses owned/borrow pointer kinds into a
 	// single PtrType, so own-vs-borrow at call sites must be decided from
@@ -92,9 +111,14 @@ type GeneratorConfig struct {
 	// Each carries its own prefix. Only used by the root package generator.
 	TopLevelStmts []PrefixedStmt
 
-	// GlobalVars is a set of mangled variable names that should use .data section
-	// access (OpLoadGlobal/OpStoreGlobal) instead of SSA variables.
-	GlobalVars map[string]bool
+	// GlobalVars maps mangled top-level variable names to their declared type.
+	// These use .data section access (OpLoadGlobal/OpStoreGlobal) rather than
+	// SSA variables, because SSA definitions are function-local and a top-level
+	// binding must be readable from every function.
+	//
+	// The type matters: a global's storage is sized from it, so recording the
+	// wrong width silently truncates wide values (s128, flat nullables).
+	GlobalVars map[string]semantic.Type
 }
 
 // NewGenerator creates an IR generator with the given configuration.
@@ -110,11 +134,17 @@ func NewGenerator(config GeneratorConfig) *Generator {
 
 	// Register globals for OpLoadGlobal/OpStoreGlobal during generation.
 	// Only emit .data labels for globals that belong to this package.
-	for name := range config.GlobalVars {
-		g.globalVars[name] = TypeS64
+	for name, semType := range config.GlobalVars {
+		// convertSSAType, not convertType: a global holds the SSA value bound to
+		// the name, and a struct/class value is carried in SSA as a pointer to
+		// its allocation. Using the layout type here would make OpLoadGlobal
+		// yield a bare aggregate, so a field access on a top-level struct
+		// binding fails validation with "FieldPtr argument must be a pointer".
+		irType := g.convertSSAType(semType)
+		g.globalVars[name] = irType
 		if (config.PackagePrefix == "" && !strings.Contains(name, "__")) ||
 			(config.PackagePrefix != "" && strings.HasPrefix(name, config.PackagePrefix)) {
-			g.prog.Globals = append(g.prog.Globals, &Global{Name: name, Type: TypeS64})
+			g.prog.Globals = append(g.prog.Globals, &Global{Name: name, Type: irType})
 		}
 	}
 
@@ -124,17 +154,69 @@ func NewGenerator(config GeneratorConfig) *Generator {
 // pushScope creates a new scope for tracking owned pointers.
 func (g *Generator) pushScope() {
 	g.ownedVarScopes = append(g.ownedVarScopes, nil)
+	g.localNameScopes = append(g.localNameScopes, nil)
 }
 
 // popScope cleans up owned pointers in the current scope and removes it.
 func (g *Generator) popScope() {
 	if len(g.ownedVarScopes) == 0 {
+		g.dropScope()
 		return
 	}
 	// Emit cleanup for all owned pointers in this scope
 	g.emitScopeCleanup()
 	// Remove the scope
-	g.ownedVarScopes = g.ownedVarScopes[:len(g.ownedVarScopes)-1]
+	g.dropScope()
+}
+
+// dropScope removes the innermost scope without emitting cleanup. Callers that
+// emit their own cleanup (scoped block, loop body, value block) use this so both
+// scope stacks stay in step — popping only ownedVarScopes would leave the
+// block's local names visible for the rest of the function.
+func (g *Generator) dropScope() {
+	if len(g.ownedVarScopes) > 0 {
+		g.ownedVarScopes = g.ownedVarScopes[:len(g.ownedVarScopes)-1]
+	}
+	g.popNameScope()
+}
+
+// pushNameScope opens a lexical scope for local names only, without an
+// owned-variable scope. Used where a binding's name is scoped more tightly than
+// its heap cleanup (the init clause of a for loop).
+func (g *Generator) pushNameScope() {
+	g.localNameScopes = append(g.localNameScopes, nil)
+}
+
+// popNameScope closes the innermost local-name scope.
+func (g *Generator) popNameScope() {
+	if len(g.localNameScopes) > 0 {
+		g.localNameScopes = g.localNameScopes[:len(g.localNameScopes)-1]
+	}
+}
+
+// declareLocal records that `name` is bound by a function-local declaration in
+// the current scope, so later reads and writes resolve to SSA even when a
+// top-level binding shares the name.
+func (g *Generator) declareLocal(name string) {
+	if g.generatingTopLevel || len(g.localNameScopes) == 0 {
+		return
+	}
+	i := len(g.localNameScopes) - 1
+	if g.localNameScopes[i] == nil {
+		g.localNameScopes[i] = make(map[string]bool)
+	}
+	g.localNameScopes[i][g.prefixedName(name)] = true
+}
+
+// isLocalName reports whether a (prefixed) name is bound by an in-scope local
+// declaration, i.e. whether it shadows a same-named top-level binding.
+func (g *Generator) isLocalName(pname string) bool {
+	for i := len(g.localNameScopes) - 1; i >= 0; i-- {
+		if g.localNameScopes[i][pname] {
+			return true
+		}
+	}
+	return false
 }
 
 // trackOwnedVar registers a variable for cleanup when scope exits. Covers
@@ -149,7 +231,13 @@ func (g *Generator) trackOwnedVar(name string, semType semantic.Type) {
 		return
 	}
 	lastIdx := len(g.ownedVarScopes) - 1
-	g.ownedVarScopes[lastIdx] = append(g.ownedVarScopes[lastIdx], ownedVar{name, semType})
+	pname := g.prefixedName(name)
+	_, isGlobal := g.globalVars[pname]
+	g.ownedVarScopes[lastIdx] = append(g.ownedVarScopes[lastIdx], ownedVar{
+		name:    name,
+		semType: semType,
+		global:  isGlobal && !g.isLocalName(pname),
+	})
 }
 
 // emitScopeCleanup emits free operations for all owned pointers in the current scope.
@@ -163,7 +251,7 @@ func (g *Generator) emitScopeCleanup() {
 		if g.aliasedHeapVars[ov.name] {
 			continue
 		}
-		g.emitFreeIfOwned(ov.name, ov.semType)
+		g.emitFreeIfOwned(ov.name, ov.semType, ov.global)
 	}
 }
 
@@ -181,7 +269,7 @@ func (g *Generator) emitLoopExitCleanup() {
 			if g.aliasedHeapVars[ov.name] {
 				continue
 			}
-			g.emitFreeIfOwned(ov.name, ov.semType)
+			g.emitFreeIfOwned(ov.name, ov.semType, ov.global)
 		}
 	}
 }
@@ -200,7 +288,7 @@ func (g *Generator) emitAllScopesCleanup(excludeVar string) {
 			if ov.name == excludeVar || g.aliasedHeapVars[ov.name] {
 				continue
 			}
-			g.emitFreeIfOwned(ov.name, ov.semType)
+			g.emitFreeIfOwned(ov.name, ov.semType, ov.global)
 		}
 	}
 }
@@ -286,6 +374,7 @@ func (g *Generator) generateFunction(fd *semantic.TypedFunctionDecl) error {
 
 	// Reset owned pointer scope tracking for this function
 	g.ownedVarScopes = nil
+	g.localNameScopes = nil
 	g.aliasedHeapVars = make(map[string]bool)
 	g.pushScope()
 
@@ -298,7 +387,9 @@ func (g *Generator) generateFunction(fd *semantic.TypedFunctionDecl) error {
 		paramType := g.convertSSAType(param.Type)
 		paramVal := g.fn.NewParam(paramType)
 
-		// Record parameter as initial definition of the variable
+		// Record parameter as initial definition of the variable. A parameter is
+		// a local binding, so it shadows any top-level binding of the same name.
+		g.declareLocal(param.Name)
 		g.writeVariable(param.Name, g.block, paramVal)
 
 		// An owned-pointer parameter would be owned by the callee and freed at
@@ -316,16 +407,21 @@ func (g *Generator) generateFunction(fd *semantic.TypedFunctionDecl) error {
 	}
 	g.funcSemanticParams[g.fn.Name] = semParams
 
-	// For main, inject top-level statements before the body
+	// For main, inject top-level statements before the body. These declarations
+	// initialize the globals themselves, so they must not register as locals —
+	// doing so would shadow the .data storage every other function reads.
 	if fd.Name == "main" && len(g.topLevelStmts) > 0 {
+		g.generatingTopLevel = true
 		for _, ps := range g.topLevelStmts {
 			savedPrefix := g.packagePrefix
 			g.packagePrefix = ps.Prefix
 			if err := g.generateStatement(ps.Stmt); err != nil {
+				g.generatingTopLevel = false
 				return err
 			}
 			g.packagePrefix = savedPrefix
 		}
+		g.generatingTopLevel = false
 	}
 
 	// Generate function body
@@ -435,6 +531,7 @@ func (g *Generator) generateMethod(className string, md *semantic.TypedMethodDec
 	// no-op and method locals that own heap (strings, vecs, boxed nullables)
 	// are never freed at return.
 	g.ownedVarScopes = nil
+	g.localNameScopes = nil
 	g.aliasedHeapVars = make(map[string]bool)
 	g.pushScope()
 
@@ -445,6 +542,7 @@ func (g *Generator) generateMethod(className string, md *semantic.TypedMethodDec
 	for _, param := range md.Parameters {
 		paramType := g.convertSSAType(param.Type)
 		paramVal := g.fn.NewParam(paramType)
+		g.declareLocal(param.Name)
 		g.writeVariable(param.Name, g.block, paramVal)
 	}
 
@@ -496,7 +594,7 @@ func (g *Generator) generateScopedBlock(bs *semantic.TypedBlockStmt) error {
 	if err == nil && g.block != nil && g.block.Kind == BlockPlain {
 		g.emitScopeCleanup()
 	}
-	g.ownedVarScopes = g.ownedVarScopes[:len(g.ownedVarScopes)-1]
+	g.dropScope()
 	return err
 }
 
@@ -510,7 +608,7 @@ func (g *Generator) generateScopedBlock(bs *semantic.TypedBlockStmt) error {
 // computed.
 func (g *Generator) generateValueBlock(bs *semantic.TypedBlockStmt, resultType Type) (*Value, error) {
 	g.pushScope()
-	defer func() { g.ownedVarScopes = g.ownedVarScopes[:len(g.ownedVarScopes)-1] }()
+	defer g.dropScope()
 
 	stmts := bs.Statements
 	for _, stmt := range stmts[:max(0, len(stmts)-1)] {
@@ -650,12 +748,15 @@ func (g *Generator) generateVarDecl(vd *semantic.TypedVarDeclStmt) error {
 
 	// Handle null literal specially
 	if isNullLiteral(vd.Initializer) {
+		g.declareLocal(vd.Name)
 		g.writeVariable(vd.Name, g.block, g.block.NewValue(OpWrapNull, declType))
 		g.trackOwnedVar(vd.Name, vd.DeclaredType)
 		return nil
 	}
 
-	// Generate initializer and wrap if needed
+	// Generate initializer and wrap if needed. The name only becomes a local
+	// binding after its initializer is generated, so an initializer that reads
+	// a same-named top-level binding still sees the global.
 	val, err := g.generateExpr(vd.Initializer)
 	if err != nil {
 		return err
@@ -680,6 +781,7 @@ func (g *Generator) generateVarDecl(vd *semantic.TypedVarDeclStmt) error {
 	// allocation through unchanged (aliasing one is rejected by semantic).
 	val = g.bindAggregateValue(val, vd.Initializer)
 
+	g.declareLocal(vd.Name)
 	g.writeVariable(vd.Name, g.block, g.wrapIfNeeded(val, declType))
 	g.trackOwnedVar(vd.Name, vd.DeclaredType)
 	return nil
@@ -769,7 +871,7 @@ func (g *Generator) generateAssign(as *semantic.TypedAssignStmt) error {
 	varType := g.convertSSAType(as.VarType)
 
 	if isNullLiteral(as.Value) {
-		g.emitFreeIfOwned(as.Name, as.VarType)
+		g.emitFreeIfOwned(as.Name, as.VarType, false)
 		delete(g.aliasedHeapVars, as.Name)
 		g.writeVariable(as.Name, g.block, g.block.NewValue(OpWrapNull, varType))
 		return nil
@@ -815,7 +917,7 @@ func (g *Generator) generateAssign(as *semantic.TypedAssignStmt) error {
 
 	// Free whatever the variable currently owns before overwriting. The new
 	// value gives the variable fresh ownership, so clear any aliased flag too.
-	g.emitFreeIfOwned(as.Name, as.VarType)
+	g.emitFreeIfOwned(as.Name, as.VarType, false)
 	delete(g.aliasedHeapVars, as.Name)
 	g.writeVariable(as.Name, g.block, g.wrapIfNeeded(val, varType))
 	return nil
@@ -1017,8 +1119,9 @@ func isOwnedStringTemp(expr semantic.TypedExpression) bool {
 		// values are copied at the branch, fresh ones pass through.
 		return true
 	case *semantic.TypedBinaryExpr:
-		// Elvis yields an owned result: both edges copy borrows.
-		return e.Op == "?:"
+		// Concatenation allocates a fresh result; elvis yields an owned result
+		// because both edges copy borrows.
+		return e.Op == "+" || e.Op == "?:"
 	}
 	return false
 }
@@ -1310,7 +1413,7 @@ func (g *Generator) generateWhile(ws *semantic.TypedWhileStmt) error {
 	if g.block != nil && g.block.Kind == BlockPlain {
 		g.emitScopeCleanup()
 	}
-	g.ownedVarScopes = g.ownedVarScopes[:len(g.ownedVarScopes)-1]
+	g.dropScope()
 	// Jump back to header if not terminated
 	if g.block != nil && g.block.Kind == BlockPlain {
 		g.block.AddSucc(headerBlock)
@@ -1336,6 +1439,13 @@ func (g *Generator) generateWhile(ws *semantic.TypedWhileStmt) error {
 
 // generateFor generates IR for a for loop.
 func (g *Generator) generateFor(fs *semantic.TypedForStmt) error {
+	// The init clause's binding is scoped to the loop, so its name must stop
+	// shadowing a same-named top-level binding once the loop is done. Only the
+	// name scope is pushed here — the owned-variable scope is left alone, so
+	// cleanup of the init binding is unchanged.
+	g.pushNameScope()
+	defer g.popNameScope()
+
 	// Generate init (if present)
 	if fs.Init != nil {
 		if err := g.generateStatement(fs.Init); err != nil {
@@ -1391,7 +1501,7 @@ func (g *Generator) generateFor(fs *semantic.TypedForStmt) error {
 	if g.block != nil && g.block.Kind == BlockPlain {
 		g.emitScopeCleanup()
 	}
-	g.ownedVarScopes = g.ownedVarScopes[:len(g.ownedVarScopes)-1]
+	g.dropScope()
 	// Jump to update if not terminated
 	if g.block != nil && g.block.Kind == BlockPlain {
 		g.block.AddSucc(updateBlock)
@@ -1950,9 +2060,42 @@ func (g *Generator) generateBinary(be *semantic.TypedBinaryExpr) (*Value, error)
 		if _, isStr := be.Left.GetType().(semantic.StringType); isStr {
 			return g.generateStringComparison(be)
 		}
+	case "+":
+		// String concatenation uses OpStrConcat instead of numeric OpAdd.
+		if isStringType(be.Type) {
+			return g.generateStringConcat(be)
+		}
 	}
 
 	return g.generateBinaryOp(be)
+}
+
+// generateStringConcat generates IR for `a + b` on strings. The result is a
+// fresh heap string the caller owns; both operands are copied into it, so any
+// operand this code owns is freed immediately afterwards.
+func (g *Generator) generateStringConcat(be *semantic.TypedBinaryExpr) (*Value, error) {
+	left, err := g.generateExpr(be.Left)
+	if err != nil {
+		return nil, err
+	}
+	right, err := g.generateExpr(be.Right)
+	if err != nil {
+		return nil, err
+	}
+
+	result := g.builder().StrConcat(left, right)
+
+	// Both operands' bytes now live in `result`. Owning temporaries (nested
+	// concatenations, interpolations, call results) have no binding to free
+	// them, so release them here; variable references are left to their owner.
+	if isOwnedStringTemp(be.Left) {
+		g.builder().StrFree(left)
+	}
+	if isOwnedStringTemp(be.Right) {
+		g.builder().StrFree(right)
+	}
+
+	return result, nil
 }
 
 // generateStringComparison generates IR for string == and != comparisons.
@@ -2478,6 +2621,11 @@ func (g *Generator) generateLen(le *semantic.TypedLenExpr) (*Value, error) {
 			}
 			v := g.block.NewValue(OpStringLen, TypeS64)
 			v.AddArg(strVal)
+			// A fresh string temporary (len("${x}"), len(a + b), len(f())) has
+			// no owner; free it once its length has been read.
+			if isOwnedStringTemp(le.Array) {
+				g.builder().StrFree(strVal)
+			}
 			return v, nil
 		}
 		// vec: runtime length from the header
@@ -3399,7 +3547,7 @@ func (g *Generator) generateIfExpr(is *semantic.TypedIfStmt) (*Value, error) {
 // Delegates to SSABuilder.
 func (g *Generator) writeVariable(name string, block *Block, val *Value) {
 	pname := g.prefixedName(name)
-	if _, isGlobal := g.globalVars[pname]; isGlobal {
+	if _, isGlobal := g.globalVars[pname]; isGlobal && !g.isLocalName(pname) {
 		// Write to global variable via OpStoreGlobal
 		store := block.NewValue(OpStoreGlobal, TypeVoid)
 		store.AuxString = pname
@@ -3415,7 +3563,7 @@ func (g *Generator) writeVariable(name string, block *Block, val *Value) {
 // For global variables, emits OpLoadGlobal.
 func (g *Generator) readVariable(name string, block *Block) *Value {
 	pname := g.prefixedName(name)
-	if globalType, isGlobal := g.globalVars[pname]; isGlobal {
+	if globalType, isGlobal := g.globalVars[pname]; isGlobal && !g.isLocalName(pname) {
 		// Read from global variable via OpLoadGlobal
 		load := block.NewValue(OpLoadGlobal, globalType)
 		load.AuxString = pname
@@ -3455,17 +3603,36 @@ func (g *Generator) sealBlock(block *Block) {
 //
 // Variables whose heap slot was aliased into another owner (markHeapAliased) are
 // skipped — freeing them would double-free the new owner.
-func (g *Generator) emitFreeIfOwned(name string, semType semantic.Type) {
+// readForFree loads the value a scope-exit free should release.
+//
+// A binding whose storage is a .data global must be read straight out of that
+// global rather than by name: a later local of the same name shadows the name,
+// so a by-name read would return the local's value and free that buffer a
+// second time while leaking the global's.
+func (g *Generator) readForFree(name string, fromGlobal bool) *Value {
+	if fromGlobal {
+		pname := g.prefixedName(name)
+		if globalType, ok := g.globalVars[pname]; ok {
+			load := g.block.NewValue(OpLoadGlobal, globalType)
+			load.AuxString = pname
+			return load
+		}
+	}
+	// SSA-backed binding: only free where the variable is actually defined.
+	if !g.ssa.IsVariableDefinedOnAllPaths(name, g.block) {
+		return nil
+	}
+	return g.readVariable(name, g.block)
+}
+
+func (g *Generator) emitFreeIfOwned(name string, semType semantic.Type, fromGlobal bool) {
 	if g.aliasedHeapVars[name] {
 		return
 	}
 
 	// Strings: free the heap buffer (no-op for constant pointers).
 	if isStringType(semType) {
-		if !g.ssa.IsVariableDefinedOnAllPaths(name, g.block) {
-			return
-		}
-		if oldVal := g.readVariable(name, g.block); oldVal != nil {
+		if oldVal := g.readForFree(name, fromGlobal); oldVal != nil {
 			g.builder().StrFree(oldVal)
 		}
 		return
@@ -3473,10 +3640,7 @@ func (g *Generator) emitFreeIfOwned(name string, semType semantic.Type) {
 
 	// vec: free its header + data (no-op for non-heap pointers).
 	if isVecType(semType) {
-		if !g.ssa.IsVariableDefinedOnAllPaths(name, g.block) {
-			return
-		}
-		if oldVal := g.readVariable(name, g.block); oldVal != nil {
+		if oldVal := g.readForFree(name, fromGlobal); oldVal != nil {
 			g.builder().VecFree(oldVal)
 		}
 		return

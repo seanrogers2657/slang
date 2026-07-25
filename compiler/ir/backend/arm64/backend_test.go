@@ -423,6 +423,223 @@ func TestBackendSleep(t *testing.T) {
 }
 
 // ============================================================================
+// String Builtin Tests
+// ============================================================================
+
+func TestBackendStringConcat(t *testing.T) {
+	src := `main = () {
+		val a = "foo"
+		val b = "bar"
+		print(a + b)
+		exit(0)
+	}`
+
+	prog := compileToIR(t, src)
+
+	b := New(backend.DefaultConfig())
+	asm, err := b.Generate(prog)
+	if err != nil {
+		t.Fatalf("Backend error: %v", err)
+	}
+
+	// '+' on strings lowers to the same helper interpolation uses.
+	if !strings.Contains(asm, "bl _sl_str_concat") {
+		t.Error("Expected call to _sl_str_concat for string +")
+	}
+	// The result is a fresh allocation the binding owns, so it must be freed.
+	if !strings.Contains(asm, "bl _sl_str_free") {
+		t.Error("Expected _sl_str_free for the concatenation result")
+	}
+}
+
+func TestBackendSubstr(t *testing.T) {
+	src := `main = () {
+		val s = "hello"
+		print(substr(s, 1, 3))
+		exit(0)
+	}`
+
+	prog := compileToIR(t, src)
+
+	b := New(backend.DefaultConfig())
+	asm, err := b.Generate(prog)
+	if err != nil {
+		t.Fatalf("Backend error: %v", err)
+	}
+
+	if !strings.Contains(asm, "bl _sl_str_substr") {
+		t.Error("Expected call to _sl_str_substr")
+	}
+	if !strings.Contains(asm, "_sl_str_substr:") {
+		t.Error("Expected _sl_str_substr helper to be emitted")
+	}
+	// The range check is emitted inline at the call site (not inside the
+	// helper) so the panic can name the enclosing function.
+	if !strings.Contains(asm, "_sl_panic_substr_range") {
+		t.Error("Expected inline substring range check")
+	}
+}
+
+func TestBackendChr(t *testing.T) {
+	src := `main = () {
+		print(chr(65))
+		exit(0)
+	}`
+
+	prog := compileToIR(t, src)
+
+	b := New(backend.DefaultConfig())
+	asm, err := b.Generate(prog)
+	if err != nil {
+		t.Fatalf("Backend error: %v", err)
+	}
+
+	if !strings.Contains(asm, "bl _sl_char_to_str") {
+		t.Error("Expected call to _sl_char_to_str")
+	}
+	if !strings.Contains(asm, "_sl_char_to_str:") {
+		t.Error("Expected _sl_char_to_str helper to be emitted")
+	}
+	// The value is range-checked rather than truncated to its low byte.
+	if !strings.Contains(asm, "_sl_panic_char_range") {
+		t.Error("Expected inline byte-range check for chr")
+	}
+}
+
+// TestBackendCmpSignedness pins which condition codes a comparison emits.
+// Only an all-unsigned comparison may use the unsigned codes: when signedness
+// differs, the unsigned operand widened into the signed one, so the comparison
+// is signed. Getting this wrong silently inverts results against negatives.
+func TestBackendCmpSignedness(t *testing.T) {
+	tests := []struct {
+		name      string
+		src       string
+		wantCond  string
+		avoidCond string
+	}{
+		{
+			name: "both signed uses signed code",
+			src: `main = () {
+				val a: s64 = 1
+				val b: s64 = -1
+				print(a > b)
+			}`,
+			wantCond: "cset x9, gt", avoidCond: "cset x9, hi",
+		},
+		{
+			name: "both unsigned uses unsigned code",
+			src: `main = () {
+				val a: u64 = 1
+				val b: u64 = 2
+				print(a > b)
+			}`,
+			wantCond: "cset x9, hi", avoidCond: "cset x9, gt",
+		},
+		{
+			name: "unsigned widened into signed uses signed code",
+			src: `main = () {
+				val a: u8 = 1
+				val b: s64 = -1
+				print(a > b)
+			}`,
+			wantCond: "cset x9, gt", avoidCond: "cset x9, hi",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prog := compileToIR(t, tt.src)
+
+			b := New(backend.DefaultConfig())
+			asm, err := b.Generate(prog)
+			if err != nil {
+				t.Fatalf("Backend error: %v", err)
+			}
+
+			if !strings.Contains(asm, tt.wantCond) {
+				t.Errorf("expected %q in generated assembly", tt.wantCond)
+			}
+			if strings.Contains(asm, tt.avoidCond) {
+				t.Errorf("did not expect %q in generated assembly", tt.avoidCond)
+			}
+		})
+	}
+}
+
+// TestBackendGlobalWidth pins the storage and access width of top-level
+// bindings. A global is sized from its declared type: treating every one as a
+// single word reserves one .quad and moves one register, silently truncating a
+// 128-bit value to its low half.
+func TestBackendGlobalWidth(t *testing.T) {
+	buildAsm := func(t *testing.T, name string, typ ir.Type) string {
+		t.Helper()
+		prog := ir.NewProgram()
+		prog.AddGlobal(&ir.Global{Name: name, Type: typ})
+
+		fn := prog.NewFunction("main", ir.TypeVoid)
+		block := fn.NewBlock(ir.BlockPlain)
+
+		load := block.NewValue(ir.OpLoadGlobal, typ)
+		load.AuxString = name
+
+		store := block.NewValue(ir.OpStoreGlobal, ir.TypeVoid)
+		store.AuxString = name
+		store.AddArg(load)
+
+		b := New(backend.DefaultConfig())
+		asm, err := b.Generate(prog)
+		if err != nil {
+			t.Fatalf("Backend error: %v", err)
+		}
+		return asm
+	}
+
+	// Count the .quad reservations that follow the global's label.
+	quadsAfterLabel := func(asm, name string) int {
+		lines := strings.Split(asm, "\n")
+		for i, line := range lines {
+			if !strings.HasPrefix(strings.TrimSpace(line), "_sl_global_"+name+":") {
+				continue
+			}
+			n := 0
+			for _, next := range lines[i+1:] {
+				if strings.TrimSpace(next) != ".quad 0" {
+					break
+				}
+				n++
+			}
+			return n
+		}
+		return -1
+	}
+
+	t.Run("single-word global reserves and moves one word", func(t *testing.T) {
+		asm := buildAsm(t, "narrow", ir.TypeS64)
+		if got := quadsAfterLabel(asm, "narrow"); got != 1 {
+			t.Errorf("reserved %d words, want 1", got)
+		}
+		if strings.Contains(asm, "ldr x9, [x10, #8]") {
+			t.Error("single-word global should not touch a second word")
+		}
+	})
+
+	t.Run("128-bit global reserves and moves two words", func(t *testing.T) {
+		typ := &ir.IntType{Bits: 128, Signed: true}
+		asm := buildAsm(t, "wide", typ)
+		if got := quadsAfterLabel(asm, "wide"); got != 2 {
+			t.Errorf("reserved %d words, want 2", got)
+		}
+		// Both halves must be read and written back.
+		for _, want := range []string{"ldr x9, [x10, #0]", "ldr x9, [x10, #8]",
+			"str x9, [x10, #0]", "str x9, [x10, #8]"} {
+			if !strings.Contains(asm, want) {
+				t.Errorf("expected %q in generated assembly", want)
+			}
+		}
+	})
+}
+
+// ============================================================================
 // Array Length Test
 // ============================================================================
 
@@ -1284,6 +1501,8 @@ func TestAllPanicMessagesContainsAll(t *testing.T) {
 		PanicDivZero,
 		PanicModZero,
 		PanicBounds,
+		PanicSubstrRange,
+		PanicCharRange,
 		PanicOverflowAdd,
 		PanicOverflowSub,
 		PanicOverflowMul,

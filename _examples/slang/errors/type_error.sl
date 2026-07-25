@@ -2,5 +2,5 @@
 // @test: error_stage=semantic
 // @test: error_contains=requires numeric operands
 main = () {
-    "hello" + 5
+    true + 5
 }

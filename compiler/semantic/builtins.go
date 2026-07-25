@@ -74,6 +74,23 @@ func (r *BuiltinRegistry) registerDefaults() {
 		ReturnType: TypeVoid,
 		NoReturn:   false,
 	})
+	// String built-ins. substr slices the half-open byte range [start, end)
+	// into a fresh string (range-checked at runtime); chr builds a one-byte
+	// string from a byte, the inverse of the s[i] index. Together with len(s)
+	// and s[i] these are enough to write split/trim/parse in Slang itself.
+	r.Register("substr", BuiltinFunc{
+		ParamTypes: []Type{TypeString, TypeS64, TypeS64}, // string, start, end
+		ReturnType: TypeString,
+	})
+	r.Register("chr", BuiltinFunc{
+		ParamTypes: []Type{TypeU8}, // byte value
+		ReturnType: TypeString,
+		// s[i] yields u8, but byte arithmetic naturally widens to s64, so
+		// accept any integer the caller already has in hand.
+		AcceptedTypes: map[int][]Type{
+			0: {TypeU8, TypeU16, TypeU32, TypeU64, TypeS8, TypeS16, TypeS32, TypeS64},
+		},
+	})
 	// Growable vector (vec) built-ins. vec() makes an empty vec; push/get/set
 	// operate on it (get/set are bounds-checked at runtime). len() also accepts a
 	// vec (handled via IsArrayLen).

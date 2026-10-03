@@ -1,5 +1,7 @@
 package semantic
 
+import "fmt"
+
 // Type represents a type in the Slang type system
 type Type interface {
 	String() string         // Human-readable name
@@ -697,6 +699,96 @@ func IsAssignableTo(source, target Type) bool {
 	}
 
 	return false
+}
+
+// distinctTypeNames returns display names for two types in a mismatch
+// message. Array types print without their size, so two arrays that differ
+// only in length would read identically; those get the length appended.
+func distinctTypeNames(a, b Type) (string, string) {
+	an, bn := a.String(), b.String()
+	if an != bn {
+		return an, bn
+	}
+	return withArrayLen(a, an), withArrayLen(b, bn)
+}
+
+func returnMismatchMessage(expected, got Type) string {
+	e, g := distinctTypeNames(expected, got)
+	return fmt.Sprintf("return type mismatch: expected %s, got %s", e, g)
+}
+
+func elvisMismatchMessage(expected, got Type) string {
+	e, g := distinctTypeNames(expected, got)
+	return fmt.Sprintf("operator '?:' requires right operand of type '%s', got '%s'", e, g)
+}
+
+func withArrayLen(t Type, name string) string {
+	if nt, ok := t.(NullableType); ok {
+		t = nt.InnerType
+	}
+	if at, ok := t.(ArrayType); ok && at.Size != ArraySizeUnknown {
+		return fmt.Sprintf("%s of length %d", name, at.Size)
+	}
+	return name
+}
+
+// refineArraySize fixes the size of an unsized array type (T[] or T[]?) from
+// a value whose array size is known. Arrays carry no runtime length, so the
+// size must be static for copy and free. ok is false when nothing changes.
+func refineArraySize(declared, value Type) (Type, bool) {
+	if nt, isNullable := declared.(NullableType); isNullable {
+		inner, ok := refineArraySize(nt.InnerType, value)
+		if !ok {
+			return nil, false
+		}
+		return NullableType{InnerType: inner}, true
+	}
+	declArr, ok := declared.(ArrayType)
+	if !ok || declArr.Size != ArraySizeUnknown {
+		return nil, false
+	}
+	if nt, isNullable := value.(NullableType); isNullable {
+		value = nt.InnerType
+	}
+	valArr, ok := value.(ArrayType)
+	if !ok || valArr.Size == ArraySizeUnknown {
+		return nil, false
+	}
+	return ArrayType{ElementType: declArr.ElementType, Size: valArr.Size}, true
+}
+
+// UnifyBranchTypes returns the common type of two if/when branch results:
+// equal types unify to themselves, T and T? (or null and T?) unify to T?, and
+// null with a plain T unifies to T?. ok is false when there is no common type.
+func UnifyBranchTypes(a, b Type) (Type, bool) {
+	if a.Equals(b) {
+		return a, true
+	}
+	if IsAssignableTo(a, b) {
+		return b, true
+	}
+	if IsAssignableTo(b, a) {
+		return a, true
+	}
+	_, aNull := a.(NothingType)
+	_, bNull := b.(NothingType)
+	if aNull && canBeNullable(b) {
+		return NullableType{InnerType: b}, true
+	}
+	if bNull && canBeNullable(a) {
+		return NullableType{InnerType: a}, true
+	}
+	return nil, false
+}
+
+// canBeNullable reports whether t may be wrapped as t? (not void, not
+// already nullable, not null itself).
+func canBeNullable(t Type) bool {
+	switch t.(type) {
+	case VoidType, NothingType, NullableType, ErrorType:
+		return false
+	}
+	return true
 }
 
 // NullableSize returns the byte size of a nullable value.

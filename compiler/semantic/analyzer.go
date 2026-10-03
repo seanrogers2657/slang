@@ -1237,6 +1237,11 @@ func (a *Analyzer) analyzeFunctionDecl(fn *ast.FunctionDecl) TypedDeclaration {
 	a.currentReturnType = prevReturnType
 	a.currentFunctionName = prevFunctionName
 
+	// A return statement may have refined an unsized array return type to a
+	// concrete size; take the registry's current signature, not the copy
+	// captured before the body was analyzed.
+	fnInfo = a.functions[fn.Name]
+
 	return &TypedFunctionDecl{
 		Name:       fn.Name,
 		NamePos:    fn.NamePos,
@@ -1425,13 +1430,8 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 				}
 				// Refine array type: if annotation has unknown size but
 				// initializer has concrete size, use the concrete size
-				if declArr, ok := declaredType.(ArrayType); ok && declArr.Size == ArraySizeUnknown {
-					if initArr, ok := initType.(ArrayType); ok && initArr.Size != ArraySizeUnknown {
-						declaredType = ArrayType{
-							ElementType: declArr.ElementType,
-							Size:        initArr.Size,
-						}
-					}
+				if refined, ok := refineArraySize(declaredType, initType); ok {
+					declaredType = refined
 				}
 				// Coerce a numeric literal initializer to its declared type so
 				// downstream stages see the correct width and signedness, e.g.
@@ -1649,7 +1649,7 @@ func (a *Analyzer) checkTypeCompatibilityCore(targetType, sourceType Type, typed
 	// Types don't match and no special conversion allowed
 	if ctx == contextReturn {
 		a.addError(
-			fmt.Sprintf("return type mismatch: expected %s, got %s", targetType.String(), sourceType.String()),
+			returnMismatchMessage(targetType, sourceType),
 			pos, pos,
 		)
 	} else {
@@ -2202,19 +2202,13 @@ func (a *Analyzer) analyzeReturnStatement(stmt *ast.ReturnStmt) TypedStatement {
 
 			// Refine array return type: if declared type has unknown size but
 			// the actual value has a known size, use the concrete size
-			if declArr, ok := a.currentReturnType.(ArrayType); ok && declArr.Size == ArraySizeUnknown {
-				if valArr, ok := valueType.(ArrayType); ok && valArr.Size != ArraySizeUnknown {
-					refined := ArrayType{
-						ElementType: declArr.ElementType,
-						Size:        valArr.Size,
-					}
-					a.currentReturnType = refined
-					// Update the function registry so callers get the concrete size
-					if a.currentFunctionName != "" {
-						if fnInfo, exists := a.functions[a.currentFunctionName]; exists {
-							fnInfo.ReturnType = refined
-							a.functions[a.currentFunctionName] = fnInfo
-						}
+			if refined, ok := refineArraySize(a.currentReturnType, valueType); ok {
+				a.currentReturnType = refined
+				// Update the function registry so callers get the concrete size
+				if a.currentFunctionName != "" {
+					if fnInfo, exists := a.functions[a.currentFunctionName]; exists {
+						fnInfo.ReturnType = refined
+						a.functions[a.currentFunctionName] = fnInfo
 					}
 				}
 			}
@@ -2460,7 +2454,9 @@ func (a *Analyzer) analyzeIfExpression(stmt *ast.IfStmt) TypedExpression {
 	var resultType Type = thenType
 	if _, isErr := thenType.(ErrorType); !isErr {
 		if _, isErr := elseType.(ErrorType); !isErr {
-			if !thenType.Equals(elseType) {
+			if unified, ok := UnifyBranchTypes(thenType, elseType); ok {
+				resultType = unified
+			} else {
 				a.addError(
 					fmt.Sprintf("if expression branches have different types: '%s' and '%s'",
 						thenType.String(), elseType.String()),
@@ -4166,9 +4162,26 @@ func (a *Analyzer) analyzeSafeCallExpr(expr *ast.SafeCallExpr) TypedExpression {
 		}
 	}
 
-	// The inner type must be a struct
-	structType, isStruct := innerType.(StructType)
-	if !isStruct {
+	if ct, isClass := innerType.(ClassType); isClass {
+		if resolved, ok := a.TypeRegistry.LookupClass(ct.Name); ok {
+			innerType = resolved
+		}
+	}
+
+	// The inner type must be a struct or class (both expose fields).
+	type fieldHolder interface {
+		GetField(name string) (StructFieldInfo, bool)
+		FieldOffset(name string) int
+	}
+	var holder fieldHolder
+	var holderName string
+	switch t := innerType.(type) {
+	case StructType:
+		holder, holderName = t, t.Name
+	case ClassType:
+		holder, holderName = t, t.Name
+	}
+	if holder == nil {
 		if _, isErr := innerType.(ErrorType); !isErr {
 			a.addError(
 				fmt.Sprintf("cannot access field '%s' on non-struct type '%s'", expr.Field, innerType.String()),
@@ -4188,10 +4201,10 @@ func (a *Analyzer) analyzeSafeCallExpr(expr *ast.SafeCallExpr) TypedExpression {
 	}
 
 	// Look up the field
-	fieldInfo, found := structType.GetField(expr.Field)
+	fieldInfo, found := holder.GetField(expr.Field)
 	if !found {
 		a.addError(
-			fmt.Sprintf("struct '%s' has no field '%s'", structType.Name, expr.Field),
+			fmt.Sprintf("'%s' has no field '%s'", holderName, expr.Field),
 			expr.FieldPos, expr.FieldPos,
 		)
 		return &TypedSafeCallExpr{
@@ -4208,7 +4221,7 @@ func (a *Analyzer) analyzeSafeCallExpr(expr *ast.SafeCallExpr) TypedExpression {
 
 	// Result type is always nullable (field value or null)
 	resultType := MakeNullable(fieldInfo.Type)
-	fieldOffset := structType.FieldOffset(expr.Field)
+	fieldOffset := holder.FieldOffset(expr.Field)
 
 	return &TypedSafeCallExpr{
 		Type:           resultType,
@@ -4717,8 +4730,7 @@ func (a *Analyzer) checkBinaryOperation(op string, leftType, rightType Type, lef
 		// Right operand must be compatible with unwrapped inner type
 		if !rightType.Equals(innerType) && !IsAssignableTo(rightType, innerType) {
 			a.addError(
-				fmt.Sprintf("operator '?:' requires right operand of type '%s', got '%s'",
-					innerType.String(), rightType.String()),
+				elvisMismatchMessage(innerType, rightType),
 				rightPos, rightPos,
 			)
 			return TypeError
@@ -5205,14 +5217,17 @@ func (a *Analyzer) checkWhenBranchTypeConsistency(types []Type, startPos, endPos
 			firstType = types[i]
 			continue
 		}
-		if !firstType.Equals(types[i]) {
-			a.addError(
-				fmt.Sprintf("when branches have different types: '%s' and '%s'",
-					firstType.String(), types[i].String()),
-				startPos, endPos,
-			).WithHint("all branches must evaluate to the same type")
-			return TypeError
+		unified, ok := UnifyBranchTypes(firstType, types[i])
+		if ok {
+			firstType = unified
+			continue
 		}
+		a.addError(
+			fmt.Sprintf("when branches have different types: '%s' and '%s'",
+				firstType.String(), types[i].String()),
+			startPos, endPos,
+		).WithHint("all branches must evaluate to the same type")
+		return TypeError
 	}
 	return firstType
 }

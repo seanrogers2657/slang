@@ -638,6 +638,10 @@ func (g *Generator) generateValueBlock(bs *semantic.TypedBlockStmt, resultType T
 	if len(stmts) > 0 {
 		switch s := stmts[len(stmts)-1].(type) {
 		case *semantic.TypedExprStmt:
+			if resultType != nil && isNullLiteral(s.Expr) {
+				result = g.coerceBranchValue(nil, s.Expr, resultType)
+				break
+			}
 			v, err := g.generateExpr(s.Expr)
 			if err != nil {
 				return nil, err
@@ -651,14 +655,14 @@ func (g *Generator) generateValueBlock(bs *semantic.TypedBlockStmt, resultType T
 			// passes through. This lets the binding/return/arg consumer take
 			// ownership without copying again (which would leak the temp).
 			v = g.bindAggregateValue(v, s.Expr)
-			result = v
+			result = g.coerceBranchValue(v, s.Expr, resultType)
 		case *semantic.TypedIfStmt:
 			if s.ResultType != nil {
 				v, err := g.generateIfExpr(s)
 				if err != nil {
 					return nil, err
 				}
-				result = v
+				result = g.wrapIfNeeded(v, resultType)
 				break
 			}
 			if err := g.generateStatement(s); err != nil {
@@ -860,12 +864,10 @@ func (g *Generator) copyNullableValue(src *Value, semType semantic.Type) *Value 
 	g.block = notNullBlock
 	innerIRType := g.convertType(inner)
 	unwrapped := g.block.NewValue(OpUnwrap, innerIRType, src)
-	// A boxed string/vec inner is itself heap storage the box owns; copy it so
-	// the new box doesn't share (and later double-free) the source's buffer.
-	if isStringType(inner) {
-		unwrapped = g.builder().StrCopy(unwrapped)
-	} else if isVecType(inner) {
-		unwrapped = g.builder().VecCopy(unwrapped)
+	// A boxed string/vec/array inner is itself heap storage the box owns; copy
+	// it so the new box doesn't share (and later double-free) the source's.
+	if nullableHeapInner(semType) != nil {
+		unwrapped = g.deepCopiedValue(unwrapped, inner)
 	}
 	wrapped := g.block.NewValue(OpWrap, &NullableType{Elem: innerIRType}, unwrapped)
 	notNullEnd := g.block
@@ -1618,7 +1620,7 @@ func (g *Generator) generateWhen(we *semantic.TypedWhenExpr) (*Value, error) {
 	var resultType Type
 	if we.ResultType != nil {
 		if _, isVoid := we.ResultType.(semantic.VoidType); !isVoid {
-			resultType = g.convertSSAType(we.ResultType)
+			resultType = g.branchResultType(we.ResultType)
 		}
 	}
 	mergeBlock := g.fn.NewBlock(BlockPlain)
@@ -1720,6 +1722,31 @@ func (g *Generator) getLastValue() *Value {
 	return g.block.Values[len(g.block.Values)-1]
 }
 
+// branchResultType is the IR type of an if/when/elvis merge phi. Like
+// convertSSAType, but a fixed-size array also flows as a pointer to its
+// allocation (array literals and copies yield *[N]T), so the phi is typed to
+// match its operands.
+func (g *Generator) branchResultType(t semantic.Type) Type {
+	irType := g.convertSSAType(t)
+	if at, ok := irType.(*ArrayType); ok {
+		return &PtrType{Elem: at}
+	}
+	return irType
+}
+
+// coerceBranchValue converts an if/when branch result to the expression's
+// unified type: a null literal becomes a typed null, and a plain T is wrapped
+// when the result is T? (a branch may yield T while another yields null).
+func (g *Generator) coerceBranchValue(v *Value, expr semantic.TypedExpression, resultType Type) *Value {
+	if resultType == nil {
+		return v
+	}
+	if isNullLiteral(expr) {
+		return g.block.NewValue(OpWrapNull, resultType)
+	}
+	return g.wrapIfNeeded(v, resultType)
+}
+
 // generateWhenCaseBody generates a when case body and returns the result value
 // for expression-position when. For bare identifiers/expressions, this directly
 // evaluates the expression rather than relying on getLastValue(), which fails
@@ -1728,6 +1755,11 @@ func (g *Generator) generateWhenCaseBody(body semantic.TypedStatement, resultTyp
 	// If this is an expression-position when, try to get the value directly
 	if resultType != nil {
 		if exprStmt, ok := body.(*semantic.TypedExprStmt); ok {
+			// A bare null has no value of its own (generating it would yield an
+			// untyped void value); emit the typed null directly.
+			if isNullLiteral(exprStmt.Expr) {
+				return g.coerceBranchValue(nil, exprStmt.Expr, resultType), nil
+			}
 			v, err := g.generateExpr(exprStmt.Expr)
 			if err != nil {
 				return nil, err
@@ -1738,7 +1770,7 @@ func (g *Generator) generateWhenCaseBody(body semantic.TypedStatement, resultTyp
 			v = g.maybeCopyString(v, exprStmt.Expr)
 			v = g.maybeCopyVec(v, exprStmt.Expr)
 			v = g.bindAggregateValue(v, exprStmt.Expr)
-			return v, nil
+			return g.coerceBranchValue(v, exprStmt.Expr, resultType), nil
 		}
 		if blockStmt, ok := body.(*semantic.TypedBlockStmt); ok {
 			return g.generateValueBlock(blockStmt, resultType)
@@ -2352,7 +2384,7 @@ func (g *Generator) generateElvis(be *semantic.TypedBinaryExpr) (*Value, error) 
 
 	// Unwrap on the not-null edge. An aggregate result flows as a pointer to
 	// its allocation, so use the SSA type.
-	resultType := g.convertSSAType(be.Type)
+	resultType := g.branchResultType(be.Type)
 	g.block = notNullBlock
 	unwrapped := g.block.NewValue(OpUnwrap, resultType)
 	unwrapped.AddArg(left)
@@ -2368,11 +2400,7 @@ func (g *Generator) generateElvis(be *semantic.TypedBinaryExpr) (*Value, error) 
 	// temp free just below) will release. Copy it so the elvis result owns
 	// independent storage.
 	if inner := nullableHeapInner(be.Left.GetType()); inner != nil {
-		if isStringType(inner) {
-			unwrapped = g.builder().StrCopy(unwrapped)
-		} else {
-			unwrapped = g.builder().VecCopy(unwrapped)
-		}
+		unwrapped = g.deepCopiedValue(unwrapped, inner)
 	}
 	// If the LHS produced a temporary heap allocation that no variable owns
 	// (e.g., a function call returning T?, a wrap from safe navigation),
@@ -3667,7 +3695,7 @@ func (g *Generator) generateIfExpr(is *semantic.TypedIfStmt) (*Value, error) {
 	// to its allocation, so the phi and its branch operands must both be typed
 	// as *T, not the bare value type (which would fail IR validation). Matches
 	// the when-expression path. Non-aggregate types are unaffected.
-	resultType := g.convertSSAType(is.ResultType)
+	resultType := g.branchResultType(is.ResultType)
 
 	// Create blocks
 	thenBlock := g.fn.NewBlock(BlockPlain)
@@ -3933,7 +3961,7 @@ func (g *Generator) emitFreeNullableValue(name string, inner semantic.Type) {
 // around a borrowed value (e.g. wrap-temps at call sites) must use
 // emitNullCheckedFree instead, or they would free the borrow's storage.
 func (g *Generator) emitNullCheckedFreeBoxed(ptr *Value, inner semantic.Type) {
-	if !isStringType(inner) && !isVecType(inner) {
+	if !isStringType(inner) && !isVecType(inner) && !isHeapValueType(inner) {
 		g.emitNullCheckedFree(ptr, g.nullableValueAllocSize(inner))
 		return
 	}
@@ -3952,8 +3980,10 @@ func (g *Generator) emitNullCheckedFreeBoxed(ptr *Value, inner semantic.Type) {
 	unwrapped := g.block.NewValue(OpUnwrap, g.convertType(inner), ptr)
 	if isStringType(inner) {
 		g.builder().StrFree(unwrapped)
-	} else {
+	} else if isVecType(inner) {
 		g.builder().VecFree(unwrapped)
+	} else {
+		g.emitRecursiveFree(unwrapped, inner, g.getElementTypeSize(inner))
 	}
 	freeVal := g.block.NewValue(OpFree, nil, ptr)
 	freeVal.AuxInt = int64(g.nullableValueAllocSize(inner))
@@ -4568,7 +4598,7 @@ func nullableAggregateInner(t semantic.Type) semantic.Type {
 // nil otherwise.
 func nullableHeapInner(t semantic.Type) semantic.Type {
 	inner := nullableValueInner(t)
-	if inner != nil && (isStringType(inner) || isVecType(inner)) {
+	if inner != nil && (isStringType(inner) || isVecType(inner) || isHeapValueType(inner)) {
 		return inner
 	}
 	return nil

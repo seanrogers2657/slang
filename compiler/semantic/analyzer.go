@@ -452,6 +452,7 @@ func (a *Analyzer) resolveStructFields(s *ast.StructDecl) {
 		// A field is stored inline and must be a value type (no borrows, no owned
 		// pointers — a struct cannot own heap that outlives its own scope).
 		a.requireValueType(fieldType, field.TypePos, "a struct field")
+		a.requireSizedField(fieldType, field.TypePos, "a struct field")
 
 		fields[i] = StructFieldInfo{
 			Name:    field.Name,
@@ -525,6 +526,7 @@ func (a *Analyzer) resolveClassFieldsAndMethods(c *ast.ClassDecl) {
 		// A field is stored inline and must be a value type (no borrows, no owned
 		// pointers — a class cannot own heap that outlives its own scope).
 		a.requireValueType(fieldType, field.TypePos, "a class field")
+		a.requireSizedField(fieldType, field.TypePos, "a class field")
 
 		fields[i] = StructFieldInfo{
 			Name:    field.Name,
@@ -741,6 +743,18 @@ func (a *Analyzer) requireValueType(t Type, pos ast.Position, role string) {
 		return
 	}
 	a.addError(fmt.Sprintf("%s must be a value type", role), pos, pos)
+}
+
+// requireSizedField rejects an array-typed field. Array types carry no size
+// (`s64[]`), so the field would have no layout inside the aggregate; a
+// growable vec field is the supported way to hold a collection.
+func (a *Analyzer) requireSizedField(t Type, pos ast.Position, role string) {
+	if at, ok := t.(ArrayType); ok && at.Size == ArraySizeUnknown {
+		a.addError(
+			fmt.Sprintf("arrays cannot be used as %s; an array type has no fixed size", role),
+			pos, pos,
+		).WithHint("use a vec field to hold a collection")
+	}
 }
 
 // requireParamType enforces the allow-list for parameter position: a parameter may

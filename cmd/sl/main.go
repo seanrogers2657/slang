@@ -615,12 +615,15 @@ func main() {
 					cmd.Stdout = os.Stdout
 					cmd.Stderr = os.Stderr
 					if err := cmd.Run(); err != nil {
-						if verbose {
-							if exitErr, ok := err.(*exec.ExitError); ok {
-								return fmt.Errorf("program exited with code %d", exitErr.ExitCode())
+						if exitErr, ok := err.(*exec.ExitError); ok {
+							// Mirror the program's own status so callers see panics,
+							// exit(n), and heap-balance aborts.
+							if verbose {
+								fmt.Fprintf(os.Stderr, "program exited with code %d\n", exitErr.ExitCode())
 							}
-							return fmt.Errorf("execution failed: %w", err)
+							os.Exit(exitErr.ExitCode())
 						}
+						return fmt.Errorf("execution failed: %w", err)
 					}
 
 					return nil

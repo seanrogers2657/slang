@@ -703,6 +703,7 @@ func (g *Generator) generateStatement(stmt semantic.TypedStatement) error {
 		// (heap-allocated for the return and otherwise leaked).
 		if isOwningTemp(s.Expr) &&
 			(nullableHeapInner(s.Expr.GetType()) != nil ||
+				nullableAggregateInner(s.Expr.GetType()) != nil ||
 				isOwnedPointerTemp(g, s.Expr) ||
 				isHeapValueType(s.Expr.GetType())) {
 			freeOwningTemp(g, v, s.Expr.GetType())
@@ -900,7 +901,7 @@ func (g *Generator) generateAssign(as *semantic.TypedAssignStmt) error {
 	if ident, ok := as.Value.(*semantic.TypedIdentifierExpr); ok {
 		if ident.Name != as.Name && varOwnsHeap(ident.Type) && !isStringType(ident.Type) &&
 			!isVecType(ident.Type) && nullableHeapInner(ident.Type) == nil &&
-			!g.aggregateIsCopyable(ident.Type) {
+			!g.aggregateIsCopyable(ident.Type) && !g.nullableAggregateIsCopyable(ident.Type) {
 			g.markHeapAliased(ident.Name)
 		}
 	}
@@ -964,6 +965,11 @@ func (g *Generator) generateFieldAssign(fa *semantic.TypedFieldAssignStmt) error
 		// Borrowed string values are copied so the field owns its own buffer.
 		val = g.maybeCopyString(val, fa.Value)
 		val = g.maybeCopyVec(val, fa.Value)
+		// A nullable aggregate field (P?) points at its own allocation, so a
+		// borrowed source is deep-copied into one the field owns.
+		if nullableAggregateInner(fieldSemType) != nil {
+			val = g.bindAggregateValue(val, fa.Value)
+		}
 		val = g.wrapIfNeeded(val, fieldIRType)
 	}
 
@@ -994,7 +1000,8 @@ func (g *Generator) generateFieldAssign(fa *semantic.TypedFieldAssignStmt) error
 	// Free whatever the field currently owns before overwriting. Skips when
 	// the field type does not own heap storage. String and vec fields own a heap
 	// buffer separate from the struct, so free them here too.
-	if fieldSemType != nil && (fieldOwnsHeap(fieldSemType) || isStringType(fieldSemType) || isVecType(fieldSemType)) {
+	if fieldSemType != nil && (fieldOwnsHeap(fieldSemType) || isStringType(fieldSemType) ||
+		isVecType(fieldSemType) || nullableAggregateInner(fieldSemType) != nil) {
 		oldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
 		g.emitFreeOwnedValue(oldVal, fieldSemType)
 	}
@@ -1031,6 +1038,11 @@ func fieldOwnsHeap(t semantic.Type) bool {
 // owns that allocation.
 func varOwnsHeap(t semantic.Type) bool {
 	if fieldOwnsHeap(t) {
+		return true
+	}
+	// A nullable aggregate (P?) points at its own heap-allocated aggregate,
+	// which the binding owns just like a plain aggregate binding.
+	if nullableAggregateInner(t) != nil {
 		return true
 	}
 	switch t.(type) {
@@ -1242,7 +1254,8 @@ func (g *Generator) generateIndexAssign(ia *semantic.TypedIndexAssignStmt) error
 	// vec elements own a heap buffer; an aggregate element owns its (separately
 	// allocated) region and any nested heap, so free those here too.
 	if elemSemType != nil && (fieldOwnsHeap(elemSemType) || isStringType(elemSemType) ||
-		isVecType(elemSemType) || isHeapValueType(elemSemType)) {
+		isVecType(elemSemType) || isHeapValueType(elemSemType) ||
+		nullableAggregateInner(elemSemType) != nil) {
 		oldVal := g.block.NewValue(OpLoad, elemIRType, elemPtr)
 		g.emitFreeOwnedValue(oldVal, elemSemType)
 	}
@@ -2332,14 +2345,24 @@ func (g *Generator) generateElvis(be *semantic.TypedBinaryExpr) (*Value, error) 
 	}
 	right = g.maybeCopyString(right, be.Right)
 	right = g.maybeCopyVec(right, be.Right)
+	// Likewise an aggregate default: a borrowed one is deep-copied.
+	right = g.bindAggregateValue(right, be.Right)
 	rightBlock = g.block // may have changed during generation
 	rightBlock.AddSucc(mergeBlock)
 
-	// Unwrap on the not-null edge
-	resultType := g.convertType(be.Type)
+	// Unwrap on the not-null edge. An aggregate result flows as a pointer to
+	// its allocation, so use the SSA type.
+	resultType := g.convertSSAType(be.Type)
 	g.block = notNullBlock
 	unwrapped := g.block.NewValue(OpUnwrap, resultType)
 	unwrapped.AddArg(left)
+	// A nullable aggregate (P?) left operand: an owning temp's pointee is
+	// handed over as the result (so the temp is not freed below); a borrowed
+	// one is deep-copied so the result is owned on both edges.
+	leftAgg := nullableAggregateInner(be.Left.GetType())
+	if leftAgg != nil && !isOwningTemp(be.Left) && g.aggregateIsCopyable(leftAgg) {
+		unwrapped = g.emitDeepCopyAggregate(unwrapped, leftAgg)
+	}
 	// A boxed string?/vec? owns its contents: the unwrapped inner is the
 	// box's buffer, which the box's owner (a binding at scope exit, or the
 	// temp free just below) will release. Copy it so the elvis result owns
@@ -2355,7 +2378,7 @@ func (g *Generator) generateElvis(be *semantic.TypedBinaryExpr) (*Value, error) 
 	// (e.g., a function call returning T?, a wrap from safe navigation),
 	// the heap slot would otherwise leak. Free it after the unwrap (and after
 	// the copy above), before the value is returned.
-	if isOwningTemp(be.Left) {
+	if isOwningTemp(be.Left) && leftAgg == nil {
 		freeOwningTemp(g, left, be.Left.GetType())
 	}
 	notNullBlockEnd := g.block
@@ -2488,9 +2511,10 @@ func (g *Generator) generateCall(ce *semantic.TypedCallExpr) (*Value, error) {
 			// Vecs are borrowed by callees too; a fresh vec temporary passed as
 			// an argument has no owner to free it at scope exit.
 			aggTempFrees = append(aggTempFrees, aggTemp{val: v, sem: arg.GetType()})
-		} else if isOwningTemp(arg) && nullableHeapInner(arg.GetType()) != nil {
-			// A boxed string?/vec? call-result temp: the callee borrows it,
-			// so the caller frees box and contents after the call.
+		} else if isOwningTemp(arg) && (nullableHeapInner(arg.GetType()) != nil ||
+			nullableAggregateInner(arg.GetType()) != nil) {
+			// A boxed string?/vec? or nullable aggregate call-result temp: the
+			// callee borrows it, so the caller frees it after the call.
 			aggTempFrees = append(aggTempFrees, aggTemp{val: v, sem: arg.GetType()})
 		} else if isOwningTemp(arg) && isOwnedPointerTemp(g, arg) {
 			// An unbound .copy() result passed as a borrow: nothing else owns
@@ -2930,6 +2954,7 @@ func (g *Generator) generateMethodCall(mc *semantic.TypedMethodCallExpr) (*Value
 			strTempFrees = append(strTempFrees, v)
 		} else if isOwnedVecTemp(arg) ||
 			(isOwningTemp(arg) && (nullableHeapInner(arg.GetType()) != nil ||
+				nullableAggregateInner(arg.GetType()) != nil ||
 				isOwnedPointerTemp(g, arg) || isHeapValueType(arg.GetType()))) {
 			aggTempFrees = append(aggTempFrees, aggTemp{val: v, sem: arg.GetType()})
 		}
@@ -3017,6 +3042,12 @@ func isOwningTemp(expr semantic.TypedExpression) bool {
 		// A `new` expression not bound to a variable (passed directly as a
 		// borrow argument, or a bare statement) is an unowned allocation.
 		return true
+	case *semantic.TypedSafeCallExpr:
+		// generateSafeCall copies the field out, so the result owns it.
+		return varOwnsHeap(expr.GetType())
+	case *semantic.TypedBinaryExpr:
+		// An aggregate elvis result is owned on both edges (generateElvis).
+		return expr.(*semantic.TypedBinaryExpr).Op == "?:" && isHeapValueType(expr.GetType())
 	}
 	return false
 }
@@ -3052,6 +3083,11 @@ func freeOwningTemp(g *Generator, val *Value, semType semantic.Type) {
 	}
 	if inner := nullableValueInner(semType); inner != nil {
 		g.emitNullCheckedFreeBoxed(val, inner)
+		return
+	}
+
+	if inner := nullableAggregateInner(semType); inner != nil {
+		g.emitNullCheckedFreeAggregate(val, inner, make(map[string]bool))
 		return
 	}
 	if isHeapValueType(semType) {
@@ -3306,7 +3342,8 @@ func (g *Generator) aggregateIsCopyable(t semantic.Type) bool {
 // A non-copyable aggregate passes its source allocation through unchanged.
 func (g *Generator) bindAggregateValue(val *Value, expr semantic.TypedExpression) *Value {
 	t := expr.GetType()
-	if !isHeapValueType(t) {
+	nullableInner := nullableAggregateInner(t)
+	if !isHeapValueType(t) && nullableInner == nil {
 		return val
 	}
 	if isOwningTemp(expr) {
@@ -3318,6 +3355,12 @@ func (g *Generator) bindAggregateValue(val *Value, expr semantic.TypedExpression
 	// instead of copying again, which would leak the branch's allocation.
 	switch expr.(type) {
 	case *semantic.TypedIfStmt, *semantic.TypedWhenExpr:
+		return val
+	}
+	if nullableInner != nil {
+		if g.aggregateIsCopyable(nullableInner) {
+			return g.copyNullableAggregate(val, t, nullableInner)
+		}
 		return val
 	}
 	if g.aggregateIsCopyable(t) {
@@ -3351,7 +3394,7 @@ func (g *Generator) emitDeepCopyFixups(dst *Value, semType semantic.Type) {
 	if at, ok := asSemanticArrayType(semType); ok {
 		elemSem := at.ElementType
 		if !isStringType(elemSem) && !isVecType(elemSem) && !isHeapValueType(elemSem) &&
-			nullableValueInner(elemSem) == nil {
+			nullableValueInner(elemSem) == nil && nullableAggregateInner(elemSem) == nil {
 			return
 		}
 		elemIRType := g.convertSSAType(elemSem)
@@ -3382,7 +3425,8 @@ func (g *Generator) emitDeepCopyFixups(dst *Value, semType semantic.Type) {
 			}
 
 			if isStringType(field.Type) || isVecType(field.Type) ||
-				nullableValueInner(field.Type) != nil || isHeapValueType(field.Type) {
+				nullableValueInner(field.Type) != nil || nullableAggregateInner(field.Type) != nil ||
+				isHeapValueType(field.Type) {
 				fieldPtr := g.builder().FieldPtr(dst, fieldIRType, offset)
 				fieldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
 				copied := g.deepCopiedValue(fieldVal, field.Type)
@@ -3406,10 +3450,52 @@ func (g *Generator) deepCopiedValue(val *Value, semType semantic.Type) *Value {
 	if nullableValueInner(semType) != nil {
 		return g.copyNullableValue(val, semType)
 	}
+	if inner := nullableAggregateInner(semType); inner != nil {
+		return g.copyNullableAggregate(val, semType, inner)
+	}
 	if isHeapValueType(semType) {
 		return g.emitDeepCopyAggregate(val, semType)
 	}
 	return val
+}
+
+// nullableAggregateIsCopyable reports whether t is a nullable aggregate (P?)
+// whose inner aggregate is copyable, so binding it takes copy-on-store.
+func (g *Generator) nullableAggregateIsCopyable(t semantic.Type) bool {
+	inner := nullableAggregateInner(t)
+	return inner != nil && g.aggregateIsCopyable(inner)
+}
+
+// copyNullableAggregate deep-copies a nullable aggregate (P?), preserving
+// null. The result owns its own aggregate allocation.
+func (g *Generator) copyNullableAggregate(src *Value, semType, inner semantic.Type) *Value {
+	resultType := g.convertSSAType(semType)
+	notNullBlock := g.fn.NewBlock(BlockPlain)
+	mergeBlock := g.fn.NewBlock(BlockPlain)
+	nullBlock := g.block
+
+	isNull := g.block.NewValue(OpIsNull, TypeBool, src)
+	g.block.Kind = BlockIf
+	g.block.Control = isNull
+	g.block.AddSucc(mergeBlock)   // null -> keep null
+	g.block.AddSucc(notNullBlock) // not null -> copy
+	g.sealBlock(notNullBlock)
+
+	g.block = notNullBlock
+	unwrapped := g.block.NewValue(OpUnwrap, &PtrType{Elem: g.convertType(inner)}, src)
+	copied := g.emitDeepCopyAggregate(unwrapped, inner)
+	wrapped := g.block.NewValue(OpWrap, resultType, copied)
+	notNullEnd := g.block
+	notNullEnd.AddSucc(mergeBlock)
+
+	g.sealBlock(mergeBlock)
+	g.block = mergeBlock
+	phi := g.block.NewPhiValue(resultType)
+	phi.PhiArgs = []*PhiArg{
+		{From: nullBlock, Value: src},
+		{From: notNullEnd, Value: wrapped},
+	}
+	return phi
 }
 
 // generateCopy generates IR for .copy() method.
@@ -3500,16 +3586,36 @@ func (g *Generator) generateSafeCall(sc *semantic.TypedSafeCallExpr) (*Value, er
 	// Get field - FieldPtr operates on the pointer
 	fieldPtr := g.block.NewValue(OpFieldPtr, &PtrType{Elem: resultType})
 	fieldPtr.AddArg(unwrapped)
-	fieldPtr.AuxInt = int64(sc.FieldOffset)
+	// Use the IR layout, not sc.FieldOffset (semantic): string and flat-
+	// nullable fields occupy 16 bytes in IR, shifting later fields.
+	fieldPtr.AuxInt = int64(g.getFieldOffset(sc.InnerType, sc.Field))
 
-	fieldVal := g.block.NewValue(OpLoad, resultType)
-	fieldVal.AddArg(fieldPtr)
+	// The result owns its contents: copy a heap-backed field so the wrapped
+	// value doesn't share the object's storage (both would free it). An
+	// embedded aggregate field lives inline, so its address is the source.
+	var fieldVal *Value
+	fieldSem := g.safeCallFieldType(sc)
+	if fieldSem != nil && isHeapValueType(fieldSem) {
+		fieldVal = g.emitDeepCopyAggregate(fieldPtr, fieldSem)
+	} else {
+		fieldVal = g.block.NewValue(OpLoad, resultType)
+		fieldVal.AddArg(fieldPtr)
+		if fieldSem != nil && varOwnsHeap(fieldSem) {
+			fieldVal = g.deepCopiedValue(fieldVal, fieldSem)
+		}
+	}
+	// An object that is itself a temporary (e.g. a call returning P?) has no
+	// binding to free it; release it now that the field has been copied out.
+	if isOwningTemp(sc.Object) {
+		freeOwningTemp(g, unwrapped, sc.InnerType)
+	}
 
 	// Wrap result in nullable
 	wrapped := g.block.NewValue(OpWrap, resultType)
 	wrapped.AddArg(fieldVal)
 
-	notNullBlock.AddSucc(mergeBlock)
+	notNullEnd := g.block
+	notNullEnd.AddSucc(mergeBlock)
 
 	// Merge block
 	g.block = mergeBlock
@@ -3517,10 +3623,25 @@ func (g *Generator) generateSafeCall(sc *semantic.TypedSafeCallExpr) (*Value, er
 	phi := g.block.NewPhiValue(resultType)
 	phi.PhiArgs = []*PhiArg{
 		{From: nullBlock, Value: nullResult},
-		{From: notNullBlock, Value: wrapped},
+		{From: notNullEnd, Value: wrapped},
 	}
 
 	return phi, nil
+}
+
+// safeCallFieldType returns the semantic type of the field read by a safe
+// call, or nil if it cannot be resolved.
+func (g *Generator) safeCallFieldType(sc *semantic.TypedSafeCallExpr) semantic.Type {
+	st := g.getSemanticAggregateType(sc.InnerType)
+	if st == nil {
+		return nil
+	}
+	for _, f := range st.Fields {
+		if f.Name == sc.Field {
+			return f.Type
+		}
+	}
+	return nil
 }
 
 // generateSelf generates IR for self expression.
@@ -3720,6 +3841,13 @@ func (g *Generator) emitFreeIfOwned(name string, semType semantic.Type, fromGlob
 		return
 	}
 
+	if inner := nullableAggregateInner(semType); inner != nil {
+		if oldVal := g.readForFree(name, fromGlobal); oldVal != nil {
+			g.emitNullCheckedFreeAggregate(oldVal, inner, make(map[string]bool))
+		}
+		return
+	}
+
 	// Plain struct/class/array variables: the binding owns the heap region
 	// allocated by the literal expression. Recursive-free walks any owned
 	// pointer fields nested inside.
@@ -3858,6 +3986,28 @@ func (g *Generator) emitNullCheckedFree(ptr *Value, size int) {
 	g.sealBlock(continueBlock)
 }
 
+// emitNullCheckedFreeAggregate frees a nullable aggregate (P?): null-check,
+// then recursively free the pointee's heap fields and its allocation.
+func (g *Generator) emitNullCheckedFreeAggregate(ptr *Value, inner semantic.Type, visiting map[string]bool) {
+	freeBlock := g.fn.NewBlock(BlockPlain)
+	continueBlock := g.fn.NewBlock(BlockPlain)
+
+	isNull := g.block.NewValue(OpIsNull, TypeBool, ptr)
+	g.block.Kind = BlockIf
+	g.block.Control = isNull
+	g.block.AddSucc(continueBlock) // null -> skip
+	g.block.AddSucc(freeBlock)     // not null -> free
+
+	g.block = freeBlock
+	unwrapped := g.block.NewValue(OpUnwrap, &PtrType{Elem: g.convertType(inner)}, ptr)
+	g.emitRecursiveFreeWithVisited(unwrapped, inner, g.getElementTypeSize(inner), visiting)
+	g.block.AddSucc(continueBlock)
+	g.sealBlock(freeBlock)
+
+	g.block = continueBlock
+	g.sealBlock(continueBlock)
+}
+
 // emitFreeOwnedValue frees a freshly loaded value if its semantic type owns
 // heap storage. Used at field/index assignment to release the old contents
 // before overwriting. Mirrors the dispatch in emitFreeIfOwned but operates
@@ -3875,6 +4025,11 @@ func (g *Generator) emitFreeOwnedValue(val *Value, semType semantic.Type) {
 
 	if inner := nullableValueInner(semType); inner != nil {
 		g.emitNullCheckedFreeBoxed(val, inner)
+		return
+	}
+
+	if inner := nullableAggregateInner(semType); inner != nil {
+		g.emitNullCheckedFreeAggregate(val, inner, make(map[string]bool))
 		return
 	}
 
@@ -3952,7 +4107,9 @@ func (g *Generator) emitRecursiveFreeWithVisited(ptr *Value, elemType semantic.T
 				elemPtr := g.block.NewValue(OpIndexPtr, &PtrType{Elem: elemIRType}, ptr, idxVal)
 				elemVal := g.block.NewValue(OpLoad, elemIRType, elemPtr)
 
-				if needsNullCheck {
+				if innerAgg := nullableAggregateInner(at.ElementType); innerAgg != nil {
+					g.emitNullCheckedFreeAggregate(elemVal, innerAgg, visiting)
+				} else if needsNullCheck {
 					if inner := nullableValueInner(at.ElementType); inner != nil {
 						g.emitNullCheckedFreeBoxed(elemVal, inner)
 					} else {
@@ -4052,28 +4209,10 @@ func (g *Generator) emitFreeAggregateFields(ptr *Value, st *semantic.StructType,
 		// shape as a nullable owned pointer. Null-check, recursively free the
 		// pointee's heap fields, then free the pointee allocation.
 		if innerAgg := nullableAggregateInner(field.Type); innerAgg != nil {
-			innerSize := g.getElementTypeSize(innerAgg)
-			irInner := g.convertType(innerAgg)
 			fieldPtr := g.block.NewValue(OpFieldPtr, &PtrType{Elem: fieldIRType}, ptr)
 			fieldPtr.AuxInt = int64(offset)
 			fieldVal := g.block.NewValue(OpLoad, fieldIRType, fieldPtr)
-
-			freeFieldBlock := g.fn.NewBlock(BlockPlain)
-			continueFieldBlock := g.fn.NewBlock(BlockPlain)
-			isNull := g.block.NewValue(OpIsNull, TypeBool, fieldVal)
-			g.block.Kind = BlockIf
-			g.block.Control = isNull
-			g.block.AddSucc(continueFieldBlock) // null -> skip
-			g.block.AddSucc(freeFieldBlock)     // not null -> free
-
-			g.block = freeFieldBlock
-			unwrapped := g.block.NewValue(OpUnwrap, &PtrType{Elem: irInner}, fieldVal)
-			g.emitRecursiveFreeWithVisited(unwrapped, innerAgg, innerSize, visiting)
-			g.block.AddSucc(continueFieldBlock)
-			g.sealBlock(freeFieldBlock)
-
-			g.block = continueFieldBlock
-			g.sealBlock(continueFieldBlock)
+			g.emitNullCheckedFreeAggregate(fieldVal, innerAgg, visiting)
 			continue
 		}
 
@@ -4381,6 +4520,13 @@ func nullableValueInner(t semantic.Type) semantic.Type {
 	if _, ok := inner.(semantic.StructType); ok {
 		return nil
 	}
+	// Classes share the struct representation (a pointer to the object).
+	if _, ok := inner.(*semantic.ClassType); ok {
+		return nil
+	}
+	if _, ok := inner.(semantic.ClassType); ok {
+		return nil
+	}
 	// Flat value-nullables (integer/bool inner) use the inline tag+payload
 	// representation — they own no heap and need no copy/free. This mirrors
 	// ir.NullableType.IsFlat; the two must agree. string?/array? remain boxed
@@ -4392,7 +4538,7 @@ func nullableValueInner(t semantic.Type) semantic.Type {
 }
 
 // nullableAggregateInner returns the inner aggregate type when t is a nullable
-// whose inner is a heap value type (struct/class/array). Such a nullable is
+// whose inner is a struct or class. Such a nullable is
 // represented as a pointer to a separately heap-allocated aggregate (null = 0),
 // the same shape as a nullable owned pointer, so it must be null-checked and
 // recursively freed. Returns nil otherwise.
@@ -4404,6 +4550,10 @@ func nullableAggregateInner(t semantic.Type) semantic.Type {
 	case semantic.NullableType:
 		inner = ty.InnerType
 	default:
+		return nil
+	}
+	// An array nullable keeps the boxed representation (nullableValueInner).
+	if _, isArray := asSemanticArrayType(inner); isArray {
 		return nil
 	}
 	if isHeapValueType(inner) {

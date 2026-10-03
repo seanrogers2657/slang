@@ -293,6 +293,20 @@ func (g *Generator) emitAllScopesCleanup(excludeVar string) {
 	}
 }
 
+// isOwnedLocal reports whether name is a function-local binding whose heap
+// backing this function frees at scope exit. Parameters and globals are not:
+// their storage belongs to the caller or to .data.
+func (g *Generator) isOwnedLocal(name string) bool {
+	for i := len(g.ownedVarScopes) - 1; i >= 0; i-- {
+		for _, ov := range g.ownedVarScopes[i] {
+			if ov.name == name {
+				return !ov.global
+			}
+		}
+	}
+	return false
+}
+
 // markHeapAliased records that a value-type-nullable variable's heap slot has been
 // aliased into another binding/array, so it must not be freed at scope exit.
 func (g *Generator) markHeapAliased(name string) {
@@ -1064,6 +1078,9 @@ func vecIsBorrow(expr semantic.TypedExpression) bool {
 	if !isVecType(expr.GetType()) {
 		return false
 	}
+	if isTempProjection(expr) {
+		return false
+	}
 	switch expr.(type) {
 	case *semantic.TypedIdentifierExpr,
 		*semantic.TypedFieldAccessExpr,
@@ -1091,6 +1108,9 @@ func stringIsBorrow(expr semantic.TypedExpression) bool {
 	if !isStringType(expr.GetType()) {
 		return false
 	}
+	if isTempProjection(expr) {
+		return false
+	}
 	switch expr.(type) {
 	case *semantic.TypedIdentifierExpr,
 		*semantic.TypedFieldAccessExpr,
@@ -1108,6 +1128,9 @@ func stringIsBorrow(expr semantic.TypedExpression) bool {
 func isOwnedStringTemp(expr semantic.TypedExpression) bool {
 	if !isStringType(expr.GetType()) {
 		return false
+	}
+	if isTempProjection(expr) {
+		return true
 	}
 	switch e := expr.(type) {
 	case *semantic.TypedInterpolatedStringExpr,
@@ -1132,6 +1155,9 @@ func isOwnedStringTemp(expr semantic.TypedExpression) bool {
 func isOwnedVecTemp(expr semantic.TypedExpression) bool {
 	if !isVecType(expr.GetType()) {
 		return false
+	}
+	if isTempProjection(expr) {
+		return true
 	}
 	switch e := expr.(type) {
 	case *semantic.TypedCallExpr,
@@ -1259,7 +1285,8 @@ func (g *Generator) generateReturn(rs *semantic.TypedReturnStmt) error {
 			// (Owned pointers *T can never be returned — semantic rejects it.)
 			if ident, ok := rs.Value.(*semantic.TypedIdentifierExpr); ok {
 				if varOwnsHeap(ident.Type) && !isStringType(ident.Type) &&
-					!isVecType(ident.Type) && nullableValueInner(ident.Type) == nil {
+					!isVecType(ident.Type) && nullableValueInner(ident.Type) == nil &&
+					g.isOwnedLocal(ident.Name) {
 					excludeVar = ident.Name
 				}
 			}
@@ -1275,6 +1302,13 @@ func (g *Generator) generateReturn(rs *semantic.TypedReturnStmt) error {
 			// scope cleanup. Done before wrapping so the copy is the raw string.
 			retVal = g.maybeCopyString(retVal, rs.Value)
 			retVal = g.maybeCopyVec(retVal, rs.Value)
+
+			// Any other aggregate read (a field, an element, a parameter)
+			// aliases storage the caller or this scope still frees, so the
+			// caller must receive an independent deep copy.
+			if excludeVar == "" {
+				retVal = g.bindAggregateValue(retVal, rs.Value)
+			}
 
 			retVal = g.wrapIfNeeded(retVal, retType)
 
@@ -2561,16 +2595,39 @@ func (g *Generator) generateFieldAccess(fa *semantic.TypedFieldAccessExpr) (*Val
 	// For struct/class types embedded by value, return the pointer directly
 	// (the caller will use it for further field access or as needed)
 	// Only load primitive values (int, bool, string) and pointers
+	var result *Value
 	switch resultType.(type) {
 	case *StructType:
 		// Return pointer to embedded struct, don't load
-		return fieldPtr, nil
+		result = fieldPtr
 	default:
 		// Load primitive value
-		load := g.block.NewValue(OpLoad, resultType)
-		load.AddArg(fieldPtr)
-		return load, nil
+		result = g.block.NewValue(OpLoad, resultType)
+		result.AddArg(fieldPtr)
 	}
+
+	// Reading a field of a temporary: nothing else frees the temporary, so
+	// copy the field out and free it here. The copy is then itself a fresh
+	// value (see isTempProjection).
+	if isOwningTemp(fa.Object) {
+		result = g.deepCopiedValue(result, fa.Type)
+		freeOwningTemp(g, obj, fa.Object.GetType())
+	}
+	return result, nil
+}
+
+// isTempProjection reports whether expr reads a field or element of a
+// temporary aggregate (a call result or literal). generateFieldAccess and
+// generateIndex copy such a value out and free the temporary, so the read
+// yields a fresh value no binding owns.
+func isTempProjection(expr semantic.TypedExpression) bool {
+	switch e := expr.(type) {
+	case *semantic.TypedFieldAccessExpr:
+		return isOwningTemp(e.Object)
+	case *semantic.TypedIndexExpr:
+		return isOwningTemp(e.Array)
+	}
+	return false
 }
 
 // generateIndex generates IR for array or string index access.
@@ -2591,6 +2648,9 @@ func (g *Generator) generateIndex(ie *semantic.TypedIndexExpr) (*Value, error) {
 		v := g.block.NewValue(OpStringIndex, TypeU8)
 		v.AddArg(arr)
 		v.AddArg(idx)
+		if isOwnedStringTemp(ie.Array) {
+			g.builder().StrFree(arr)
+		}
 		return v, nil
 	}
 
@@ -2607,6 +2667,13 @@ func (g *Generator) generateIndex(ie *semantic.TypedIndexExpr) (*Value, error) {
 	load := g.block.NewValue(OpLoad, resultType)
 	load.AddArg(elemPtr)
 
+	// Indexing a temporary array: copy the element out and free the array,
+	// as generateFieldAccess does for a temporary's field.
+	if isOwningTemp(ie.Array) {
+		copied := g.deepCopiedValue(load, ie.Type)
+		freeOwningTemp(g, arr, ie.Array.GetType())
+		return copied, nil
+	}
 	return load, nil
 }
 
@@ -2944,6 +3011,8 @@ func isOwningTemp(expr semantic.TypedExpression) bool {
 	switch expr.(type) {
 	case *semantic.TypedMethodCallExpr, *semantic.TypedCallExpr:
 		return varOwnsHeap(expr.GetType())
+	case *semantic.TypedFieldAccessExpr, *semantic.TypedIndexExpr:
+		return isTempProjection(expr) && varOwnsHeap(expr.GetType())
 	case *semantic.TypedNewExpr:
 		// A `new` expression not bound to a variable (passed directly as a
 		// borrow argument, or a bare statement) is an unowned allocation.

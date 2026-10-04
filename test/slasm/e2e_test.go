@@ -2,16 +2,12 @@
 package slasm_test
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 
-	"github.com/seanrogers2657/slang/assembler"
-	"github.com/seanrogers2657/slang/assembler/slasm"
 	"github.com/seanrogers2657/slang/test/testutil"
 )
 
@@ -60,15 +56,7 @@ func runAssemblyTest(t *testing.T, tc *testutil.TestExpectation) {
 		t.Fatalf("failed to read source file: %v", err)
 	}
 
-	// Create assembler and build
-	asm := slasm.New()
-	// Replace slashes with underscores since test names now include subdirectory paths
-	safeName := strings.ReplaceAll(tc.Name, "/", "_")
-	outputPath := filepath.Join(t.TempDir(), fmt.Sprintf("test_%s", safeName))
-
-	err = asm.Build(string(source), assembler.BuildOptions{
-		OutputPath: outputPath,
-	})
+	outputPath, err := testutil.BuildCached(string(source), t.TempDir())
 	if err != nil {
 		if tc.ExpectError {
 			// Expected an error, test passes

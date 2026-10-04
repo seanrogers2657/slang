@@ -3,7 +3,6 @@ package sl_test
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/seanrogers2657/slang/assembler"
-	"github.com/seanrogers2657/slang/assembler/slasm"
 	"github.com/seanrogers2657/slang/compiler/ir"
 	"github.com/seanrogers2657/slang/compiler/ir/backend"
 	"github.com/seanrogers2657/slang/compiler/ir/backend/arm64"
@@ -181,20 +178,10 @@ func compileAndRun(t *testing.T, tc *testutil.TestExpectation, rootDir string, r
 
 func runWithSlasm(t *testing.T, tc *testutil.TestExpectation, asmOutput string) {
 	t.Helper()
-
-	// Create assembler and build
-	asm := slasm.New()
-	// Replace slashes with underscores to avoid creating subdirectories
-	safeName := strings.ReplaceAll(tc.Name, "/", "_")
-	outputPath := filepath.Join(t.TempDir(), fmt.Sprintf("test_%s", safeName))
-
-	err := asm.Build(asmOutput, assembler.BuildOptions{
-		OutputPath: outputPath,
-	})
+	outputPath, err := testutil.BuildCached(asmOutput, t.TempDir())
 	if err != nil {
 		t.Fatalf("slasm build failed: %v", err)
 	}
-
 	runAndCheck(t, tc, outputPath)
 }
 

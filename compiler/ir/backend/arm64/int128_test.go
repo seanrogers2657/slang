@@ -204,3 +204,15 @@ func TestInt128PrintDispatch(t *testing.T) {
 	}`)
 	mustContain(t, unsigned, "bl _sl_print_u128")
 }
+
+func TestIntToStrDispatch(t *testing.T) {
+	t.Run("u64 formats unsigned through the 128-bit helper", func(t *testing.T) {
+		asm := genAsm(t, "main = () {\n    val g = 18446744073709551615u64\n    print(\"${g}\")\n}\n")
+		mustContain(t, asm, "mov x1, xzr", "bl _sl_u128_to_str")
+	})
+	t.Run("narrow integers use the signed 64-bit helper", func(t *testing.T) {
+		asm := genAsm(t, "main = () {\n    val a = 200u8\n    val b = -5s8\n    print(\"${a}${b}\")\n}\n")
+		mustContain(t, asm, "bl _sl_int_to_str")
+		mustNotContain(t, asm, "bl _sl_u128_to_str")
+	})
+}

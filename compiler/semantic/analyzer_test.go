@@ -23,6 +23,146 @@ func TestAnalyzeLiteral(t *testing.T) {
 	})
 }
 
+func TestAnalyzeSuffixedIntegerLiteral(t *testing.T) {
+	suffixed := func(value, suffix string) *ast.LiteralExpr {
+		lit := intLit(value)
+		lit.Suffix = suffix
+		return lit
+	}
+
+	t.Run("suffix sets the type", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeLiteral(suffixed("200", "u8"))
+		test.expectType(result, TypeU8)
+		test.expectNoErrors()
+	})
+
+	t.Run("128-bit value beyond s64", func(t *testing.T) {
+		test := newTest(t)
+		result := test.analyzer.analyzeLiteral(suffixed("170141183460469231731687303715884105727", "s128"))
+		test.expectType(result, TypeS128)
+		test.expectNoErrors()
+	})
+
+	t.Run("out of range for the suffix", func(t *testing.T) {
+		test := newTest(t)
+		test.analyzer.analyzeLiteral(suffixed("256", "u8"))
+		test.expectErrorContaining("out of range for u8")
+	})
+
+	t.Run("not retyped to a declared type", func(t *testing.T) {
+		test := newTest(t).withScope()
+		decl := varDecl("x", false, suffixed("5", "s64"))
+		decl.TypeName = "u8"
+		test.analyzer.analyzeVarDeclStatement(decl)
+		test.expectErrorContaining("cannot assign s64 to variable of type u8")
+	})
+
+	negation := []struct {
+		name     string
+		value    string
+		suffix   string
+		wantType Type
+		errorMsg string
+	}{
+		{"signed minimum", "128", "s8", TypeS8, ""},
+		{"s128 minimum", "170141183460469231731687303715884105728", "s128", TypeS128, ""},
+		{"below signed minimum", "129", "s8", nil, "integer literal -129 out of range for s8"},
+		{"negative unsigned", "1", "u8", nil, "integer literal -1 out of range for u8"},
+		{"negative zero unsigned", "0", "u8", TypeU8, ""},
+	}
+	for _, tt := range negation {
+		t.Run("negated "+tt.name, func(t *testing.T) {
+			test := newTest(t)
+			result := test.analyzer.analyzeUnaryExpression(unaryExpr("-", suffixed(tt.value, tt.suffix)))
+			if tt.errorMsg != "" {
+				test.expectErrorContaining(tt.errorMsg)
+				return
+			}
+			test.expectType(result, tt.wantType)
+			test.expectNoErrors()
+			lit, ok := result.(*TypedLiteralExpr)
+			want := "-" + tt.value
+			if tt.value == "0" {
+				want = "0" // negative zero folds to plain zero
+			}
+			if !ok || !lit.Suffixed || lit.Value != want {
+				t.Errorf("expected folded suffixed literal %s, got %#v", want, result)
+			}
+		})
+	}
+
+	t.Run("double negation re-checks the range", func(t *testing.T) {
+		test := newTest(t)
+		inner := unaryExpr("-", suffixed("128", "s8"))
+		test.analyzer.analyzeUnaryExpression(unaryExpr("-", inner))
+		test.expectErrorContaining("integer literal 128 out of range for s8")
+	})
+
+	t.Run("drives coercion of a bare literal", func(t *testing.T) {
+		test := newTest(t)
+		left := test.analyzer.analyzeLiteral(intLit("5"))
+		right := test.analyzer.analyzeLiteral(suffixed("3", "u8"))
+		test.analyzer.coerceLiteralOperand(left, right)
+		test.expectType(left, TypeU8)
+	})
+}
+
+func TestNegateLiteralValue(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"5", "-5"},
+		{"-5", "5"},
+		{"0", "0"},
+		{"000", "000"},
+		{"100", "-100"},
+	}
+	for _, tt := range tests {
+		if got := negateLiteralValue(tt.in); got != tt.want {
+			t.Errorf("negateLiteralValue(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestCoerceLiteralPeers(t *testing.T) {
+	lit := func(value string) *TypedLiteralExpr {
+		return &TypedLiteralExpr{Type: TypeInteger, LitType: ast.LiteralTypeInteger, Value: value}
+	}
+
+	t.Run("literal takes the typed peer's type", func(t *testing.T) {
+		a, b := lit("1"), lit("2")
+		types := []Type{TypeInteger, TypeU8, TypeInteger}
+		coerceLiteralPeers([]*TypedLiteralExpr{a, nil, b}, types)
+		if !a.Type.Equals(TypeU8) || !b.Type.Equals(TypeU8) || !types[0].Equals(TypeU8) || !types[2].Equals(TypeU8) {
+			t.Errorf("expected literals retyped to u8, got %s and %s", a.Type, b.Type)
+		}
+	})
+
+	t.Run("out-of-range literal keeps its type", func(t *testing.T) {
+		a := lit("300")
+		types := []Type{TypeU8, TypeInteger}
+		coerceLiteralPeers([]*TypedLiteralExpr{nil, a}, types)
+		if !a.Type.Equals(TypeInteger) || !types[1].Equals(TypeInteger) {
+			t.Errorf("expected 300 to stay s64, got %s", a.Type)
+		}
+	})
+
+	t.Run("all literals keep the default", func(t *testing.T) {
+		a, b := lit("1"), lit("2")
+		coerceLiteralPeers([]*TypedLiteralExpr{a, b}, []Type{TypeInteger, TypeInteger})
+		if !a.Type.Equals(TypeInteger) || !b.Type.Equals(TypeInteger) {
+			t.Errorf("expected s64 defaults, got %s and %s", a.Type, b.Type)
+		}
+	})
+
+	t.Run("non-integer peer drives nothing", func(t *testing.T) {
+		a := lit("1")
+		coerceLiteralPeers([]*TypedLiteralExpr{nil, a}, []Type{TypeString, TypeInteger})
+		if !a.Type.Equals(TypeInteger) {
+			t.Errorf("expected s64, got %s", a.Type)
+		}
+	})
+}
+
 func TestAnalyzeInterpolatedString(t *testing.T) {
 	interp := func(parts ...ast.Expression) *ast.InterpolatedStringExpr {
 		return &ast.InterpolatedStringExpr{Parts: parts}
@@ -52,6 +192,16 @@ func TestAnalyzeInterpolatedString(t *testing.T) {
 		result := test.analyzer.analyzeInterpolatedString(interp(strLit(""), ident("maybe"), strLit("")))
 		test.expectType(result, TypeString)
 		test.expectNoErrors()
+	})
+
+	t.Run("every integer width is allowed", func(t *testing.T) {
+		for _, typ := range []Type{TypeS8, TypeS16, TypeS32, TypeU8, TypeU16, TypeU32, TypeU64, NullableType{InnerType: TypeU8}} {
+			test := newTest(t).withScope()
+			test.declare("v", typ, false)
+			result := test.analyzer.analyzeInterpolatedString(interp(strLit(""), ident("v"), strLit("")))
+			test.expectType(result, TypeString)
+			test.expectNoErrors()
+		}
 	})
 
 	t.Run("float part is an error", func(t *testing.T) {
@@ -400,6 +550,34 @@ func TestAnalyzeUntypedIntegerLiteralOverflow(t *testing.T) {
 			// Untyped variable declaration - should infer s64 and check bounds
 			test.analyzer.analyzeVarDeclStatement(varDecl("x", false, intLit(tt.value)))
 			test.expectErrorContaining(tt.errorMsg)
+		})
+	}
+}
+
+func TestAnalyzeNegatedUntypedLiteral(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		typeName string
+		errorMsg string
+	}{
+		{"s8 minimum", "128", "s8", ""},
+		{"s64 minimum", "9223372036854775808", "s64", ""},
+		{"below s8 minimum", "129", "s8", "out of range for s8"},
+		{"negative into unsigned", "1", "u8", "out of range for u8"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			test := newTest(t).withScope()
+			decl := varDecl("x", false, unaryExpr("-", intLit(tt.value)))
+			decl.TypeName = tt.typeName
+			test.analyzer.analyzeVarDeclStatement(decl)
+			if tt.errorMsg == "" {
+				test.expectNoErrors()
+			} else {
+				test.expectErrorContaining(tt.errorMsg)
+			}
 		})
 	}
 }

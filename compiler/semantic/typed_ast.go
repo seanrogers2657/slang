@@ -51,9 +51,12 @@ func (e *TypedUnaryExpr) typedExprNode()    {}
 
 // TypedLiteralExpr represents a typed literal expression
 type TypedLiteralExpr struct {
-	Type     Type
-	LitType  ast.LiteralType
-	Value    string
+	Type    Type
+	LitType ast.LiteralType
+	Value   string
+	// Suffixed marks an integer literal whose type came from a suffix (42u8).
+	// Its type is fixed: literal coercion never retypes it.
+	Suffixed bool
 	StartPos ast.Position
 	EndPos   ast.Position
 }

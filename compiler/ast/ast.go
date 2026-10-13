@@ -42,6 +42,7 @@ func (b *BinaryExpr) exprNode()     {}
 type LiteralExpr struct {
 	Kind     LiteralType
 	Value    string
+	Suffix   string // integer type suffix ("u8", "s128", ...), "" if none
 	StartPos Position
 	EndPos   Position
 }

@@ -101,6 +101,32 @@ func TestParserLiterals(t *testing.T) {
 	}
 }
 
+func TestParserSuffixedLiteral(t *testing.T) {
+	tokens := []lexer.Token{
+		{Type: lexer.TokenTypeInteger, Value: "42", Suffix: "u8", Pos: ast.Position{Line: 1, Column: 1, Offset: 0}},
+	}
+	p := NewParser(tokens)
+	litExpr, ok := p.ParseLiteral().(*ast.LiteralExpr)
+	if !ok {
+		t.Fatal("expected LiteralExpr")
+	}
+
+	if litExpr.Kind != ast.LiteralTypeInteger {
+		t.Errorf("expected integer literal, got kind %d", litExpr.Kind)
+	}
+	if litExpr.Value != "42" {
+		t.Errorf("expected value %q, got %q", "42", litExpr.Value)
+	}
+	if litExpr.Suffix != "u8" {
+		t.Errorf("expected suffix %q, got %q", "u8", litExpr.Suffix)
+	}
+	// The span covers the digits and the suffix: "42u8" is 4 characters.
+	wantEnd := ast.Position{Line: 1, Column: 5, Offset: 4}
+	if litExpr.EndPos != wantEnd {
+		t.Errorf("expected end %+v, got %+v", wantEnd, litExpr.EndPos)
+	}
+}
+
 func TestParserBinaryExpressions(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -3795,6 +3821,97 @@ func TestParserQualifiedTypeName(t *testing.T) {
 			}
 			if fnDecl.Parameters[0].TypeName != tt.expectedType {
 				t.Errorf("expected type %q, got %q", tt.expectedType, fnDecl.Parameters[0].TypeName)
+			}
+		})
+	}
+}
+
+func TestParserTopLevelBindingMissingVal(t *testing.T) {
+	l := lexer.NewLexer([]byte("g = 200\nmain = () {\n    print(g)\n}\n"))
+	l.Parse()
+	p := NewParser(l.Tokens)
+	program := p.Parse()
+
+	// The error lands on the binding, not on the declaration after it
+	if len(p.Errors) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(p.Errors), p.Errors)
+	}
+	err := p.Errors[0]
+	if err.Position.Line != 1 {
+		t.Errorf("expected error on line 1, got line %d", err.Position.Line)
+	}
+	if !strings.Contains(err.Hint, "val g = ...") {
+		t.Errorf("expected hint suggesting 'val g = ...', got %q", err.Hint)
+	}
+	// main still parses as a declaration
+	if len(program.Declarations) != 1 {
+		t.Errorf("expected main to parse as a declaration, got %d declarations", len(program.Declarations))
+	}
+}
+
+func TestParserNullableLiteral(t *testing.T) {
+	tests := []struct {
+		name     string
+		source   string
+		wantHint string
+	}{
+		{"suffixed", "main = () {\n    val x = 5u8?\n}\n", "'val x: u8? = 5u8'"},
+		{"unsuffixed", "main = () {\n    val x = 5?\n}\n", "'val x: s64? = 5'"},
+		{"bool", "main = () {\n    val x = true?\n}\n", "'val x: bool? = true'"},
+		{"string", "main = () {\n    val x = \"a\"?\n}\n", "'val x: string? = \"a\"'"},
+		{"float", "main = () {\n    val x = 1.5?\n}\n", "'val x: f64? = 1.5'"},
+		{"null", "main = () {\n    val x = null?\n}\n", "'val x: s64? = null'"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+			p := NewParser(l.Tokens)
+			p.Parse()
+
+			// One error: the '?' is consumed so parsing recovers cleanly
+			if len(p.Errors) != 1 {
+				t.Fatalf("expected 1 error, got %d: %v", len(p.Errors), p.Errors)
+			}
+			err := p.Errors[0]
+			if !strings.Contains(err.Message, "a literal cannot be nullable") && !strings.Contains(err.Message, "'null' is already nullable") {
+				t.Errorf("unexpected message %q", err.Message)
+			}
+			if !strings.Contains(err.Hint, tt.wantHint) {
+				t.Errorf("expected hint containing %q, got %q", tt.wantHint, err.Hint)
+			}
+		})
+	}
+}
+
+func TestParserTrailingTokensRecovery(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{"trailing literal", "main = () {\n    print(1) 2\n    print(3)\n}\n"},
+		{"trailing question mark", "main = () {\n    print(5)?\n}\n"},
+		{"trailing braces", "main = () {\n    print(1) x { val y = 2\n    }\n    print(2)\n}\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := lexer.NewLexer([]byte(tt.source))
+			l.Parse()
+			p := NewParser(l.Tokens)
+			program := p.Parse()
+
+			// Only the stray tokens are reported, not a cascading "expected '}'"
+			if len(p.Errors) != 1 {
+				t.Fatalf("expected 1 error, got %d: %v", len(p.Errors), p.Errors)
+			}
+			if !strings.Contains(p.Errors[0].Message, "expected newline or '}' after statement") {
+				t.Errorf("unexpected message %q", p.Errors[0].Message)
+			}
+			// The function still parses
+			if len(program.Declarations) != 1 {
+				t.Errorf("expected main to parse, got %d declarations", len(program.Declarations))
 			}
 		})
 	}

@@ -228,6 +228,9 @@ type Token struct {
 	Type  TokenType
 	Value string
 	Pos   ast.Position // position where token starts
+	// Suffix is an integer literal's type suffix ("u8", "s128", ...), or ""
+	// for an unsuffixed literal. Value holds only the digits.
+	Suffix string
 }
 
 type lexer struct {
@@ -383,11 +386,40 @@ func (p *lexer) ParseNumber() {
 		tokenType = TokenTypeFloat
 	}
 
+	// A letter run directly after the digits is a type suffix (42u8, 7s128).
+	var suffix strings.Builder
+	for p.Index < len(p.Source) {
+		c := p.Source[p.Index]
+		if !unicode.IsLetter(rune(c)) && !unicode.IsDigit(rune(c)) && c != '_' {
+			break
+		}
+		suffix.WriteByte(c)
+		p.advance()
+	}
+	if suffix.Len() > 0 {
+		if isFloat {
+			p.addErrorAt(fmt.Sprintf("invalid suffix '%s' on float literal", suffix.String()), startPos)
+			return
+		}
+		if !integerSuffixes[suffix.String()] {
+			p.addErrorAt(fmt.Sprintf("invalid integer literal suffix '%s'", suffix.String()), startPos).
+				WithHint("valid suffixes are s8, s16, s32, s64, s128, u8, u16, u32, u64, u128")
+			return
+		}
+	}
+
 	p.Tokens = append(p.Tokens, Token{
-		Type:  tokenType,
-		Value: number.String(),
-		Pos:   startPos,
+		Type:   tokenType,
+		Value:  number.String(),
+		Pos:    startPos,
+		Suffix: suffix.String(),
 	})
+}
+
+// integerSuffixes are the type suffixes an integer literal may carry.
+var integerSuffixes = map[string]bool{
+	"s8": true, "s16": true, "s32": true, "s64": true, "s128": true,
+	"u8": true, "u16": true, "u32": true, "u64": true, "u128": true,
 }
 
 // ParseString scans a string literal beginning at the opening quote. A string

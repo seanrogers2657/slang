@@ -782,27 +782,33 @@ out-of-range literals are rejected at compile time.
 To compute at a wider type, start from a value of that type
 (`zero + s[i] - 48`, where `val zero: s64 = 0`).
 
-**This is a workaround for a missing feature: typed integer literals.** A bare
-literal has no declared width, so the compiler infers one — `s64` by default,
-or the other operand's type via `coerceLiteralOperand`. A suffix (e.g.
-`2000000000s64`, `42u8`) would let the literal state its own type, after which
-the ordinary widening rules apply and no inference heuristic is needed.
-
-The gap is not only about width selection — a literal wider than `s64` cannot
-be written at all in most positions today, because the default type is what it
-is bounds-checked against:
+**Typed integer literals.** A suffix — `s8`, `s16`, `s32`, `s64`, `s128`,
+`u8`, `u16`, `u32`, `u64`, `u128` — fixes a literal's type directly:
 
 ```slang
-val x = 170141183460469231731687303715884105727        // error: out of range for s64
-val x: s128 = 170141183460469231731687303715884105727  // ok — annotation retypes it
-show(170141183460469231731687303715884105727)          // error: expected s128, got s64
+show = (x: s128) { print(x) }
+
+main = () {
+    show(170141183460469231731687303715884105727s128)  // no annotated local needed
+    val b = 200u8          // inferred u8
+    print(b + 55u8)        // 255
+    print(5 + 3u8)         // the bare 5 takes u8 from its suffixed neighbor
+    print(-128s8)          // the minimum is accepted: negation folds first
+}
 ```
 
-So `s128`/`u128` literals work only where a declared type is in scope to coerce
-them (annotated declaration, return position). Passing one directly as an
-argument requires binding it to an annotated local first. Literal suffixes would
-close this; a cast syntax would not, since the problem is the literal's own type
-rather than a conversion between two known types.
+- A suffixed literal is bounds-checked against its suffix (`256u8` and `-1u8`
+  are compile errors) and is **never retyped** by literal coercion; it behaves
+  like a typed value, so `val x: u8 = 5s64` is a type mismatch.
+- It drives `coerceLiteralOperand` like any non-literal operand.
+- The suffix is lexed as `Token.Suffix` / `ast.LiteralExpr.Suffix` and marks
+  `TypedLiteralExpr.Suffixed`. `untypedIntLiteral` is the check every coercion
+  site uses to skip suffixed literals.
+- Unknown suffixes and suffixes on float literals are lexer errors.
+
+Without a suffix, a literal has no declared width: it defaults to `s64`, or
+takes the other operand's type via `coerceLiteralOperand`, or the declared type
+of an annotated binding, parameter, or return.
 
 **Comparison signedness follows the widened type, not the operands.** A
 comparison's own result is `bool`, so `genCmp` picks its condition codes from
@@ -1049,9 +1055,14 @@ main = () {
 
 **Interpolation rules:**
 - `$name` interpolates a bare identifier; `${...}` interpolates any expression
-- Only `s64`, `string`, `bool`, and their nullable forms (`T?`) may be
-  interpolated; a `T?` renders as `"null"` when null, otherwise its value.
-  Interpolating any other type is a compile error.
+- Any integer type (`s8`..`s128`, `u8`..`u128`), `string`, `bool`, and their
+  nullable forms (`T?`) may be interpolated; a `T?` renders as `"null"` when
+  null, otherwise its value. Interpolating any other type is a compile error.
+- `OpIntToStr` dispatches on width and signedness in the backend: narrow
+  values sit sign/zero-extended in a 64-bit slot and use `_sl_int_to_str`;
+  `u64` uses `_sl_u128_to_str` with a zero high word (the signed helper would
+  print values above the s64 range as negative); 128-bit uses the 128-bit
+  helpers.
 - `\$` is a literal `$`; a `$` not followed by `{` or a letter is also literal
 - Interpolated strings may nest (`"${ "inner ${x}" }"`)
 

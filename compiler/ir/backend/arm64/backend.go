@@ -2255,7 +2255,10 @@ func (g *generator) genStrConcat(v *ir.Value) error {
 
 // genIntToStr converts an integer to its decimal string via a runtime helper,
 // dispatching on the argument's width and signedness. The result is a heap
-// string pointer.
+// string pointer. Narrower values are held sign- or zero-extended in their
+// 64-bit slot, so they format correctly through the signed 64-bit helper; a
+// u64 does not (its high half would read as negative), so it goes through the
+// unsigned 128-bit helper with a zero high word.
 func (g *generator) genIntToStr(v *ir.Value) error {
 	arg := v.Args[0]
 	if it, ok := arg.Type.(*ir.IntType); ok && it.Bits >= 128 {
@@ -2269,6 +2272,12 @@ func (g *generator) genIntToStr(v *ir.Value) error {
 		return nil
 	}
 	g.loadValue(arg, "x0")
+	if it, ok := arg.Type.(*ir.IntType); ok && it.Bits == 64 && !it.Signed {
+		g.emit("    mov x1, xzr")
+		g.emit("    bl _sl_u128_to_str")
+		g.storeToStack("x0", g.stackOffset(v))
+		return nil
+	}
 	g.emit("    bl _sl_int_to_str")
 	g.storeToStack("x0", g.stackOffset(v))
 	return nil

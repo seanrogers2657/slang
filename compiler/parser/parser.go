@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/seanrogers2657/slang/compiler/ast"
 	"github.com/seanrogers2657/slang/compiler/lexer"
@@ -177,8 +178,27 @@ func (p *parser) looksLikeImportDecl() bool {
 	return p.looksLikeDecl(lexer.TokenTypeImport)
 }
 
-// looksLikeDeclarationProgram returns true if the current token starts a declaration-based program.
+// looksLikeDeclarationProgram returns true if the program is declaration-based:
+// it starts with a declaration, or any later line starts one. The second case
+// keeps a stray leading statement (e.g. `g = 200` missing its `val`) from
+// switching the whole file to statement parsing, where the declarations that
+// follow would fail with misleading errors.
 func (p *parser) looksLikeDeclarationProgram() bool {
+	if p.startsDeclaration() {
+		return true
+	}
+	saved := p.Index
+	defer func() { p.Index = saved }()
+	for p.Index++; !p.isAtEnd(); p.Index++ {
+		if p.PreviousToken().Type == lexer.TokenTypeNewline && p.startsDeclaration() {
+			return true
+		}
+	}
+	return false
+}
+
+// startsDeclaration returns true if the current token begins a top-level declaration.
+func (p *parser) startsDeclaration() bool {
 	tok := p.CurrentToken().Type
 	return tok == lexer.TokenTypeImport ||
 		tok == lexer.TokenTypeVal ||
@@ -217,6 +237,30 @@ func (p *parser) skipToNextStatement() {
 			// Skip the newline and check next token
 			p.Index++
 			continue
+		}
+		p.Index++
+	}
+}
+
+// skipRestOfLine skips to the end of the current line (or the '}' closing the
+// enclosing block), stepping over any nested braces on the way. Used for error
+// recovery after unexpected tokens trail a complete statement.
+func (p *parser) skipRestOfLine() {
+	depth := 0
+	for !p.isAtEnd() {
+		switch p.CurrentToken().Type {
+		case lexer.TokenTypeLBrace:
+			depth++
+		case lexer.TokenTypeRBrace:
+			if depth == 0 {
+				return
+			}
+			depth--
+		case lexer.TokenTypeNewline:
+			if depth == 0 {
+				p.skipNewlines()
+				return
+			}
 		}
 		p.Index++
 	}
@@ -398,7 +442,10 @@ func (p *parser) Parse() *ast.Program {
 				}
 			} else {
 				// Report error for unexpected token and try to recover
-				p.addError(fmt.Sprintf("expected declaration (Name = (...) or Name = struct/class/object {...}), got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+				err := p.addError(fmt.Sprintf("expected declaration (Name = (...) or Name = struct/class/object {...}), got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
+				if p.CurrentToken().Type == lexer.TokenTypeIdentifier && p.peek().Type == lexer.TokenTypeAssign {
+					err.WithHint(fmt.Sprintf("declare a top-level binding with val or var: 'val %s = ...'", p.CurrentToken().Value))
+				}
 				// Skip tokens until we find a declaration or reach end
 				p.skipUntilDecl()
 				continue
@@ -999,13 +1046,56 @@ func (p *parser) parseIfExpression() ast.Expression {
 }
 
 func (p *parser) ParseLiteral() ast.Expression {
+	expr := p.parseLiteralToken()
+	if lit, ok := expr.(*ast.LiteralExpr); ok {
+		p.rejectNullableLiteral(lit)
+	}
+	return expr
+}
+
+// rejectNullableLiteral reports a '?' directly after a literal (`5u8?`,
+// `true?`). It reads like a nullable literal, but a literal is never null:
+// nullability belongs to the binding's type. The '?' is consumed so parsing
+// continues with the literal itself.
+func (p *parser) rejectNullableLiteral(lit *ast.LiteralExpr) {
+	if p.isAtEnd() || p.CurrentToken().Type != lexer.TokenTypeQuestion {
+		return
+	}
+	var typeName, source string
+	switch lit.Kind {
+	case ast.LiteralTypeInteger:
+		typeName, source = lit.Suffix, lit.Value+lit.Suffix
+		if typeName == "" {
+			typeName = "s64"
+		}
+	case ast.LiteralTypeFloat:
+		typeName, source = "f64", lit.Value
+	case ast.LiteralTypeString:
+		typeName, source = "string", strconv.Quote(lit.Value)
+	case ast.LiteralTypeBoolean:
+		typeName, source = "bool", lit.Value
+	}
+	if lit.Kind == ast.LiteralTypeNull {
+		p.addError("'null' is already nullable and takes no '?'", p.CurrentToken().Pos).
+			WithHint("give the binding a nullable type instead: 'val x: s64? = null'")
+	} else {
+		p.addError("a literal cannot be nullable", p.CurrentToken().Pos).
+			WithHint(fmt.Sprintf("put the '?' on the binding's type instead: 'val x: %s? = %s'", typeName, source))
+	}
+	p.advance()
+}
+
+// parseLiteralToken parses a single literal token.
+func (p *parser) parseLiteralToken() ast.Expression {
 	if p.CurrentToken().Type == lexer.TokenTypeInteger {
 		token := p.CurrentToken()
+		n := len(token.Value) + len(token.Suffix)
 		literal := &ast.LiteralExpr{
 			Kind:     ast.LiteralTypeInteger,
 			Value:    token.Value,
+			Suffix:   token.Suffix,
 			StartPos: token.Pos,
-			EndPos:   ast.Position{Line: token.Pos.Line, Column: token.Pos.Column + len(token.Value), Offset: token.Pos.Offset + len(token.Value)},
+			EndPos:   ast.Position{Line: token.Pos.Line, Column: token.Pos.Column + n, Offset: token.Pos.Offset + n},
 		}
 		p.Index++
 		return literal
@@ -1961,7 +2051,10 @@ func (p *parser) ParseBlockStmt() *ast.BlockStmt {
 					p.skipNewlines() // skip any additional newlines
 				} else {
 					p.addError(fmt.Sprintf("expected newline or '}' after statement, got '%s'", p.CurrentToken().Value), p.CurrentToken().Pos)
-					break
+					// Drop the rest of the line and keep parsing the block, so
+					// the stray tokens don't also produce a bogus "expected '}'"
+					// and later statements are still checked.
+					p.skipRestOfLine()
 				}
 			}
 		} else {

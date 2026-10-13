@@ -1437,7 +1437,7 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 				// downstream stages see the correct width and signedness, e.g.
 				// `val a: u64 = 1` types the literal u64 rather than the default
 				// s64 (otherwise codegen would emit signed operations for it).
-				if litExpr, ok := typedInit.(*TypedLiteralExpr); ok {
+				if litExpr, ok := typedInit.(*TypedLiteralExpr); ok && !litExpr.Suffixed {
 					if (litExpr.LitType == ast.LiteralTypeInteger && IsIntegerType(declaredType)) ||
 						(litExpr.LitType == ast.LiteralTypeFloat && IsFloatType(declaredType)) {
 						litExpr.Type = declaredType
@@ -1455,7 +1455,7 @@ func (a *Analyzer) analyzeVarDeclStatement(stmt *ast.VarDeclStmt) TypedStatement
 			}
 
 			// For integer literals without type annotation, check bounds against i64 (the default type)
-			if litExpr, ok := typedInit.(*TypedLiteralExpr); ok && litExpr.LitType == ast.LiteralTypeInteger {
+			if litExpr, ok := untypedIntLiteral(typedInit); ok {
 				if !a.checkIntegerBounds(litExpr.Value, TypeInteger, litExpr.StartPos) {
 					declaredType = TypeError
 				}
@@ -1567,7 +1567,7 @@ func (a *Analyzer) checkTypeCompatibilityCore(targetType, sourceType Type, typed
 		// Also allow integer literal bounds check for nullable integer types.
 		// Retype the literal to the inner type so it is lowered at the right
 		// width (e.g. a 128-bit literal into an s128? binding).
-		if litExpr, ok := typedSource.(*TypedLiteralExpr); ok && litExpr.LitType == ast.LiteralTypeInteger {
+		if litExpr, ok := untypedIntLiteral(typedSource); ok {
 			if IsIntegerType(nullableType.InnerType) {
 				if a.checkIntegerBounds(litExpr.Value, nullableType.InnerType, pos) {
 					litExpr.Type = nullableType.InnerType
@@ -1604,8 +1604,9 @@ func (a *Analyzer) checkTypeCompatibilityCore(targetType, sourceType Type, typed
 		}
 	}
 
-	// Check for literal bounds when assigning to a specific type
-	if litExpr, ok := typedSource.(*TypedLiteralExpr); ok {
+	// Check for literal bounds when assigning to a specific type. A suffixed
+	// literal already has its type and is checked like any other value.
+	if litExpr, ok := typedSource.(*TypedLiteralExpr); ok && !litExpr.Suffixed {
 		// Integer literal -> any integer type (with bounds check). Retype the
 		// literal to the target so it is later lowered at the target's width;
 		// without this a 128-bit literal keeps its default s64 type and is
@@ -2051,10 +2052,46 @@ func (a *Analyzer) analyzeArrayLiteral(expr *ast.ArrayLiteralExpr) TypedExpressi
 		}
 	}
 
-	// Analyze remaining elements and check type consistency
+	// Analyze remaining elements, then let bare integer literals take the
+	// integer type of a typed element ([1, 2u8] and [b, 0] are u8 arrays)
+	elementTypes := make([]Type, len(expr.Elements))
+	elementLits := make([]*TypedLiteralExpr, len(expr.Elements))
+	for i := range expr.Elements {
+		if i > 0 {
+			typedElements[i] = a.analyzeExpression(expr.Elements[i])
+		}
+		elementTypes[i] = typedElements[i].GetType()
+		elementLits[i], _ = untypedIntLiteral(typedElements[i])
+	}
+	coerceLiteralPeers(elementLits, elementTypes)
+	elementType = elementTypes[0]
+
+	// A bare null has no element type to contribute, and an array cannot be
+	// annotated with a nullable element type, so reject it here rather than
+	// letting it reach IR generation (all-null) or report a mismatch against
+	// the internal Nothing type (mixed).
+	sawNull := false
+	for i, t := range elementTypes {
+		if _, isNothing := t.(NothingType); isNothing {
+			a.addError(
+				"null cannot be an array literal element",
+				expr.Elements[i].Pos(), expr.Elements[i].End(),
+			).WithHint("bind it to a nullable first, e.g. 'val v: s64? = null', and use v")
+			sawNull = true
+		}
+	}
+	if sawNull {
+		return &TypedArrayLiteralExpr{
+			Type:         ArrayType{ElementType: TypeError, Size: len(expr.Elements)},
+			LeftBracket:  expr.LeftBracket,
+			Elements:     typedElements,
+			RightBracket: expr.RightBracket,
+		}
+	}
+
+	// Check type consistency
 	for i := 1; i < len(expr.Elements); i++ {
-		typedElements[i] = a.analyzeExpression(expr.Elements[i])
-		elemType := typedElements[i].GetType()
+		elemType := elementTypes[i]
 
 		if _, isErr := elemType.(ErrorType); isErr {
 			continue
@@ -2449,6 +2486,14 @@ func (a *Analyzer) analyzeIfExpression(stmt *ast.IfStmt) TypedExpression {
 		a.addError("unexpected else branch type", stmt.ElseBranch.Pos(), stmt.ElseBranch.End())
 		elseType = TypeError
 	}
+
+	// A bare integer literal branch takes the other branch's integer type
+	branchTypes := []Type{thenType, elseType}
+	coerceLiteralPeers(
+		[]*TypedLiteralExpr{branchResultLiteral(typedThenBranch), branchResultLiteral(typedElseBranch)},
+		branchTypes,
+	)
+	thenType, elseType = branchTypes[0], branchTypes[1]
 
 	// Check that both branches have the same type
 	var resultType Type = thenType
@@ -4447,6 +4492,9 @@ func (a *Analyzer) rejectOwnedAliasBlockResult(b *ast.BlockStmt) {
 
 // analyzeLiteral analyzes a literal expression
 func (a *Analyzer) analyzeLiteral(lit *ast.LiteralExpr) TypedExpression {
+	if lit.Suffix != "" {
+		return a.suffixedIntLiteral(lit.Value, lit.Suffix, lit.StartPos, lit.EndPos)
+	}
 	var typ Type
 	switch lit.Kind {
 	case ast.LiteralTypeInteger:
@@ -4473,11 +4521,45 @@ func (a *Analyzer) analyzeLiteral(lit *ast.LiteralExpr) TypedExpression {
 	}
 }
 
+// negateLiteralValue negates an integer literal's decimal text. A double
+// negation cancels out, and zero stays "0": a "-0" would pass the bounds check
+// for an unsigned type but fail to parse as one during IR generation.
+func negateLiteralValue(value string) string {
+	if strings.HasPrefix(value, "-") {
+		return value[1:]
+	}
+	if strings.Trim(value, "0") == "" {
+		return value
+	}
+	return "-" + value
+}
+
+// suffixedIntLiteral builds an integer literal typed by its suffix, checking
+// that value fits that type. value may carry a leading '-' (a folded negation).
+func (a *Analyzer) suffixedIntLiteral(value, suffix string, start, end ast.Position) TypedExpression {
+	typ := primitiveTypes[suffix]
+	if !a.checkIntegerBounds(value, typ, start) {
+		typ = TypeError
+	}
+	return &TypedLiteralExpr{
+		Type:     typ,
+		LitType:  ast.LiteralTypeInteger,
+		Value:    value,
+		Suffixed: true,
+		StartPos: start,
+		EndPos:   end,
+	}
+}
+
 // isInterpolatable reports whether a value of type t can be rendered into a
-// string interpolation: s64, string, bool, or a nullable form of those.
+// string interpolation: any integer type, string, bool, or a nullable form of
+// those.
 func isInterpolatable(t Type) bool {
+	if IsIntegerType(t) {
+		return true
+	}
 	switch tt := t.(type) {
-	case S64Type, S128Type, U128Type, StringType, BooleanType:
+	case StringType, BooleanType:
 		return true
 	case NullableType:
 		return isInterpolatable(tt.InnerType)
@@ -4495,7 +4577,7 @@ func (a *Analyzer) analyzeInterpolatedString(e *ast.InterpolatedStringExpr) Type
 		t := tp.GetType()
 		if _, isErr := t.(ErrorType); !isErr && !isInterpolatable(t) {
 			a.addError(
-				fmt.Sprintf("cannot interpolate value of type '%s' (only s64, string, bool, and their nullable forms are supported)", t.String()),
+				fmt.Sprintf("cannot interpolate value of type '%s' (only integers, string, bool, and their nullable forms are supported)", t.String()),
 				part.Pos(), part.End())
 		}
 		parts = append(parts, tp)
@@ -4521,7 +4603,17 @@ func (a *Analyzer) analyzeBinaryExpression(expr *ast.BinaryExpr) TypedExpression
 	left := a.analyzeExpression(expr.Left)
 	right := a.analyzeExpression(expr.Right)
 
-	a.coerceLiteralOperand(left, right)
+	if expr.Op == "?:" {
+		// The default value takes the nullable's inner type: `n ?: 5`
+		// with n: u8? types the 5 as u8.
+		if lit, ok := untypedIntLiteral(right); ok {
+			if inner, isNullable := UnwrapNullable(left.GetType()); isNullable {
+				coerceLiteralPeers([]*TypedLiteralExpr{nil, lit}, []Type{inner, lit.Type})
+			}
+		}
+	} else {
+		a.coerceLiteralOperand(left, right)
+	}
 
 	leftType := left.GetType()
 	rightType := right.GetType()
@@ -4554,8 +4646,8 @@ func (a *Analyzer) analyzeBinaryExpression(expr *ast.BinaryExpr) TypedExpression
 // alone so the narrow operand widens instead — coercion never truncates.
 func (a *Analyzer) coerceLiteralOperand(left, right TypedExpression) {
 	tryCoerce := func(lit TypedExpression, target TypedExpression) bool {
-		litExpr, ok := lit.(*TypedLiteralExpr)
-		if !ok || litExpr.LitType != ast.LiteralTypeInteger {
+		litExpr, ok := untypedIntLiteral(lit)
+		if !ok {
 			return false
 		}
 		targetType := target.GetType()
@@ -4574,16 +4666,74 @@ func (a *Analyzer) coerceLiteralOperand(left, right TypedExpression) {
 		return true
 	}
 
-	// A literal never drives the coercion, so a literal-literal pair is
-	// untouched and keeps the s64 default.
-	if _, rightIsLit := right.(*TypedLiteralExpr); !rightIsLit {
+	// An unsuffixed literal never drives the coercion, so a pair of them is
+	// untouched and keeps the s64 default. A suffixed literal has a declared
+	// type and drives it like any other operand.
+	if _, rightIsLit := untypedIntLiteral(right); !rightIsLit {
 		if tryCoerce(left, right) {
 			return
 		}
 	}
-	if _, leftIsLit := left.(*TypedLiteralExpr); !leftIsLit {
+	if _, leftIsLit := untypedIntLiteral(left); !leftIsLit {
 		tryCoerce(right, left)
 	}
+}
+
+// coerceLiteralPeers retypes bare integer literals among a group of peers that
+// must share one type — array elements, if/when branch results — to the
+// integer type (or nullable integer's inner type) of the first peer that is
+// not a bare literal, if the value fits. types[i] is each peer's type and lits[i] its bare literal (nil when the
+// peer is not one); types is updated in place. Like coerceLiteralOperand, it
+// never truncates: a literal that does not fit keeps its type, and the
+// mismatch is reported by the caller.
+func coerceLiteralPeers(lits []*TypedLiteralExpr, types []Type) {
+	var target Type
+	for i, t := range types {
+		// A nullable peer contributes its inner type: `if c { n } else { 5 }`
+		// with n: u8? types the 5 as u8, and the branches unify to u8?.
+		if nt, ok := t.(NullableType); ok {
+			t = nt.InnerType
+		}
+		if lits[i] == nil && IsIntegerType(t) {
+			target = t
+			break
+		}
+	}
+	if target == nil {
+		return
+	}
+	for i, lit := range lits {
+		if lit != nil && checkIntegerBoundsCore(lit.Value, target) == "" {
+			lit.Type = target
+			types[i] = target
+		}
+	}
+}
+
+// branchResultLiteral returns the bare integer literal a branch body yields as
+// its result, or nil if it yields anything else.
+func branchResultLiteral(body TypedStatement) *TypedLiteralExpr {
+	if block, ok := body.(*TypedBlockStmt); ok {
+		if len(block.Statements) == 0 {
+			return nil
+		}
+		body = block.Statements[len(block.Statements)-1]
+	}
+	if exprStmt, ok := body.(*TypedExprStmt); ok {
+		lit, _ := untypedIntLiteral(exprStmt.Expr)
+		return lit
+	}
+	return nil
+}
+
+// untypedIntLiteral returns expr as an integer literal whose type is still
+// open to inference — i.e. it carries no type suffix.
+func untypedIntLiteral(expr TypedExpression) (*TypedLiteralExpr, bool) {
+	lit, ok := expr.(*TypedLiteralExpr)
+	if !ok || lit.LitType != ast.LiteralTypeInteger || lit.Suffixed {
+		return nil, false
+	}
+	return lit, true
 }
 
 // analyzeShortCircuitExpression handles && and ||.
@@ -4615,6 +4765,13 @@ func (a *Analyzer) analyzeShortCircuitExpression(expr *ast.BinaryExpr) TypedExpr
 
 // analyzeUnaryExpression analyzes a unary expression (e.g., !x)
 func (a *Analyzer) analyzeUnaryExpression(expr *ast.UnaryExpr) TypedExpression {
+	// Negate a suffixed literal before bounds-checking it, so the most
+	// negative value of a signed type (-128s8) is accepted even though its
+	// magnitude alone (128s8) is out of range.
+	if lit, ok := expr.Operand.(*ast.LiteralExpr); ok && expr.Op == "-" && lit.Suffix != "" {
+		return a.suffixedIntLiteral(negateLiteralValue(lit.Value), lit.Suffix, expr.OpPos, expr.OperandEnd)
+	}
+
 	operand := a.analyzeExpression(expr.Operand)
 	operandType := operand.GetType()
 
@@ -4670,11 +4827,10 @@ func (a *Analyzer) analyzeUnaryExpression(expr *ast.UnaryExpr) TypedExpression {
 		// Folding also makes negative literals work uniformly as function
 		// arguments and if-expression branches.
 		if lit, ok := operand.(*TypedLiteralExpr); ok && lit.LitType == ast.LiteralTypeInteger {
-			value := lit.Value
-			if strings.HasPrefix(value, "-") {
-				value = value[1:] // double negation cancels out
-			} else {
-				value = "-" + value
+			value := negateLiteralValue(lit.Value)
+			if lit.Suffixed {
+				// The type name is the suffix (s8, u128, ...).
+				return a.suffixedIntLiteral(value, lit.Type.String(), expr.OpPos, expr.OperandEnd)
 			}
 			return &TypedLiteralExpr{
 				Type:     operandType,
@@ -5075,6 +5231,7 @@ func (a *Analyzer) analyzeWhen(when *ast.WhenExpr, isExpression bool) *TypedWhen
 	var hasTrueCondition bool
 	var branchTypes []Type // For expression type checking
 
+	var branchLits []*TypedLiteralExpr
 	for i, wcase := range when.Cases {
 		typedCase := a.analyzeWhenCase(wcase, isExpression)
 		typedCases[i] = typedCase
@@ -5094,8 +5251,10 @@ func (a *Analyzer) analyzeWhen(when *ast.WhenExpr, isExpression bool) *TypedWhen
 
 		if isExpression {
 			branchTypes = append(branchTypes, a.getWhenCaseResultType(typedCase.Body))
+			branchLits = append(branchLits, branchResultLiteral(typedCase.Body))
 		}
 	}
+	coerceLiteralPeers(branchLits, branchTypes)
 
 	// Exhaustiveness checking
 	a.checkWhenExhaustiveness(when, hasElse, hasTrueCondition)

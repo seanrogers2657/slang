@@ -39,6 +39,29 @@ func TestLexerNumbers(t *testing.T) {
 				{Type: TokenTypeInteger, Value: "0"},
 			},
 		},
+		{
+			name:  "unsigned suffix",
+			input: "42u8",
+			expected: []Token{
+				{Type: TokenTypeInteger, Value: "42", Suffix: "u8"},
+			},
+		},
+		{
+			name:  "128-bit suffix",
+			input: "7s128",
+			expected: []Token{
+				{Type: TokenTypeInteger, Value: "7", Suffix: "s128"},
+			},
+		},
+		{
+			name:  "suffixed literal in expression",
+			input: "1u16+2",
+			expected: []Token{
+				{Type: TokenTypeInteger, Value: "1", Suffix: "u16"},
+				{Type: TokenTypePlus, Value: "+"},
+				{Type: TokenTypeInteger, Value: "2"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -60,6 +83,9 @@ func TestLexerNumbers(t *testing.T) {
 				}
 				if token.Value != tt.expected[i].Value {
 					t.Errorf("token %d: expected value %q, got %q", i, tt.expected[i].Value, token.Value)
+				}
+				if token.Suffix != tt.expected[i].Suffix {
+					t.Errorf("token %d: expected suffix %q, got %q", i, tt.expected[i].Suffix, token.Suffix)
 				}
 			}
 		})
@@ -350,6 +376,16 @@ func TestLexerErrors(t *testing.T) {
 			name:            "single pipe",
 			input:           "a | b",
 			expectedContain: "unexpected character: '|' (bitwise | not supported, use || for logical OR)",
+		},
+		{
+			name:            "unknown integer suffix",
+			input:           "5u7",
+			expectedContain: "invalid integer literal suffix 'u7'",
+		},
+		{
+			name:            "suffix on float literal",
+			input:           "1.5s32",
+			expectedContain: "invalid suffix 's32' on float literal",
 		},
 	}
 
